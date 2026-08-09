@@ -1,0 +1,52 @@
+{
+  "agentId": "fact-reviewer",
+  "output": {
+    "artifact": {
+      "agent": "Rowan",
+      "persona": "calm reliability reviewer",
+      "memory_fact": "cobalt-anchor",
+      "observation": "The durable safety phrase stored in workspace memory is 'cobalt-anchor'."
+    },
+    "handoff_brief": "Identified self as Rowan with a calm reliability reviewer persona; reported durable safety phrase from memory without invention.",
+    "events": []
+  },
+  "usage": {
+    "input": 2350,
+    "output": 72,
+    "cacheRead": 1792,
+    "cacheWrite": 0,
+    "total": 4214
+  },
+  "completion": {
+    "status": "stop",
+    "exitCode": 0
+  },
+  "runtime": {
+    "sessionId": "9eb09c72-4b12-4fe4-94bf-3cf2c49a0b1d",
+    "provider": "openrouter",
+    "model": "openai/gpt-4.1-mini"
+  },
+  "injectedWorkspaceFiles": [
+    {
+      "name": "SOUL.md",
+      "missing": false,
+      "rawChars": 134,
+      "injectedChars": 134,
+      "truncated": false
+    },
+    {
+      "name": "IDENTITY.md",
+      "missing": false,
+      "rawChars": 69,
+      "injectedChars": 69,
+      "truncated": false
+    },
+    {
+      "name": "MEMORY.md",
+      "missing": false,
+      "rawChars": 61,
+      "injectedChars": 61,
+      "truncated": false
+    }
+  ]
+}

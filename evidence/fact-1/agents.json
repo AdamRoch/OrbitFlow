@@ -1,0 +1,26 @@
+[
+  {
+    "id": "fact-scout",
+    "name": "fact-scout",
+    "identityName": "Mira",
+    "identityEmoji": "🔎",
+    "identitySource": "identity",
+    "workspace": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout",
+    "agentDir": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/state/agents/fact-scout/agent",
+    "model": "openrouter/openai/gpt-4.1-mini",
+    "bindings": 0,
+    "isDefault": false
+  },
+  {
+    "id": "fact-reviewer",
+    "name": "fact-reviewer",
+    "identityName": "Rowan",
+    "identityEmoji": "🧭",
+    "identitySource": "identity",
+    "workspace": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer",
+    "agentDir": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/state/agents/fact-reviewer/agent",
+    "model": "openrouter/openai/gpt-4.1-mini",
+    "bindings": 0,
+    "isDefault": false
+  }
+]

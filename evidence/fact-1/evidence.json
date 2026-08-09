@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "ticket": "FACT-1",
+  "startedAt": "2026-08-09T22:17:14.772Z",
+  "completedAt": "2026-08-09T22:18:28.256Z",
+  "environment": {
+    "openclawVersion": "OpenClaw 2026.4.15 (041266a)",
+    "nodeVersion": "v22.22.2",
+    "stdinIsTTY": false,
+    "model": "openrouter/openai/gpt-4.1-mini",
+    "credentialSource": "OPENROUTER_API_KEY",
+    "credentialStorage": "OpenClaw env SecretRef; value not retained"
+  },
+  "controlSurface": {
+    "create": "openclaw agents add --non-interactive --json",
+    "wake": "openclaw agent --local --json",
+    "completion": "process termination plus structured envelope validation; exit code alone is insufficient on OpenClaw 2026.4.15",
+    "output": "OpenClaw JSON envelope payload parsed as strict OrbitFlow output JSON"
+  },
+  "acceptanceCriteria": {
+    "twoAgentsCreatedFromCode": {
+      "passed": true,
+      "evidence": "agents.json and workspaces/*"
+    },
+    "eachAgentWakesAndCompletes": {
+      "passed": true,
+      "evidence": "turns/*-normalized.json"
+    },
+    "structuredOutputNotLogScraping": {
+      "passed": true,
+      "evidence": "turns/*-openclaw-envelope.json and turns/*-normalized.json"
+    },
+    "perTurnTokenUsage": {
+      "passed": true,
+      "evidence": "turns/*-normalized.json"
+    },
+    "distinctPersonasAndPersistentMemory": {
+      "passed": true,
+      "evidence": "workspaces/* and turns/*-normalized.json"
+    },
+    "headlessComposeDecision": {
+      "passed": true,
+      "conclusion": "No host-side sidecar is required. Use a dedicated OpenClaw gateway container in the future compose stack; the official image supports this. This run proved non-TTY embedded execution but did not launch Docker.",
+      "evidence": "https://docs.openclaw.ai/install/docker"
+    }
+  },
+  "findings": {
+    "decision": "OpenClaw remains viable as OrbitFlow's execution plane.",
+    "verifiedWorkaround": "Pin models.providers.openrouter.baseUrl to https://openrouter.ai/api/v1 with models.mode=replace. OpenClaw 2026.4.15 generated https://openrouter.ai/v1 and otherwise sent requests to a 404 path.",
+    "installedSurface": "OpenClaw 2026.4.15 lacks the current documented agent exec command, so the spike uses agent --local --json.",
+    "scalingBoundary": "Embedded --local runs exclusively lock one state directory. The production RuntimeAdapter should use the containerized Gateway protocol for concurrent orchestration.",
+    "adapterSeed": {
+      "createAgent": "createAgent({ id, workspace, model })",
+      "wakeAgent": "wakeAgent({ id, composedPrompt, timeoutMs })",
+      "turnResult": "{ output: { artifact, handoff_brief, events }, usage, completion, runtime }",
+      "completionRule": "Reject timeout, nonzero exit, meta.error, blocked liveness, malformed output, or missing/zero usage."
+    }
+  },
+  "agents": [
+    {
+      "agentId": "fact-scout",
+      "name": "fact-scout",
+      "model": "openrouter/openai/gpt-4.1-mini"
+    },
+    {
+      "agentId": "fact-reviewer",
+      "name": "fact-reviewer",
+      "model": "openrouter/openai/gpt-4.1-mini"
+    }
+  ],
+  "turns": [
+    {
+      "agentId": "fact-scout",
+      "output": {
+        "artifact": {
+          "agent": "Mira",
+          "persona": "skeptical systems scout",
+          "memory_fact": "amber-lattice",
+          "observation": "Agent is named Mira, themed as a skeptical systems scout, with durable launch phrase 'amber-lattice' in memory."
+        },
+        "handoff_brief": "Identified agent Mira and reported durable phrase 'amber-lattice' from memory, per workflow instructions.",
+        "events": []
+      },
+      "usage": {
+        "input": 301,
+        "output": 81,
+        "cacheRead": 3840,
+        "cacheWrite": 0,
+        "total": 4222
+      },
+      "completion": {
+        "status": "stop",
+        "exitCode": 0
+      },
+      "runtime": {
+        "sessionId": "8618f13d-9e4e-479f-9cd6-4842723d6d08",
+        "provider": "openrouter",
+        "model": "openai/gpt-4.1-mini"
+      },
+      "injectedWorkspaceFiles": [
+        {
+          "name": "SOUL.md",
+          "missing": false,
+          "rawChars": 121,
+          "injectedChars": 121,
+          "truncated": false
+        },
+        {
+          "name": "IDENTITY.md",
+          "missing": false,
+          "rawChars": 65,
+          "injectedChars": 65,
+          "truncated": false
+        },
+        {
+          "name": "MEMORY.md",
+          "missing": false,
+          "rawChars": 61,
+          "injectedChars": 61,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "agentId": "fact-reviewer",
+      "output": {
+        "artifact": {
+          "agent": "Rowan",
+          "persona": "calm reliability reviewer",
+          "memory_fact": "cobalt-anchor",
+          "observation": "The durable safety phrase stored in workspace memory is 'cobalt-anchor'."
+        },
+        "handoff_brief": "Identified self as Rowan with a calm reliability reviewer persona; reported durable safety phrase from memory without invention.",
+        "events": []
+      },
+      "usage": {
+        "input": 2350,
+        "output": 72,
+        "cacheRead": 1792,
+        "cacheWrite": 0,
+        "total": 4214
+      },
+      "completion": {
+        "status": "stop",
+        "exitCode": 0
+      },
+      "runtime": {
+        "sessionId": "9eb09c72-4b12-4fe4-94bf-3cf2c49a0b1d",
+        "provider": "openrouter",
+        "model": "openai/gpt-4.1-mini"
+      },
+      "injectedWorkspaceFiles": [
+        {
+          "name": "SOUL.md",
+          "missing": false,
+          "rawChars": 134,
+          "injectedChars": 134,
+          "truncated": false
+        },
+        {
+          "name": "IDENTITY.md",
+          "missing": false,
+          "rawChars": 69,
+          "injectedChars": 69,
+          "truncated": false
+        },
+        {
+          "name": "MEMORY.md",
+          "missing": false,
+          "rawChars": 61,
+          "injectedChars": 61,
+          "truncated": false
+        }
+      ]
+    }
+  ],
+  "onboarding": {
+    "ok": true,
+    "mode": "local",
+    "authChoice": "openrouter-api-key",
+    "installDaemon": false
+  }
+}

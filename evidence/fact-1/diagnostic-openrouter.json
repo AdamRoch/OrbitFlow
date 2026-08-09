@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "credentialSource": "OPENROUTER_API_KEY",
+  "credentialValueRetained": false,
+  "directProviderRequest": {
+    "method": "POST",
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "model": "openai/gpt-4.1-mini",
+    "httpStatus": 200,
+    "contentType": "application/json",
+    "sanitizedBody": {
+      "model": "openai/gpt-4.1-mini",
+      "finishReason": "stop",
+      "content": "OK",
+      "usage": {
+        "promptTokens": 14,
+        "completionTokens": 2,
+        "totalTokens": 16
+      }
+    }
+  },
+  "openClawBeforeCorrection": {
+    "version": "OpenClaw 2026.4.15 (041266a)",
+    "authProfile": "openrouter:default=ref(env:OPENROUTER_API_KEY)",
+    "model": "openrouter/openai/gpt-4.1-mini",
+    "extensionDeclaredBaseUrl": "https://openrouter.ai/api/v1",
+    "generatedModelsBaseUrl": "https://openrouter.ai/v1",
+    "capturedRequest": {
+      "method": "POST",
+      "host": "openrouter.ai",
+      "path": "/v1/chat/completions",
+      "httpStatus": 404,
+      "contentType": "text/html; charset=utf-8"
+    },
+    "probeDefect": "models status --probe logged the HTML 404 retry sequence but reported status ok"
+  },
+  "singleChangedCondition": {
+    "change": "Set models.mode=replace and models.providers.openrouter.baseUrl=https://openrouter.ai/api/v1",
+    "keptConstant": [
+      "OPENROUTER_API_KEY credential source",
+      "openai/gpt-4.1-mini model",
+      "Reply with the single word OK prompt"
+    ],
+    "disconfirmingResult": "An OpenClaw one-shot failure after this sole endpoint correction would have disproved the base-URL explanation."
+  },
+  "openClawAfterCorrection": {
+    "exitCode": 0,
+    "ok": true,
+    "capability": "model.run",
+    "transport": "local",
+    "provider": "openrouter",
+    "model": "openai/gpt-4.1-mini",
+    "output": "OK"
+  },
+  "conclusion": "Configuration-only cause confirmed. The real two-agent spike pins the corrected official base URL."
+}
