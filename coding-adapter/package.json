@@ -1,0 +1,11 @@
+{
+  "name": "orbitflow-coding-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FACT-3 spike: v1 CodingToolAdapter wrapping the opencode CLI headlessly",
+  "scripts": {
+    "test": "node --test test/",
+    "prove": "node proof/run-proof.js"
+  }
+}
