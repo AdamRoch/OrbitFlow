@@ -8,6 +8,7 @@ Productionize the P0-1 spike into the `RuntimeAdapter` (PRD §5): create/update 
 
 - **Prompt composition** at delivery time: node system prompt + workflow/run context + assigned ticket(s) + upstream `handoff_brief` + agent memory + output-format contract.
 - **Output contract:** every turn must emit `{artifact, handoff_brief, events[]}`. Validate; on malformed output retry once, then emit a `system` error message to the bus.
+- **Wake timeout:** a configurable per-node timeout (sane default, e.g. minutes not hours). On timeout: terminate the OpenClaw session, emit a `system` error message, engine treats it like a failed turn. A hung agent must never freeze a run silently.
 - **Memory [MUST]:** canonical per-agent memory lives in the platform DB; sync into OpenClaw's memory files on wake. Facts survive across runs.
 
 ## Acceptance criteria
@@ -15,4 +16,5 @@ Productionize the P0-1 spike into the `RuntimeAdapter` (PRD §5): create/update 
 - [ ] Agent row → live OpenClaw agent, updated on edit.
 - [ ] Wake → structured output captured, token usage lands in `cost_events`.
 - [ ] Malformed output: one retry, then `system` error message on the bus.
+- [ ] Hung wake: timeout fires, session terminated, run surfaces the error instead of stalling.
 - [ ] A fact stored in run 1 is present in the composed prompt of run 2.
