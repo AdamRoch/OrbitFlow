@@ -367,10 +367,16 @@ export async function consumeNextMessage(
          FOR UPDATE OF consumer, message, enqueue`,
         [candidate.run_id, candidate.message_id],
       );
-      if (messageResult.rowCount === 1) {
-        message = messageFromRow(messageResult.rows[0]);
-        break;
+      if (messageResult.rowCount !== 1) {
+        // We acquired this run's transaction-scoped advisory lock, but the
+        // candidate became stale before revalidation. End the transaction now
+        // so we do not retain that lock while inspecting another run.
+        await client.query("COMMIT");
+        transactionOpen = false;
+        return null;
       }
+      message = messageFromRow(messageResult.rows[0]);
+      break;
     }
 
     if (!message) {

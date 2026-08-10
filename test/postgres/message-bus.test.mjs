@@ -253,23 +253,33 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       }
     });
 
-    await t.test("skips a stale contender after the winner advances the ready head", async () => {
-      const runId = await createRun("stale-contender");
+    await t.test("releases a stale run lock before inspecting another ready run", async () => {
+      const staleRunId = await createRun("stale-contender-run-a");
       const first = await insertMessage(pool, {
-        runId,
+        runId: staleRunId,
         sender: "agent:first",
         recipient: "agent:next",
         type: "output",
         payload: { order: 1 },
       });
       const second = await insertMessage(pool, {
-        runId,
+        runId: staleRunId,
         sender: "agent:second",
         recipient: "agent:next",
         type: "output",
         payload: { order: 2 },
       });
+      const otherRunId = await createRun("stale-contender-run-b");
+      const other = await insertMessage(pool, {
+        runId: otherRunId,
+        sender: "agent:other",
+        recipient: "agent:next",
+        type: "output",
+        payload: { order: 1 },
+      });
       const contenderPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      const otherRunLock = new Client({ connectionString: databaseUrl });
+      await otherRunLock.connect();
       let releaseReadyScan;
       let announceReadyScan;
       const readyScanPaused = new Promise((resolve) => {
@@ -279,6 +289,7 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
         releaseReadyScan = resolve;
       });
       let intercepted = false;
+      const advisoryLockAttempts = [];
       const pausedPool = {
         async connect() {
           const contenderClient = await contenderPool.connect();
@@ -288,6 +299,9 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
                 return async (...args) => {
                   const result = await target.query(...args);
                   const statement = typeof args[0] === "string" ? args[0] : args[0]?.text;
+                  if (statement?.includes("pg_try_advisory_xact_lock")) {
+                    advisoryLockAttempts.push(args[1][0]);
+                  }
                   if (
                     !intercepted &&
                     statement?.includes("FROM message_ready_runs AS ready") &&
@@ -326,14 +340,75 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
         releaseReadyScan();
         assert.equal(await contender, null);
         assert.equal(contenderHandlerCalls, 0);
+        assert.deepEqual(
+          advisoryLockAttempts,
+          [staleRunId],
+          "a stale transaction ends instead of carrying run A's lock into run B",
+        );
 
-        const followUp = await consumeNextMessage(pool, route("stale-follow-up"), {
-          consumerId: "stale-follow-up",
+        const staleOutcome = await client.query(
+          `SELECT
+             consumer.next_sequence_number,
+             (SELECT count(*)::int
+                FROM proof_routes
+               WHERE run_id = $1) AS routes,
+             (SELECT count(*)::int
+                FROM message_consumptions AS consumption
+                JOIN messages AS message ON message.id = consumption.message_id
+               WHERE message.run_id = $1) AS receipts,
+             (SELECT count(*)::int
+                FROM message_enqueues AS enqueue
+                JOIN messages AS message ON message.id = enqueue.message_id
+               WHERE message.run_id = $1) AS pending
+           FROM message_consumer_runs AS consumer
+           WHERE consumer.run_id = $1`,
+          [staleRunId],
+        );
+        assert.deepEqual(staleOutcome.rows[0], {
+          next_sequence_number: "2",
+          routes: 1,
+          receipts: 1,
+          pending: 1,
         });
-        assert.equal(followUp?.message.id, second.id);
+
+        await otherRunLock.query("BEGIN");
+        await otherRunLock.query(
+          `SELECT pg_advisory_xact_lock(
+             hashtextextended(
+               'orbitfactory:message-consumer-run:' || $1::text,
+               0
+             )
+           )`,
+          [otherRunId],
+        );
+        const freshRunA = await consumeNextMessage(pool, route("fresh-run-a"), {
+          consumerId: "fresh-run-a",
+        });
+        assert.equal(freshRunA?.message.id, second.id);
+
+        const runBStillReady = await client.query(
+          `SELECT ready.message_id,
+                  EXISTS (
+                    SELECT 1 FROM message_enqueues WHERE message_id = $1
+                  ) AS pending
+           FROM message_ready_runs AS ready
+           WHERE ready.run_id = $2`,
+          [other.id, otherRunId],
+        );
+        assert.deepEqual(runBStillReady.rows[0], {
+          message_id: other.id,
+          pending: true,
+        });
+        await otherRunLock.query("COMMIT");
+
+        const freshRunB = await consumeNextMessage(pool, route("fresh-run-b"), {
+          consumerId: "fresh-run-b",
+        });
+        assert.equal(freshRunB?.message.id, other.id);
       } finally {
         releaseReadyScan?.();
-        await contenderPool.end();
+        await otherRunLock.query("ROLLBACK").catch(() => {});
+        await Promise.all([contenderPool.end(), otherRunLock.end()]);
       }
     });
 

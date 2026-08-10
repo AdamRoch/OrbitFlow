@@ -52,7 +52,9 @@ may therefore hold a stale candidate after the winner commits. Its post-lock
 query compares the captured message identifier against the ready projection and
 atomically locks the cursor, captured head message, and its pending enqueue. A
 mismatch skips silently before the handler, so a stale contender cannot route
-the next message or surface a false worker failure.
+the next message or surface a false worker failure. That stale path commits and
+returns no work immediately, releasing its transaction-scoped advisory lock
+before the worker can inspect a different run.
 
 The handler must perform database routing mutations only and must not issue
 `BEGIN`, `COMMIT`, `ROLLBACK`, or release the supplied client. A failure rolls
@@ -120,7 +122,7 @@ port, applies the full clean migration chain, and removes that exact container
 on exit. It covers validation and caller rollback, per-run commit ordering, two
 engine connections racing one message, concurrent routing across runs,
 handler failure and pool reuse, restart before and after commit, a fair window
-larger than 32 active runs, a stale paused contender, an indexed plan over tens
-of thousands of idle cursors and backlog messages, late commits, wall-clock
-receipt aging, exhausted-pool cancellation, and clean idle and in-flight
-cancellation.
+larger than 32 active runs, a stale paused contender with a second ready run, an
+indexed plan over tens of thousands of idle cursors and backlog messages, late
+commits, wall-clock receipt aging, exhausted-pool cancellation, and clean idle
+and in-flight cancellation.
