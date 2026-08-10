@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,16 @@ const { Client } = pg;
 const FAILED_MIGRATION_DIRECTORY = fileURLToPath(
   new URL("./fixtures/failed-migration", import.meta.url),
 );
+const MIGRATION_DIRECTORY = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const MIGRATION_FILE = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(MIGRATION_DIRECTORY))
+    .filter((name) => MIGRATION_FILE.test(name))
+    .sort();
+}
 
 const expectedColumns = {
   schema_migrations: ["version", "checksum", "applied_at"],
@@ -67,6 +78,8 @@ const expectedColumns = {
     "total_cost",
     "created_at",
     "updated_at",
+    "failure_reason",
+    "graph_snapshot",
   ],
   labels: ["id", "name", "color", "created_at", "updated_at"],
   tickets: [
@@ -121,6 +134,57 @@ const expectedColumns = {
   message_enqueues: ["message_id", "enqueued_at"],
   message_ready_runs: ["run_id", "message_id", "ready_at"],
   message_consumptions: ["message_id", "consumer_id", "consumed_at"],
+  workflow_fanout_groups: [
+    "id",
+    "run_id",
+    "source_message_id",
+    "node_id",
+    "agent_id",
+    "agent_model",
+    "node_config",
+    "max_concurrency",
+    "created_at",
+    "updated_at",
+  ],
+  workflow_fanout_members: [
+    "fanout_group_id",
+    "position",
+    "ticket_id",
+    "created_at",
+  ],
+  workflow_dispatches: [
+    "id",
+    "run_id",
+    "node_id",
+    "agent_id",
+    "agent_model",
+    "ticket_id",
+    "source_message_id",
+    "fanout_group_id",
+    "status",
+    "input",
+    "idempotency_key",
+    "attempt_count",
+    "lease_generation",
+    "runtime_generation",
+    "lease_owner",
+    "lease_expires_at",
+    "runtime_session_id",
+    "output_message_id",
+    "reconciliation_reason",
+    "failure_reason",
+    "created_at",
+    "updated_at",
+  ],
+  workflow_thread_states: [
+    "id",
+    "run_id",
+    "ticket_id",
+    "status",
+    "pause_reason",
+    "created_at",
+    "updated_at",
+  ],
   schedules: [
     "id",
     "cron_expression",
@@ -141,6 +205,8 @@ const expectedColumns = {
     "computed_cost",
     "created_at",
     "updated_at",
+    "cache_read_tokens",
+    "cache_write_tokens",
   ],
 };
 
@@ -165,6 +231,15 @@ const expectedEnums = {
     "canceled",
   ],
   workflow_trigger_type: ["channel", "ui", "cron"],
+  workflow_dispatch_status: [
+    "pending",
+    "dispatching",
+    "reconciling",
+    "active",
+    "completed",
+    "failed",
+  ],
+  workflow_thread_status: ["running", "paused"],
 };
 
 const requiredConstraints = [
@@ -174,6 +249,8 @@ const requiredConstraints = [
   "agents_interaction_rules_object",
   "agents_memory_object",
   "agents_openclaw_ref_unique",
+  "cost_events_cache_read_tokens_nonnegative",
+  "cost_events_cache_write_tokens_nonnegative",
   "cost_events_computed_cost_nonnegative",
   "cost_events_tokens_in_nonnegative",
   "cost_events_tokens_out_nonnegative",
@@ -194,8 +271,31 @@ const requiredConstraints = [
   "tickets_priority_range",
   "tickets_project_number_unique",
   "workflow_runs_spec_object",
+  "workflow_runs_failure_state",
+  "workflow_runs_graph_snapshot_object",
   "workflow_runs_total_cost_nonnegative",
   "workflow_runs_total_tokens_nonnegative",
+  "workflow_fanout_groups_activation_unique",
+  "workflow_fanout_groups_agent_model_not_blank",
+  "workflow_fanout_groups_max_positive",
+  "workflow_fanout_groups_node_config_object",
+  "workflow_fanout_groups_node_not_blank",
+  "workflow_fanout_members_pkey",
+  "workflow_fanout_members_position_nonnegative",
+  "workflow_fanout_members_ticket_unique",
+  "workflow_dispatches_activation_unique",
+  "workflow_dispatches_agent_model_not_blank",
+  "workflow_dispatches_attempt_nonnegative",
+  "workflow_dispatches_generation_nonnegative",
+  "workflow_dispatches_idempotency_key_key",
+  "workflow_dispatches_idempotency_not_blank",
+  "workflow_dispatches_input_object",
+  "workflow_dispatches_node_not_blank",
+  "workflow_dispatches_output_message_id_key",
+  "workflow_dispatches_runtime_generation_positive",
+  "workflow_dispatches_state_complete",
+  "workflow_thread_states_identity_unique",
+  "workflow_thread_states_pause_complete",
 ];
 
 const requiredIndexes = [
@@ -218,6 +318,11 @@ const requiredIndexes = [
   "idx_tickets_run_frontier",
   "idx_workflow_runs_status",
   "idx_workflow_runs_workflow_created",
+  "idx_workflow_fanout_groups_run_node",
+  "idx_workflow_fanout_members_ticket",
+  "idx_workflow_dispatches_claim",
+  "idx_workflow_dispatches_fanout_status",
+  "idx_workflow_dispatches_run_status",
 ];
 
 async function rejectWithCode(client, text, values, code) {
@@ -278,19 +383,14 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         databaseUrl,
         log: (line) => firstLog.push(line),
       });
-      assert.deepEqual(first.applied, [
-        "0001-control-plane.sql",
-        "0002-tickets.sql",
-        "0003-message-plane.sql",
-        "0004-message-consumption.sql",
-        "0009-state-stream-notify.sql",
-      ]);
-      assert.equal(firstLog.length, 5);
+      const committed = await committedMigrationFiles();
+      assert.deepEqual(first.applied, committed);
+      assert.equal(firstLog.length, committed.length);
 
       const journalBefore = await client.query(
         "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
       );
-      assert.equal(journalBefore.rowCount, 5);
+      assert.equal(journalBefore.rowCount, committed.length);
       for (const row of journalBefore.rows) {
         assert.match(row.checksum, /^[a-f0-9]{64}$/);
       }
@@ -454,13 +554,17 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           AND (table_name, column_name) IN (
             ('agents', 'guardrails'),
             ('workflows', 'graph'),
+            ('workflow_dispatches', 'input'),
+            ('workflow_runs', 'graph_snapshot'),
             ('workflow_runs', 'spec'),
             ('workflow_runs', 'total_cost'),
             ('tickets', 'run_id'),
             ('messages', 'payload'),
             ('messages', 'sequence_number'),
             ('messages', 'token_usage'),
-            ('cost_events', 'computed_cost')
+            ('cost_events', 'computed_cost'),
+            ('cost_events', 'cache_read_tokens'),
+            ('cost_events', 'cache_write_tokens')
           )
         ORDER BY table_name, column_name
       `);
@@ -468,14 +572,43 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         nativeTypes.rows.map((row) => [row.table_name, row.column_name, row.udt_name]),
         [
           ["agents", "guardrails", "jsonb"],
+          ["cost_events", "cache_read_tokens", "int8"],
+          ["cost_events", "cache_write_tokens", "int8"],
           ["cost_events", "computed_cost", "numeric"],
           ["messages", "payload", "jsonb"],
           ["messages", "sequence_number", "int8"],
           ["messages", "token_usage", "jsonb"],
           ["tickets", "run_id", "int8"],
+          ["workflow_dispatches", "input", "jsonb"],
+          ["workflow_runs", "graph_snapshot", "jsonb"],
           ["workflow_runs", "spec", "jsonb"],
           ["workflow_runs", "total_cost", "numeric"],
           ["workflows", "graph", "jsonb"],
+        ],
+      );
+
+      const nullableUsage = await client.query(`
+        SELECT column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'cost_events'
+          AND column_name IN (
+            'tokens_in',
+            'tokens_out',
+            'computed_cost',
+            'cache_read_tokens',
+            'cache_write_tokens'
+          )
+        ORDER BY column_name
+      `);
+      assert.deepEqual(
+        nullableUsage.rows.map((row) => [row.column_name, row.is_nullable]),
+        [
+          ["cache_read_tokens", "YES"],
+          ["cache_write_tokens", "YES"],
+          ["computed_cost", "YES"],
+          ["tokens_in", "YES"],
+          ["tokens_out", "YES"],
         ],
       );
 
@@ -526,6 +659,32 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         tickets_assignee_agent_id_fkey: "REFERENCES agents(id) ON DELETE SET NULL",
         tickets_project_id_fkey: "REFERENCES projects(id) ON DELETE RESTRICT",
         tickets_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        workflow_dispatches_agent_id_fkey:
+          "REFERENCES agents(id) ON DELETE RESTRICT",
+        workflow_dispatches_fanout_group_id_fkey:
+          "REFERENCES workflow_fanout_groups(id) ON DELETE RESTRICT",
+        workflow_dispatches_output_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        workflow_dispatches_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        workflow_dispatches_source_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        workflow_dispatches_ticket_id_fkey:
+          "REFERENCES tickets(id) ON DELETE RESTRICT",
+        workflow_fanout_groups_agent_id_fkey:
+          "REFERENCES agents(id) ON DELETE RESTRICT",
+        workflow_fanout_groups_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        workflow_fanout_groups_source_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        workflow_fanout_members_fanout_group_id_fkey:
+          "REFERENCES workflow_fanout_groups(id) ON DELETE RESTRICT",
+        workflow_fanout_members_ticket_id_fkey:
+          "REFERENCES tickets(id) ON DELETE RESTRICT",
+        workflow_thread_states_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        workflow_thread_states_ticket_id_fkey:
+          "REFERENCES tickets(id) ON DELETE RESTRICT",
         workflow_runs_workflow_id_fkey:
           "REFERENCES workflows(id) ON DELETE RESTRICT",
       };
@@ -941,8 +1100,18 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       await rejectWithCode(
         client,
         `INSERT INTO cost_events (
-           run_id, agent_id, model, tokens_in, tokens_out, computed_cost
-         ) VALUES ($1, $2, 'test/model', 1, 2, -0.01)`,
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', 1, 2, 0.01, -1, 0)`,
+        [ids.run, ids.agent],
+        "23514",
+      );
+      await rejectWithCode(
+        client,
+        `INSERT INTO cost_events (
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', 1, 2, -0.01, 0, 0)`,
         [ids.run, ids.agent],
         "23514",
       );
@@ -956,8 +1125,16 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
 
       await client.query(
         `INSERT INTO cost_events (
-           run_id, agent_id, model, tokens_in, tokens_out, computed_cost
-         ) VALUES ($1, $2, 'test/model', 12, 8, 0.0042)`,
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', 12, 8, 0.0042, 20, 3)`,
+        [ids.run, ids.agent],
+      );
+      await client.query(
+        `INSERT INTO cost_events (
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', NULL, 0, NULL, NULL, 0)`,
         [ids.run, ids.agent],
       );
       await rejectWithCode(

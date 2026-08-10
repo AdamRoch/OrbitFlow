@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import { StateEventHub } from "../../src/lib/state-stream.ts";
 
 const { Client } = pg;
+const migrationDirectory = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const migrationFile = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(migrationDirectory))
+    .filter((name) => migrationFile.test(name))
+    .sort();
+}
 
 async function waitUntil(assertion, label) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -30,13 +42,7 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
     const identity = await client.query("SELECT current_database() AS name");
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT18_PROOF_DATABASE);
     const migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(migration.applied, [
-      "0001-control-plane.sql",
-      "0002-tickets.sql",
-      "0003-message-plane.sql",
-      "0004-message-consumption.sql",
-      "0009-state-stream-notify.sql",
-    ]);
+    assert.deepEqual(migration.applied, await committedMigrationFiles());
     await hub.ready();
     assert.equal(first.filter((event) => event.type === "state.resync").length, 1);
     assert.deepEqual(second, first, "initial listeners share the snapshot boundary");

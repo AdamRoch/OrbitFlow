@@ -15,18 +15,22 @@
     "test:coding-adapter": "npm --prefix coding-adapter test",
     "test:postgres": "node --test test/postgres/schema.test.mjs",
     "test:message-bus": "node --experimental-strip-types --test test/postgres/message-bus.test.mjs",
+    "test:workflow-engine": "node --experimental-strip-types --test test/postgres/workflow-engine.test.mjs",
     "test:runtime-adapter": "node --experimental-strip-types --test test/postgres/openclaw-runtime-adapter.test.mjs",
     "fact8:proof": "bash scripts/fact-8-postgres-proof.sh",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "db:migrate": "node scripts/migrate-postgres.mjs",
     "fact6:proof": "bash scripts/fact-6-postgres-proof.sh",
+    "fact12:proof": "bash scripts/fact-12-coding-adapter-proof.sh",
     "fact9:proof": "bash scripts/fact-9-message-bus-proof.sh",
+    "fact10:proof": "bash scripts/fact-10-workflow-engine-proof.sh",
     "fact11:proof": "bash scripts/fact-11-runtime-adapter-proof.sh",
     "test:state-stream": "node --experimental-strip-types --test test/postgres/state-stream.test.mjs",
     "fact18:proof": "bash scripts/fact-18-state-stream-proof.sh",
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
-    "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs"
+    "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs",
+    "coding-tool": "node bin/orbit-coding-tool.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.11.2",

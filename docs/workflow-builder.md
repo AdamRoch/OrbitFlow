@@ -7,7 +7,7 @@ conflict instead of overwriting a newer graph.
 
 ## Engine contract
 
-The stored graph follows the FACT-10 contract from PR #13 directly:
+The stored graph follows the merged FACT-10 contract directly:
 
 - `nodes[]`: `id`, positive `agentId`, and a JSON object `config`
 - node IDs, optional edge IDs, and edge endpoints must already be trimmed and
@@ -39,10 +39,10 @@ remain intact when a user edits a known field. Optional
 can ignore that metadata while running, while PostgreSQL preserves it with the
 rest of the submitted graph.
 
-PR #13 remains open. `src/lib/workflow/graph-contract.ts` is the shared boundary
-for the control plane, builder, and pending engine. FACT-10 must consume
-`parseWorkflowGraph`, `workflowEntryNodeId`, and these exported graph types
-instead of retaining its narrower parser. `parseWorkflowGraph` validates and
+`src/lib/workflow/graph-contract.ts` is the shared boundary for the control
+plane, builder, and engine. `src/lib/workflow/graph.ts` re-exports
+`parseWorkflowGraph`, `workflowEntryNodeId`, and its graph types from that
+boundary before evaluating transitions. `parseWorkflowGraph` validates and
 returns the submitted object by reference; it does not normalize, default,
 project, reorder, or translate stored JSON.
 

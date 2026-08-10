@@ -1,5 +1,3 @@
-import { ValidationError } from "@/lib/validate";
-
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
 export type JsonObject = { [key: string]: JsonValue | undefined };
@@ -46,9 +44,9 @@ export interface WorkflowGraph extends JsonObject {
   edges: WorkflowEdge[];
 }
 
-export class WorkflowGraphError extends ValidationError {
+export class WorkflowGraphError extends Error {
   constructor(message: string) {
-    super(message, "invalid_graph");
+    super(message);
     this.name = "WorkflowGraphError";
   }
 }
@@ -109,7 +107,7 @@ function validateKnownNodeConfig(config: Record<string, unknown>, nodeId: string
     if (!isObject(config.fanOut)) {
       invalidGraph(`node ${nodeId} config.fanOut must be an object`);
     }
-    if (config.fanOut.over !== "openTickets") {
+    if (config.fanOut.over !== undefined && config.fanOut.over !== "openTickets") {
       invalidGraph(`node ${nodeId} config.fanOut.over must be openTickets`);
     }
     if (!Number.isSafeInteger(config.fanOut.maxConcurrency) || Number(config.fanOut.maxConcurrency) <= 0) {
