@@ -154,6 +154,13 @@ export interface MonitoringAgentDTO {
   status: MonitoringAgentStatus;
   currentTask: { id: string; identifier: string; title: string; runId: string } | null;
   logs: MonitoringMessageDTO[];
+  /** The current-task log is deliberately capped at three durable messages. */
+  logsTruncated: boolean;
+}
+
+export interface MonitoringAgentOptionDTO {
+  id: string;
+  name: string;
 }
 
 export interface MonitoringRunCostDTO {
@@ -175,11 +182,22 @@ export interface MonitoringAgentCostDTO extends MonitoringRunCostDTO {
 /** Every collection is deliberately bounded. The SSE stream only wakes re-reads. */
 export interface MonitoringSnapshot {
   filters: MonitoringFilters;
+  /** Application timestamp after the repeatable-read transaction committed. */
+  readAt: string;
   runs: MonitoringRunDTO[];
   board: MonitoringTicketDTO[];
   trail: MonitoringMessageDTO[];
+  /** Every capped collection reports whether an authoritative continuation exists. */
+  runsTruncated: boolean;
+  boardTruncated: boolean;
   trailTruncated: boolean;
   agents: MonitoringAgentDTO[];
+  /** Unfiltered selected-run participants used to keep the Agent combobox usable. */
+  agentOptions: MonitoringAgentOptionDTO[];
   runCosts: MonitoringRunCostDTO[];
   agentCosts: MonitoringAgentCostDTO[];
+  agentsTruncated: boolean;
+  runCostsTruncated: boolean;
+  agentCostsTruncated: boolean;
+  agentOptionsTruncated: boolean;
 }

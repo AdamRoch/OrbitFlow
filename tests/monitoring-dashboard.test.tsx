@@ -22,14 +22,26 @@ class FakeEventSource extends EventTarget {
 
 const snapshot: MonitoringSnapshot = {
   filters: { runId: null, agentId: null, messageType: null },
+  readAt: "2026-08-10T12:00:00.000Z",
   runs: [{ id: "9", workflowName: "Release", status: "running", triggerType: "ui", createdAt: "2026-08-10T12:00:00.000Z" }],
   board: [{ id: "11", runId: "9", identifier: "FACT-11", title: "Observe the release", status: "in_progress", priority: 3, assigneeAgentId: "2", assigneeName: "Scout", updatedAt: "2026-08-10T12:00:00.000Z" }],
   trail: [{ id: "14", runId: "9", ticketId: "11", sequenceNumber: "1", sender: "agent:2", recipient: "telegram:adam", type: "question", payload: { body: "Ship?" }, handoffBrief: "Need approval", createdAt: "2026-08-10T12:00:00.000Z" }],
-  trailTruncated: false,
-  agents: [{ id: "2", name: "Scout", role: "worker", status: "waiting-on-question", currentTask: { id: "11", identifier: "FACT-11", title: "Observe the release", runId: "9" }, logs: [] }],
+  runsTruncated: false, boardTruncated: false, trailTruncated: false, agentsTruncated: false, runCostsTruncated: false, agentCostsTruncated: false, agentOptionsTruncated: false,
+  agents: [{ id: "2", name: "Scout", role: "worker", status: "waiting-on-question", currentTask: { id: "11", identifier: "FACT-11", title: "Observe the release", runId: "9" }, logs: [], logsTruncated: false }],
+  agentOptions: [{ id: "2", name: "Scout" }, { id: "3", name: "Operator" }],
   runCosts: [{ runId: "9", workflowName: "Release", tokensIn: "100", tokensOut: "10", totalTokens: "110", totalCost: "0.10000001" }],
   agentCosts: [{ runId: "9", workflowName: "Release", agentId: "2", agentName: "Scout", tokensIn: "100", tokensOut: "10", totalTokens: "110", totalCost: "0.10000001", costLimit: "0.2", overCostLimit: false }],
 };
+
+function snapshotWithTitle(title: string): MonitoringSnapshot {
+  return { ...snapshot, board: [{ ...snapshot.board[0]!, title }] };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -74,6 +86,84 @@ describe("MonitoringDashboard", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
     await act(async () => FakeEventSource.instances[0]!.emit("state", JSON.stringify({ schemaVersion: 1, type: "cost.created", runId: "9", agentId: "2", ticketId: null, occurredAt: "2026-08-10T12:00:01.000Z" })));
     expect(container.textContent).toContain("Live refresh is unavailable");
+    expect(container.textContent).toContain("Degraded snapshot");
+    expect(container.textContent).not.toContain("Snapshot current");
     expect(container.textContent).toContain("FACT-11");
+  });
+
+  it("supersedes an older filter refresh when requests complete in reverse order", async () => {
+    const requests: ReturnType<typeof deferred<Response>>[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => {
+      const request = deferred<Response>();
+      requests.push(request);
+      return request.promise;
+    }));
+    const stream = FakeEventSource.instances[0]!;
+    await act(async () => stream.emit("open"));
+    expect(requests).toHaveLength(1);
+
+    const agent = container.querySelectorAll<HTMLSelectElement>("select")[1]!;
+    await act(async () => {
+      agent.value = "2";
+      agent.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(requests).toHaveLength(2);
+
+    await act(async () => requests[1]!.resolve(new Response(JSON.stringify(snapshotWithTitle("Newest snapshot")), { status: 200 })));
+    expect(container.textContent).toContain("Newest snapshot");
+    await act(async () => requests[0]!.resolve(new Response(JSON.stringify(snapshotWithTitle("Stale snapshot")), { status: 200 })));
+    expect(container.textContent).toContain("Newest snapshot");
+    expect(container.textContent).not.toContain("Stale snapshot");
+  });
+
+  it("coalesces a burst of stream wakes into one follow-up snapshot read", async () => {
+    const requests: ReturnType<typeof deferred<Response>>[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => {
+      const request = deferred<Response>();
+      requests.push(request);
+      return request.promise;
+    }));
+    const stream = FakeEventSource.instances[0]!;
+    await act(async () => {
+      stream.emit("open");
+      stream.emit("state", JSON.stringify({ schemaVersion: 1, type: "ticket.updated", runId: "9", agentId: "2", ticketId: "11", occurredAt: "2026-08-10T12:00:01.000Z" }));
+      stream.emit("state", JSON.stringify({ schemaVersion: 1, type: "message.created", runId: "9", agentId: "2", ticketId: "11", occurredAt: "2026-08-10T12:00:02.000Z" }));
+      stream.emit("state", JSON.stringify({ schemaVersion: 1, type: "cost.created", runId: "9", agentId: "2", ticketId: null, occurredAt: "2026-08-10T12:00:03.000Z" }));
+    });
+    expect(requests).toHaveLength(1);
+    await act(async () => requests[0]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
+    expect(requests).toHaveLength(2);
+    await act(async () => requests[1]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
+  });
+
+  it("keeps initial and EventSource degradation visible until a later snapshot succeeds", async () => {
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(<MonitoringDashboard initialSnapshot={snapshot} initialTab="board" initialDegraded />));
+    const stream = FakeEventSource.instances.at(-1)!;
+    expect(container.textContent).toContain("Initial PostgreSQL snapshot is unavailable");
+    await act(async () => stream.emit("error"));
+    expect(container.textContent).toContain("Initial PostgreSQL snapshot is unavailable");
+    expect(container.textContent).toContain("Degraded snapshot");
+    await act(async () => stream.emit("open"));
+    expect(container.textContent).toContain("Snapshot current");
+    expect(container.textContent).not.toContain("Initial PostgreSQL snapshot is unavailable");
+  });
+
+  it("uses roving tab focus and keeps all selected-run agent choices after filtering", async () => {
+    const tabs = container.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    expect(tabs[0]!.tabIndex).toBe(0);
+    expect(tabs[1]!.tabIndex).toBe(-1);
+    await act(async () => tabs[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(document.activeElement).toBe(tabs[1]);
+    expect(tabs[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe("monitoring-tab-trail");
+
+    const agent = container.querySelectorAll<HTMLSelectElement>("select")[1]!;
+    await act(async () => {
+      agent.value = "2";
+      agent.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect([...agent.options].map((option) => option.text)).toEqual(["All agents", "Scout", "Operator"]);
   });
 });

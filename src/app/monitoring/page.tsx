@@ -12,7 +12,11 @@ function optionalId(value: string | string[] | undefined): string | null {
 }
 
 function emptySnapshot(filters: MonitoringFilters): MonitoringSnapshot {
-  return { filters, runs: [], board: [], trail: [], trailTruncated: false, agents: [], runCosts: [], agentCosts: [] };
+  return {
+    filters, readAt: new Date().toISOString(), runs: [], board: [], trail: [], agents: [], agentOptions: [], runCosts: [], agentCosts: [],
+    runsTruncated: false, boardTruncated: false, trailTruncated: false, agentsTruncated: false,
+    runCostsTruncated: false, agentCostsTruncated: false, agentOptionsTruncated: false,
+  };
 }
 
 export default async function MonitoringPage({ searchParams }: {
@@ -26,12 +30,14 @@ export default async function MonitoringPage({ searchParams }: {
   };
   const tab = typeof params.tab === "string" && tabs.has(params.tab) ? params.tab as "board" | "trail" | "agents" | "cost" : "board";
   let snapshot: MonitoringSnapshot;
+  let initialDegraded = false;
   try {
     snapshot = await getControlPlaneRepository().getMonitoringSnapshot(filters);
   } catch {
     // The client retry uses the same narrow snapshot route and leaves the
     // empty state visibly degraded instead of pretending stale UI is current.
     snapshot = emptySnapshot(filters);
+    initialDegraded = true;
   }
-  return <MonitoringDashboard key={`${tab}:${filters.runId ?? ""}:${filters.agentId ?? ""}:${filters.messageType ?? ""}`} initialSnapshot={snapshot} initialTab={tab} />;
+  return <MonitoringDashboard initialSnapshot={snapshot} initialTab={tab} initialDegraded={initialDegraded} />;
 }

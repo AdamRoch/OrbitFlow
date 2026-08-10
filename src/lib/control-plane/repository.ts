@@ -128,6 +128,12 @@ function scheduleFromRow(row: Row): ScheduleDTO {
 
 const MONITORING_LIMIT = 200;
 const RUN_LIMIT = 100;
+const LOG_LIMIT = 3;
+
+export interface ControlPlaneRepositoryOptions {
+  /** Test seam for proving that all monitoring panels share one database snapshot. */
+  afterMonitoringPanelRead?: (panel: "runs" | "board" | "trail" | "agents" | "run-costs" | "agent-costs") => Promise<void>;
+}
 
 function monitoringMessageFromRow(row: Row): MonitoringMessageDTO {
   return {
@@ -145,6 +151,7 @@ function monitoringMessageFromRow(row: Row): MonitoringMessageDTO {
 }
 
 function monitoringAgentFromRow(row: Row): MonitoringAgentDTO {
+  const logs = (row.logs as Row[]).slice(0, LOG_LIMIT).map(monitoringMessageFromRow);
   return {
     id: String(row.id),
     name: String(row.name),
@@ -158,7 +165,8 @@ function monitoringAgentFromRow(row: Row): MonitoringAgentDTO {
           title: String(row.task_title),
           runId: String(row.task_run_id),
         },
-    logs: (row.logs as Row[]).map(monitoringMessageFromRow),
+    logs,
+    logsTruncated: (row.logs as Row[]).length > LOG_LIMIT,
   };
 }
 
@@ -168,7 +176,7 @@ async function one<T>(queryable: Queryable, text: string, values: unknown[] = []
 }
 
 export class ControlPlaneRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, private readonly options: ControlPlaneRepositoryOptions = {}) {}
 
   async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -434,144 +442,141 @@ export class ControlPlaneRepository {
    * int8 token counts do not lose precision in JavaScript.
    */
   async getMonitoringSnapshot(filters: MonitoringFilters): Promise<MonitoringSnapshot> {
-    const runId = filters.runId;
-    const agentId = filters.agentId;
-    const messageType = filters.messageType;
-    const [runs, board, messages, agents, runCosts, agentCosts] = await Promise.all([
-      this.pool.query<Row>(
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const runs = await client.query<Row>(
         `SELECT run.id, workflow.name AS workflow_name, run.status, run.trigger_type, run.created_at
-         FROM workflow_runs AS run
-         JOIN workflows AS workflow ON workflow.id = run.workflow_id
-         ORDER BY run.created_at DESC, run.id DESC
-         LIMIT $1`,
-        [RUN_LIMIT],
-      ),
-      this.pool.query<Row>(
-        `SELECT ticket.id, ticket.run_id, ticket.identifier, ticket.title, ticket.status,
-                ticket.priority, ticket.assignee_agent_id, agent.name AS assignee_name,
-                ticket.updated_at
-         FROM tickets AS ticket
-         LEFT JOIN agents AS agent ON agent.id = ticket.assignee_agent_id
-         WHERE $1::bigint IS NULL OR ticket.run_id = $1::bigint
-         ORDER BY ticket.priority DESC, ticket.updated_at DESC, ticket.id DESC
-         LIMIT $2`,
-        [runId, MONITORING_LIMIT],
-      ),
-      this.pool.query<Row>(
-        `SELECT message.id, message.run_id, message.ticket_id, message.sequence_number,
-                message.sender, message.recipient, message.type, message.payload,
-                message.handoff_brief, message.created_at
-         FROM messages AS message
-         LEFT JOIN tickets AS ticket ON ticket.id = message.ticket_id
-         WHERE ($1::bigint IS NULL OR message.run_id = $1::bigint)
-           AND ($2::bigint IS NULL
-             OR ticket.assignee_agent_id = $2::bigint
-             OR message.sender = 'agent:' || $2::text
-             OR message.recipient = 'agent:' || $2::text)
+         FROM workflow_runs AS run JOIN workflows AS workflow ON workflow.id = run.workflow_id
+         WHERE ($1::bigint IS NULL OR run.id = $1::bigint)
+         ORDER BY run.created_at DESC, run.id DESC LIMIT $2`,
+        [filters.runId, RUN_LIMIT + 1],
+      );
+      await this.options.afterMonitoringPanelRead?.("runs");
+      const retainedRuns = runs.rows.slice(0, RUN_LIMIT);
+      const runIds = retainedRuns.map((row) => String(row.id));
+      const scopedRuns = runIds.length > 0 ? runIds : ["-1"];
+
+      const board = await client.query<Row>(
+        `SELECT ticket.id, ticket.run_id, ticket.identifier, ticket.title, ticket.status, ticket.priority,
+                ticket.assignee_agent_id, agent.name AS assignee_name, ticket.updated_at
+         FROM tickets AS ticket LEFT JOIN agents AS agent ON agent.id = ticket.assignee_agent_id
+         WHERE ticket.run_id = ANY($1::bigint[])
+           AND ($2::bigint IS NULL OR ticket.assignee_agent_id = $2::bigint)
+         ORDER BY ticket.priority DESC, ticket.updated_at DESC, ticket.id DESC LIMIT $3`,
+        [scopedRuns, filters.agentId, MONITORING_LIMIT + 1],
+      );
+      await this.options.afterMonitoringPanelRead?.("board");
+      const messages = await client.query<Row>(
+        `SELECT message.id, message.run_id, message.ticket_id, message.sequence_number, message.sender,
+                message.recipient, message.type, message.payload, message.handoff_brief, message.created_at
+         FROM messages AS message LEFT JOIN tickets AS ticket ON ticket.id = message.ticket_id
+         WHERE message.run_id = ANY($1::bigint[])
+           AND ($2::bigint IS NULL OR ticket.assignee_agent_id = $2::bigint
+             OR message.sender = 'agent:' || $2::text OR message.recipient = 'agent:' || $2::text)
            AND ($3::message_type IS NULL OR message.type = $3::message_type)
-         ORDER BY message.created_at DESC, message.id DESC
-         LIMIT $4`,
-        [runId, agentId, messageType, MONITORING_LIMIT + 1],
-      ),
-      this.pool.query<Row>(
-        `SELECT agent.id, agent.name, agent.role,
-                task.id AS task_id, task.identifier AS task_identifier,
+         ORDER BY message.created_at DESC, message.id DESC LIMIT $4`,
+        [scopedRuns, filters.agentId, filters.messageType, MONITORING_LIMIT + 1],
+      );
+      await this.options.afterMonitoringPanelRead?.("trail");
+      const agents = await client.query<Row>(
+        `WITH participating_agents AS (
+           SELECT DISTINCT ticket.assignee_agent_id AS agent_id FROM tickets AS ticket
+             WHERE ticket.run_id = ANY($1::bigint[]) AND ticket.assignee_agent_id IS NOT NULL
+           UNION
+           SELECT DISTINCT cost.agent_id FROM cost_events AS cost WHERE cost.run_id = ANY($1::bigint[])
+         )
+         SELECT agent.id, agent.name, agent.role, task.id AS task_id, task.identifier AS task_identifier,
                 task.title AS task_title, task.run_id AS task_run_id,
-                CASE
-                  WHEN unanswered_question.id IS NOT NULL THEN 'waiting-on-question'
-                  WHEN task.id IS NOT NULL AND task.status = 'in_progress'
-                    AND task.run_status = 'running' THEN 'working'
-                  ELSE 'idle'
-                END AS status,
-                COALESCE(logs.messages, '[]'::jsonb) AS logs
-         FROM agents AS agent
+                CASE WHEN unanswered_question.id IS NOT NULL THEN 'waiting-on-question'
+                     WHEN task.id IS NOT NULL AND task.status = 'in_progress' AND task.run_status = 'running' THEN 'working'
+                     ELSE 'idle' END AS status, COALESCE(logs.messages, '[]'::jsonb) AS logs
+         FROM participating_agents AS participant JOIN agents AS agent ON agent.id = participant.agent_id
          LEFT JOIN LATERAL (
-           SELECT ticket.id, ticket.identifier, ticket.title, ticket.run_id,
-                  ticket.status, run.status AS run_status
-           FROM tickets AS ticket
-           JOIN workflow_runs AS run ON run.id = ticket.run_id
-           WHERE ticket.assignee_agent_id = agent.id
-             AND ($1::bigint IS NULL OR ticket.run_id = $1::bigint)
+           SELECT ticket.id, ticket.identifier, ticket.title, ticket.run_id, ticket.status, run.status AS run_status
+           FROM tickets AS ticket JOIN workflow_runs AS run ON run.id = ticket.run_id
+           WHERE ticket.assignee_agent_id = agent.id AND ticket.run_id = ANY($1::bigint[])
              AND ticket.status IN ('todo', 'in_progress')
-           ORDER BY (ticket.status = 'in_progress') DESC, ticket.updated_at DESC, ticket.id DESC
-           LIMIT 1
+           ORDER BY (ticket.status = 'in_progress') DESC, ticket.updated_at DESC, ticket.id DESC LIMIT 1
          ) AS task ON true
          LEFT JOIN LATERAL (
-           SELECT question.id
-           FROM messages AS question
+           SELECT question.id FROM messages AS question
            WHERE question.ticket_id = task.id AND question.type = 'question'
-             AND question.id = (
-               SELECT latest.id FROM messages AS latest
-               WHERE latest.ticket_id = task.id
-               ORDER BY latest.sequence_number DESC
-               LIMIT 1
+             AND NOT EXISTS (
+               SELECT 1 FROM messages AS answer WHERE answer.ticket_id = task.id AND answer.type = 'answer'
+                 AND answer.sequence_number > question.sequence_number
              )
-           LIMIT 1
+           ORDER BY question.sequence_number DESC LIMIT 1
          ) AS unanswered_question ON true
          LEFT JOIN LATERAL (
-           SELECT jsonb_agg(to_jsonb(log_row) ORDER BY log_row.sequence_number DESC) AS messages
-           FROM (
-             SELECT message.id, message.run_id, message.ticket_id, message.sequence_number,
-                    message.sender, message.recipient, message.type, message.payload,
-                    message.handoff_brief, message.created_at
-             FROM messages AS message
-             WHERE message.ticket_id = task.id
-             ORDER BY message.sequence_number DESC
-             LIMIT 3
+           SELECT jsonb_agg(to_jsonb(log_row) ORDER BY log_row.sequence_number DESC) AS messages FROM (
+             SELECT message.id, message.run_id, message.ticket_id, message.sequence_number, message.sender,
+                    message.recipient, message.type, message.payload, message.handoff_brief, message.created_at
+             FROM messages AS message WHERE message.ticket_id = task.id
+             ORDER BY message.sequence_number DESC LIMIT $2
            ) AS log_row
          ) AS logs ON true
-         WHERE $2::bigint IS NULL OR agent.id = $2::bigint
-         ORDER BY agent.name, agent.id
-         LIMIT $3`,
-        [runId, agentId, MONITORING_LIMIT],
-      ),
-      this.pool.query<Row>(
+         WHERE ($3::bigint IS NULL OR agent.id = $3::bigint)
+         ORDER BY agent.name, agent.id LIMIT $4`,
+        [scopedRuns, LOG_LIMIT + 1, filters.agentId, MONITORING_LIMIT + 1],
+      );
+      await this.options.afterMonitoringPanelRead?.("agents");
+      const agentOptions = await client.query<Row>(
+        `WITH participating_agents AS (
+           SELECT DISTINCT ticket.assignee_agent_id AS agent_id FROM tickets AS ticket
+             WHERE ticket.run_id = ANY($1::bigint[]) AND ticket.assignee_agent_id IS NOT NULL
+           UNION SELECT DISTINCT cost.agent_id FROM cost_events AS cost WHERE cost.run_id = ANY($1::bigint[])
+         )
+         SELECT agent.id, agent.name FROM participating_agents AS participant
+         JOIN agents AS agent ON agent.id = participant.agent_id
+         ORDER BY agent.name, agent.id LIMIT $2`,
+        [scopedRuns, MONITORING_LIMIT + 1],
+      );
+      const runCosts = await client.query<Row>(
         `SELECT run.id AS run_id, workflow.name AS workflow_name,
-                COALESCE(SUM(cost.tokens_in), 0)::text AS tokens_in,
-                COALESCE(SUM(cost.tokens_out), 0)::text AS tokens_out,
+                COALESCE(SUM(cost.tokens_in), 0)::text AS tokens_in, COALESCE(SUM(cost.tokens_out), 0)::text AS tokens_out,
                 COALESCE(SUM(cost.tokens_in + cost.tokens_out), 0)::text AS total_tokens,
                 COALESCE(SUM(cost.computed_cost), 0)::text AS total_cost
-         FROM workflow_runs AS run
-         JOIN workflows AS workflow ON workflow.id = run.workflow_id
-         LEFT JOIN cost_events AS cost ON cost.run_id = run.id
-         WHERE $1::bigint IS NULL OR run.id = $1::bigint
-         GROUP BY run.id, workflow.name, run.created_at
-         ORDER BY run.created_at DESC, run.id DESC
-         LIMIT $2`,
-        [runId, RUN_LIMIT],
-      ),
-      this.pool.query<Row>(
-        `SELECT cost.run_id, agent.id AS agent_id, agent.name AS agent_name,
-                workflow.name AS workflow_name,
-                SUM(cost.tokens_in)::text AS tokens_in,
-                SUM(cost.tokens_out)::text AS tokens_out,
-                SUM(cost.tokens_in + cost.tokens_out)::text AS total_tokens,
-                SUM(cost.computed_cost)::text AS total_cost,
+         FROM workflow_runs AS run JOIN workflows AS workflow ON workflow.id = run.workflow_id
+         LEFT JOIN cost_events AS cost ON cost.run_id = run.id AND ($2::bigint IS NULL OR cost.agent_id = $2::bigint)
+         WHERE run.id = ANY($1::bigint[]) GROUP BY run.id, workflow.name, run.created_at
+         ORDER BY run.created_at DESC, run.id DESC LIMIT $3`,
+        [scopedRuns, filters.agentId, RUN_LIMIT + 1],
+      );
+      await this.options.afterMonitoringPanelRead?.("run-costs");
+      const agentCosts = await client.query<Row>(
+        `WITH participating_agents AS (
+           SELECT DISTINCT ticket.run_id, ticket.assignee_agent_id AS agent_id FROM tickets AS ticket
+             WHERE ticket.run_id = ANY($1::bigint[]) AND ticket.assignee_agent_id IS NOT NULL
+           UNION
+           SELECT DISTINCT cost.run_id, cost.agent_id FROM cost_events AS cost WHERE cost.run_id = ANY($1::bigint[])
+         )
+         SELECT participant.run_id, agent.id AS agent_id, agent.name AS agent_name, workflow.name AS workflow_name,
+                COALESCE(SUM(cost.tokens_in), 0)::text AS tokens_in, COALESCE(SUM(cost.tokens_out), 0)::text AS tokens_out,
+                COALESCE(SUM(cost.tokens_in + cost.tokens_out), 0)::text AS total_tokens,
+                COALESCE(SUM(cost.computed_cost), 0)::text AS total_cost,
+                CASE WHEN jsonb_typeof(agent.guardrails -> 'costLimit') = 'number' THEN agent.guardrails ->> 'costLimit' ELSE NULL END AS cost_limit,
                 CASE WHEN jsonb_typeof(agent.guardrails -> 'costLimit') = 'number'
-                  THEN agent.guardrails ->> 'costLimit' ELSE NULL END AS cost_limit,
-                CASE WHEN jsonb_typeof(agent.guardrails -> 'costLimit') = 'number'
-                  THEN SUM(cost.computed_cost) > (agent.guardrails ->> 'costLimit')::numeric
-                  ELSE false END AS over_cost_limit
-         FROM cost_events AS cost
-         JOIN agents AS agent ON agent.id = cost.agent_id
-         JOIN workflow_runs AS run ON run.id = cost.run_id
-         JOIN workflows AS workflow ON workflow.id = run.workflow_id
-         WHERE ($1::bigint IS NULL OR cost.run_id = $1::bigint)
-           AND ($2::bigint IS NULL OR cost.agent_id = $2::bigint)
-         GROUP BY cost.run_id, run.created_at, agent.id, agent.name, agent.guardrails, workflow.name
-         ORDER BY run.created_at DESC, cost.run_id DESC, agent.name, agent.id
-         LIMIT $3`,
-        [runId, agentId, MONITORING_LIMIT],
-      ),
-    ]);
+                  THEN COALESCE(SUM(cost.computed_cost), 0) > (agent.guardrails ->> 'costLimit')::numeric ELSE false END AS over_cost_limit
+         FROM participating_agents AS participant JOIN agents AS agent ON agent.id = participant.agent_id
+         JOIN workflow_runs AS run ON run.id = participant.run_id JOIN workflows AS workflow ON workflow.id = run.workflow_id
+         LEFT JOIN cost_events AS cost ON cost.run_id = participant.run_id AND cost.agent_id = agent.id
+         WHERE ($2::bigint IS NULL OR agent.id = $2::bigint)
+         GROUP BY participant.run_id, run.created_at, agent.id, agent.name, agent.guardrails, workflow.name
+         ORDER BY run.created_at DESC, participant.run_id DESC, agent.name, agent.id LIMIT $3`,
+        [scopedRuns, filters.agentId, MONITORING_LIMIT + 1],
+      );
+      await this.options.afterMonitoringPanelRead?.("agent-costs");
+      await client.query("COMMIT");
 
-    return {
+      return {
       filters,
-      runs: runs.rows.map((row) => ({
+      readAt: new Date().toISOString(),
+      runs: retainedRuns.map((row) => ({
         id: String(row.id), workflowName: String(row.workflow_name), status: String(row.status),
         triggerType: String(row.trigger_type), createdAt: iso(row.created_at),
       })),
-      board: board.rows.map((row) => ({
+      board: board.rows.slice(0, MONITORING_LIMIT).map((row) => ({
         id: String(row.id), runId: row.run_id === null ? null : String(row.run_id),
         identifier: String(row.identifier), title: String(row.title), status: String(row.status),
         priority: Number(row.priority), assigneeAgentId: row.assignee_agent_id === null ? null : String(row.assignee_agent_id),
@@ -579,18 +584,31 @@ export class ControlPlaneRepository {
       })),
       trail: messages.rows.slice(0, MONITORING_LIMIT).map(monitoringMessageFromRow),
       trailTruncated: messages.rows.length > MONITORING_LIMIT,
-      agents: agents.rows.map(monitoringAgentFromRow),
-      runCosts: runCosts.rows.map((row) => ({
+      agents: agents.rows.slice(0, MONITORING_LIMIT).map(monitoringAgentFromRow),
+      agentOptions: agentOptions.rows.slice(0, MONITORING_LIMIT).map((row) => ({ id: String(row.id), name: String(row.name) })),
+      runCosts: runCosts.rows.slice(0, RUN_LIMIT).map((row) => ({
         runId: String(row.run_id), workflowName: String(row.workflow_name), tokensIn: String(row.tokens_in),
         tokensOut: String(row.tokens_out), totalTokens: String(row.total_tokens), totalCost: String(row.total_cost),
       })),
-      agentCosts: agentCosts.rows.map((row) => ({
+      agentCosts: agentCosts.rows.slice(0, MONITORING_LIMIT).map((row) => ({
         runId: String(row.run_id), workflowName: String(row.workflow_name), agentId: String(row.agent_id),
         agentName: String(row.agent_name), tokensIn: String(row.tokens_in), tokensOut: String(row.tokens_out),
         totalTokens: String(row.total_tokens), totalCost: String(row.total_cost),
         costLimit: row.cost_limit === null ? null : String(row.cost_limit),
         overCostLimit: Boolean(row.over_cost_limit),
       })),
-    };
+      runsTruncated: runs.rows.length > RUN_LIMIT,
+      boardTruncated: board.rows.length > MONITORING_LIMIT,
+      agentsTruncated: agents.rows.length > MONITORING_LIMIT,
+      runCostsTruncated: runCosts.rows.length > RUN_LIMIT,
+      agentCostsTruncated: agentCosts.rows.length > MONITORING_LIMIT,
+      agentOptionsTruncated: agentOptions.rows.length > MONITORING_LIMIT,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
