@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
@@ -145,9 +144,10 @@ test("credential in CLI output fails without exposing the credential", async () 
     () => adapter.delegate_coding_task("task", workspace),
     (err) => err.code === "credential_exposure" && !JSON.stringify(err).includes(credential)
   );
+  await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
 });
 
-test("credential in workspace diff fails without staging it", async () => {
+test("credential in workspace content fails and removes the workspace", async () => {
   const workspace = await createIsolatedGitWorkspace();
   const credential = "top-secret-test-key";
   await writeFile(path.join(workspace, "leak.txt"), credential);
@@ -157,10 +157,23 @@ test("credential in workspace diff fails without staging it", async () => {
     () => adapter.delegate_coding_task("task", workspace),
     (err) => err.code === "credential_exposure" && !err.message.includes(credential)
   );
-  const staged = execFileSync("git", ["diff", "--cached", "--name-only"], {
-    cwd: workspace,
-  }).toString();
-  assert.equal(staged, "");
+  await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
+});
+
+test("credential in binary workspace content is detected before diff encoding", async () => {
+  const workspace = await createIsolatedGitWorkspace();
+  const credential = "top-secret-test-key";
+  await writeFile(
+    path.join(workspace, "leak.bin"),
+    Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(credential), Buffer.from([0, 3, 4])])
+  );
+  const adapter = adapterForOutput(successfulRun(), credential);
+
+  await assert.rejects(
+    () => adapter.delegate_coding_task("task", workspace),
+    (err) => err.code === "credential_exposure" && !err.message.includes(credential)
+  );
+  await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
 });
 
 function adapterForOutput(output, credential = TEST_CREDENTIAL) {

@@ -4,11 +4,13 @@
 //
 // See ../DECISION.md for why opencode was picked over claude/codex.
 
-import { spawn as nodeSpawn, execFileSync, spawnSync } from "node:child_process";
+import { spawn as nodeSpawn } from "node:child_process";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runSafeGit } from "./git.js";
 import {
   MissingCredentialsError,
   CliFailureError,
@@ -50,6 +52,7 @@ export function createOpenCodeAdapter({
 
     const isolatedState = await createIsolatedState(apiKeyEnvVar, credential, env.PATH);
     try {
+      const baseCommit = resolveBaseCommit(workspace, isolatedState.root);
       const args = [
         "--pure",
         "run",
@@ -69,8 +72,22 @@ export function createOpenCodeAdapter({
         secrets: [credential],
       });
 
-      if (result.secretExposed) {
-        throw new CredentialExposureError("credential detected in coding CLI output");
+      let changedContentExposed;
+      try {
+        changedContentExposed = changedContentContainsSecret(
+          workspace,
+          baseCommit,
+          credential,
+          isolatedState.root
+        );
+      } catch {
+        await removeContaminatedWorkspace(workspace);
+        throw new CliFailureError("failed to inspect workspace for credential exposure");
+      }
+
+      if (result.secretExposed || changedContentExposed) {
+        await removeContaminatedWorkspace(workspace);
+        throw new CredentialExposureError("credential exposure detected; workspace removed");
       }
 
       if (result.timedOut) {
@@ -87,9 +104,10 @@ export function createOpenCodeAdapter({
       }
 
       const usage = result.protocol.result(binary);
-      const rawDiff = computeDiff(workspace);
+      const rawDiff = computeDiff(workspace, baseCommit, isolatedState.root);
       if (containsSecret(rawDiff, [credential])) {
-        throw new CredentialExposureError("credential detected in workspace diff");
+        await removeContaminatedWorkspace(workspace);
+        throw new CredentialExposureError("credential exposure detected; workspace removed");
       }
 
       return {
@@ -436,29 +454,169 @@ function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-function computeDiff(workspace) {
+function resolveBaseCommit(workspace, gitHome) {
   try {
-    const tracked = execFileSync("git", ["diff", "--binary", "HEAD", "--"], {
+    const commit = runSafeGit(["rev-parse", "--verify", "HEAD^{commit}"], {
       cwd: workspace,
-      maxBuffer: MAX_DIFF_BYTES,
-    }).toString();
-    const untracked = execFileSync(
-      "git",
-      ["ls-files", "--others", "--exclude-standard", "-z"],
-      { cwd: workspace, maxBuffer: MAX_DIFF_BYTES }
-    )
+      home: gitHome,
+      maxBuffer: 1024,
+    })
       .toString()
-      .split("\0")
-      .filter(Boolean)
-      .map((file) => {
-        const result = spawnSync(
-          "git",
-          ["diff", "--no-index", "--binary", "--", devNull, file],
-          { cwd: workspace, maxBuffer: MAX_DIFF_BYTES }
-        );
-        if (![0, 1].includes(result.status)) throw new Error("git diff failed");
-        return result.stdout.toString();
+      .trim();
+    if (!/^[0-9a-f]{40,64}$/.test(commit)) throw new Error("invalid commit");
+    return commit;
+  } catch {
+    throw new CliFailureError("workspace is not an initialized Git repository");
+  }
+}
+
+function changedContentContainsSecret(workspace, baseCommit, credential, gitHome) {
+  const secret = Buffer.from(credential);
+  const changedPaths = new Set([
+    ...nulPaths(
+      runSafeGit(
+        [
+          "diff",
+          "--name-only",
+          "-z",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-renames",
+          baseCommit,
+          "--",
+        ],
+        { cwd: workspace, home: gitHome, maxBuffer: MAX_DIFF_BYTES }
+      )
+    ),
+    ...nulPaths(
+      runSafeGit(["ls-files", "--others", "--exclude-standard", "-z"], {
+        cwd: workspace,
+        home: gitHome,
+        maxBuffer: MAX_DIFF_BYTES,
       })
+    ),
+  ]);
+  const baseEntries = baseTreeEntries(workspace, baseCommit, gitHome);
+
+  for (const file of changedPaths) {
+    if (Buffer.from(file).includes(secret)) return true;
+
+    const baseEntry = baseEntries.get(file);
+    if (baseEntry?.type === "blob") {
+      const baseContent = runSafeGit(["cat-file", "blob", baseEntry.oid], {
+        cwd: workspace,
+        home: gitHome,
+        maxBuffer: MAX_DIFF_BYTES,
+      });
+      if (baseContent.includes(secret)) return true;
+    }
+
+    const currentContent = readCurrentContent(workspace, file);
+    if (currentContent?.includes(secret)) return true;
+  }
+  return false;
+}
+
+function baseTreeEntries(workspace, baseCommit, gitHome) {
+  const entries = new Map();
+  const output = runSafeGit(["ls-tree", "-r", "-z", baseCommit, "--"], {
+    cwd: workspace,
+    home: gitHome,
+    maxBuffer: MAX_DIFF_BYTES,
+  }).toString();
+  for (const record of output.split("\0")) {
+    if (!record) continue;
+    const tab = record.indexOf("\t");
+    if (tab === -1) throw new Error("malformed Git tree entry");
+    const [mode, type, oid] = record.slice(0, tab).split(" ");
+    if (!mode || !type || !/^[0-9a-f]{40,64}$/.test(oid)) {
+      throw new Error("malformed Git tree entry");
+    }
+    entries.set(record.slice(tab + 1), { mode, type, oid });
+  }
+  return entries;
+}
+
+function readCurrentContent(workspace, file) {
+  const root = path.resolve(workspace);
+  const target = path.resolve(root, file);
+  const relative = path.relative(root, target);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("changed path escaped workspace");
+  }
+
+  let stat;
+  try {
+    stat = lstatSync(target);
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) return Buffer.from(readlinkSync(target));
+  if (stat.isDirectory()) return null;
+  if (!stat.isFile() || stat.size > MAX_DIFF_BYTES) {
+    throw new Error("unsupported changed file");
+  }
+  return readFileSync(target);
+}
+
+function nulPaths(output) {
+  return output.toString().split("\0").filter(Boolean);
+}
+
+async function removeContaminatedWorkspace(workspace) {
+  const target = path.resolve(workspace);
+  if (target === path.parse(target).root || target === process.cwd()) {
+    throw new CliFailureError("refusing to remove unsafe workspace path");
+  }
+  try {
+    await rm(target, { recursive: true, force: true });
+  } catch {
+    throw new CliFailureError("failed to remove contaminated workspace");
+  }
+}
+
+function computeDiff(workspace, baseCommit, gitHome) {
+  try {
+    const tracked = runSafeGit(
+      [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--binary",
+        baseCommit,
+        "--",
+      ],
+      { cwd: workspace, home: gitHome, maxBuffer: MAX_DIFF_BYTES }
+    ).toString();
+    const untracked = nulPaths(
+      runSafeGit(["ls-files", "--others", "--exclude-standard", "-z"], {
+        cwd: workspace,
+        home: gitHome,
+        maxBuffer: MAX_DIFF_BYTES,
+      })
+    )
+      .map((file) =>
+        runSafeGit(
+          [
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-index",
+            "--binary",
+            "--",
+            devNull,
+            file,
+          ],
+          {
+            cwd: workspace,
+            home: gitHome,
+            allowedExitCodes: [0, 1],
+            maxBuffer: MAX_DIFF_BYTES,
+          }
+        ).toString()
+      )
       .join("");
     return tracked + untracked;
   } catch {

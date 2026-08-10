@@ -4,17 +4,28 @@
 // something to diff against).
 
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runSafeGit } from "./git.js";
 
 export async function createIsolatedGitWorkspace({ prefix = "coding-adapter-" } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));
-  execFileSync("git", ["init", "-q"], { cwd: dir });
-  execFileSync("git", ["config", "user.email", "spike@orbitflow.local"], { cwd: dir });
-  execFileSync("git", ["config", "user.name", "orbitflow-spike"], { cwd: dir });
+  runSafeGit(["init", "-q"], { cwd: dir, home: dir });
+  const gitHome = path.join(dir, ".git", "isolated-home");
   await writeFile(path.join(dir, ".gitkeep"), "");
-  execFileSync("git", ["add", "-A"], { cwd: dir });
-  execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: dir });
+  runSafeGit(["add", "-A"], { cwd: dir, home: gitHome });
+  runSafeGit(
+    [
+      "-c",
+      "user.email=spike@orbitflow.local",
+      "-c",
+      "user.name=orbitflow-spike",
+      "commit",
+      "-q",
+      "-m",
+      "seed",
+    ],
+    { cwd: dir, home: gitHome }
+  );
   return dir;
 }

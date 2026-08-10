@@ -86,12 +86,17 @@ without building a plugin framework now.
   `SIGKILL` after 2s if still alive).
 - `MalformedOutputError` -- exit 0 but stdout didn't parse as the expected
   NDJSON event stream, has invalid usage, or lacks a terminal completed step.
-- `CredentialExposureError` -- the evaluator key appeared in CLI output or the
-  workspace diff. No affected output is returned.
+- `CredentialExposureError` -- the evaluator key appeared in CLI output or
+  changed workspace content. No affected output is returned.
 
 The protocol stream is parsed in full while the presentation log remains
 bounded. Returned logs, diffs, error messages, and error details are redacted,
-and diff generation does not stage changes or write Git blobs.
+and diff generation does not stage changes or write Git blobs. The adapter
+snapshots the pre-run commit, scans raw bytes from every changed working-tree
+file and affected base blob before Git can encode a binary patch, and removes
+the isolated workspace if it detects the credential. Every Git subprocess uses
+a secret-free environment with host configuration, prompting, hooks, external
+diffs, text conversion, pagers, and fsmonitor disabled.
 
 ## Proof
 
@@ -105,4 +110,5 @@ workspace. Run without the key to see the missing-credential failure path.
 `npm test` in `coding-adapter/` uses only fakes and makes no live provider calls.
 It covers pure command construction, minimal environment containment, state
 cleanup, complete streaming usage parsing, bounded/redacted output, unstaged
-diffs, protocol validation, timeouts, and structured failure mapping.
+diffs, binary credential detection, isolated Git behavior, protocol validation,
+timeouts, and structured failure mapping.
