@@ -552,6 +552,29 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       const indexNames = new Set(indexes.rows.map((row) => row.indexname));
       for (const name of requiredIndexes) assert.ok(indexNames.has(name), name);
 
+      const invocationRunIndex = await client.query(`
+        SELECT index_class.relname AS index_name,
+               json_agg(attribute.attname ORDER BY key_column.ordinality) AS key_columns
+        FROM pg_index AS index_metadata
+        JOIN pg_class AS index_class ON index_class.oid = index_metadata.indexrelid
+        JOIN pg_class AS table_class ON table_class.oid = index_metadata.indrelid
+        JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace
+        CROSS JOIN LATERAL unnest(index_metadata.indkey)
+          WITH ORDINALITY AS key_column(attribute_number, ordinality)
+        JOIN pg_attribute AS attribute
+          ON attribute.attrelid = table_class.oid
+         AND attribute.attnum = key_column.attribute_number
+        WHERE namespace.nspname = 'public'
+          AND table_class.relname = 'agent_tool_invocations'
+          AND index_class.relname = 'idx_agent_tool_invocations_run_id'
+          AND index_metadata.indisvalid
+        GROUP BY index_class.relname
+      `);
+      assert.deepEqual(invocationRunIndex.rows, [{
+        index_name: "idx_agent_tool_invocations_run_id",
+        key_columns: ["run_id"],
+      }]);
+
       const triggers = await client.query(`
         SELECT tgname
         FROM pg_trigger
