@@ -191,7 +191,7 @@ compose exec -T engine node scripts/opencode-structural-proof.mjs | grep -Fx "Op
 # env selects a fake OpenCode executable, which asserts it receives only the
 # FACT-3 minimal child environment and spends no provider credits.
 adapter_output="$(compose --profile coding-adapter run --rm coding-adapter "create hello.txt containing hello")"
-node -e 'const result = JSON.parse(process.argv[1]); if (result.usage?.costUsd !== 0) throw new Error("fake adapter child reported nonzero cost");' "$adapter_output"
+node -e 'const line = process.argv[1].split("\n").findLast((candidate) => candidate.startsWith("{")); if (!line) throw new Error("coding-adapter wrapper did not emit a JSON result"); const result = JSON.parse(line); if (result.usage?.costUsd !== 0) throw new Error("fake adapter child reported nonzero cost");' "$adapter_output"
 
 no_op_output="$(compose run --rm migrate 2>&1)"
 if [[ "$no_op_output" != *"No migrations to apply."* ]]; then
