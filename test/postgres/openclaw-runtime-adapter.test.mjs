@@ -61,13 +61,18 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
   const pool = new Pool({ connectionString: databaseUrl, max: 6 });
   const runtimeRoot = await mkdtemp(path.join(tmpdir(), "orbitflow-fact11-"));
   const stateDirectory = path.join(runtimeRoot, "state");
-  const proofCredential = `proof-${randomUUID()}`;
+  const proofCredential = `gateway-proof-${randomUUID()}`;
+  const exfiltrationSentinel = `provider-proof-${randomUUID()}`;
+  process.env.ORBITFLOW_EXFIL_SENTINEL = exfiltrationSentinel;
   const adapter = new OpenClawRuntimeAdapter({
     pool,
     runtimeRoot,
     openClawCommand: process.execPath,
     openClawCommandArguments: [fixture],
-    providerEnvironment: { OPENROUTER_API_KEY: proofCredential },
+    gatewayEnvironment: {
+      OPENCLAW_GATEWAY_URL: "ws://127.0.0.1:18789",
+      OPENCLAW_GATEWAY_TOKEN: proofCredential,
+    },
     wakeTimeoutMs: 2_000,
     terminationGraceMs: 100,
   });
@@ -127,6 +132,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
   }
 
   t.after(async () => {
+    delete process.env.ORBITFLOW_EXFIL_SENTINEL;
     await pool.end();
     await rm(runtimeRoot, { recursive: true, force: true });
   });
@@ -223,7 +229,21 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.ok(
       (await requests())
         .slice(beforeCredentiallessSync)
-        .every((request) => request.credentialPresent === false),
+        .every((request) => request.gatewayCredentialPresent === false),
+    );
+  });
+
+  await t.test("rejects arbitrary child environment passthrough", () => {
+    assert.throws(
+      () =>
+        new OpenClawRuntimeAdapter({
+          pool,
+          runtimeRoot,
+          openClawCommand: process.execPath,
+          openClawCommandArguments: [fixture],
+          gatewayEnvironment: { OPENROUTER_API_KEY: exfiltrationSentinel },
+        }),
+      /unsupported variables: OPENROUTER_API_KEY/,
     );
   });
 
@@ -234,7 +254,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       {
         mode: "success",
         output: completedOutput("memory-run-one"),
-        usage: { input: 30, output: 12, total: 42, computedCost: "0.0042" },
+        usage: { input: 30, output: 12, total: 42, cost: { total: "0.0042" } },
       },
     ]);
     const first = await adapter.wakeAgent({
@@ -277,15 +297,25 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       agentRequests.at(-1).arguments[agentRequests.at(-1).arguments.indexOf("--session-id") + 1],
       /^orbitflow-[a-f0-9]{32}$/,
     );
-    assert.ok(agentRequests.every((request) => request.credentialPresent));
-    assert.ok(!(await readFile(path.join(stateDirectory, "fake-requests.ndjson"), "utf8")).includes(proofCredential));
+    assert.ok(agentRequests.every((request) => request.gatewayCredentialPresent));
+    assert.ok(
+      (await requests()).every(
+        (request) => request.forbiddenEnvironmentPresent.length === 0,
+      ),
+    );
+    const retainedRequests = await readFile(
+      path.join(stateDirectory, "fake-requests.ndjson"),
+      "utf8",
+    );
+    assert.ok(!retainedRequests.includes(proofCredential));
+    assert.ok(!retainedRequests.includes(exfiltrationSentinel));
 
     const costs = await pool.query(
       `SELECT run_id::text, agent_id::text, model, tokens_in::int,
               tokens_out::int, computed_cost::text
        FROM cost_events
        WHERE run_id = ANY($1::bigint[])
-       ORDER BY id`,
+       ORDER BY run_id`,
       [[runOne, runTwo]],
     );
     assert.equal(costs.rowCount, 2);
@@ -311,7 +341,10 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     const runId = await createRun("malformed-retry-success");
     await createTicket(runId, 3, "malformed retry");
     await resetPlan([
-      { mode: "malformed", final: "not json" },
+      {
+        mode: "malformed",
+        final: `\`\`\`json\n${JSON.stringify(completedOutput("fenced-must-retry"))}\n\`\`\``,
+      },
       { mode: "success", output: completedOutput("retry-success") },
     ]);
     const before = (await requests()).length;
@@ -333,66 +366,227 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.doesNotMatch(retriedRequests[0].message, /Structured-output retry/);
     assert.match(retriedRequests[1].message, /This is the only retry/);
     const errors = await pool.query(
-      "SELECT count(*)::int AS count FROM messages WHERE run_id = $1",
+      `SELECT count(*)::int AS count FROM messages
+       WHERE run_id = $1 AND recipient = 'workflow-engine'`,
       [runId],
     );
     assert.equal(errors.rows[0].count, 0);
   });
 
-  await t.test("accepts the pinned legacy envelope and rejects false zero-exit completion", async () => {
-    const completedRunId = await createRun("legacy-completion");
-    await createTicket(completedRunId, 7, "legacy completion");
+  await t.test("accepts only the pinned gateway envelope and rejects false success", async () => {
+    const completedRunId = await createRun("gateway-completion");
+    await createTicket(completedRunId, 7, "gateway completion");
     await resetPlan([
       {
-        mode: "legacy",
-        output: completedOutput("legacy-completion"),
-        usage: { input: 21, output: 9, total: 30, computedCost: "0.003" },
+        mode: "success",
+        output: completedOutput("gateway-completion"),
+        usage: { input: 21, output: 9, total: 30, cost: { total: "0.003" } },
       },
     ]);
     const completed = await adapter.wakeAgent({
       runId: completedRunId,
       agentId,
-      invocationId: "legacy-completion",
-      nodeId: "legacy",
-      nodeSystemPrompt: "Complete through the pinned legacy envelope.",
+      invocationId: "gateway-completion",
+      nodeId: "gateway",
+      nodeSystemPrompt: "Complete through the pinned gateway envelope.",
     });
     assert.equal(completed.completion.status, "stop");
-    assert.deepEqual(completed.output, completedOutput("legacy-completion"));
+    assert.deepEqual(completed.output, completedOutput("gateway-completion"));
 
-    const blockedRunId = await createRun("false-zero-exit");
-    await createTicket(blockedRunId, 8, "false zero exit");
-    await resetPlan([
+    const rejected = [
       {
-        mode: "raw",
-        envelope: {
-          payloads: [{ text: JSON.stringify(completedOutput("must-not-pass")) }],
-          meta: {
-            stopReason: "stop",
-            livenessState: "blocked",
-            error: { kind: "provider_failure" },
-            agentMeta: { usage: { input: 1, output: 1, total: 2 } },
+        label: "blocked",
+        expectedCode: "openclaw_turn_failed",
+        plan: { mode: "success", livenessState: "blocked" },
+      },
+      {
+        label: "error",
+        expectedCode: "openclaw_turn_failed",
+        plan: { mode: "success", error: { kind: "provider_failure" } },
+      },
+      {
+        label: "aborted",
+        expectedCode: "openclaw_turn_failed",
+        plan: { mode: "success", aborted: true },
+      },
+      {
+        label: "replay-invalid",
+        expectedCode: "openclaw_turn_failed",
+        plan: { mode: "success", replayInvalid: true },
+      },
+      {
+        label: "missing-provider",
+        expectedCode: "openclaw_turn_failed",
+        plan: { mode: "success", provider: null },
+      },
+      {
+        label: "string-usage",
+        expectedCode: "openclaw_usage_invalid",
+        plan: {
+          mode: "success",
+          usage: { input: "1", output: 1, total: 2 },
+        },
+      },
+      {
+        label: "unsupported",
+        expectedCode: "openclaw_turn_failed",
+        plan: {
+          mode: "raw",
+          envelope: {
+            ok: true,
+            status: "ok",
+            final: JSON.stringify(completedOutput("must-not-pass")),
+            usage: { input: 1, output: 1, total: 2 },
+            sessionId: "stale",
           },
         },
+      },
+    ];
+    for (const [index, scenario] of rejected.entries()) {
+      const runId = await createRun(`false-success-${scenario.label}`);
+      await createTicket(runId, 8 + index, `false success ${scenario.label}`);
+      await resetPlan([{ ...scenario.plan, output: completedOutput("must-not-pass") }]);
+      await assert.rejects(
+        () =>
+          adapter.wakeAgent({
+            runId,
+            agentId,
+            invocationId: `false-success-${scenario.label}`,
+            nodeId: "adversarial",
+            nodeSystemPrompt: "A zero exit is not sufficient.",
+          }),
+        (error) =>
+          error instanceof RuntimeAdapterError && error.code === scenario.expectedCode,
+      );
+      const durableError = await pool.query(
+        "SELECT payload FROM messages WHERE run_id = $1",
+        [runId],
+      );
+      assert.equal(durableError.rowCount, 1);
+      assert.equal(durableError.rows[0].payload.code, scenario.expectedCode);
+    }
+  });
+
+  await t.test("replays one durable invocation without executing or charging twice", async () => {
+    const runId = await createRun("durable-replay");
+    const ticketId = await createTicket(runId, 20, "durable replay");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("durable-replay"),
+        usage: { input: 17, output: 8, total: 25, cost: { total: "0.0025" } },
+      },
+    ]);
+    const wake = {
+      runId,
+      agentId,
+      invocationId: "durable-replay",
+      nodeId: "replay",
+      nodeSystemPrompt: "Execute this logical invocation once.",
+      ticketIds: [ticketId],
+    };
+    const before = (await requests()).length;
+    const results = await Promise.all([
+      adapter.wakeAgent(wake),
+      adapter.wakeAgent(wake),
+    ]);
+    assert.deepEqual(
+      results.map((result) => result.replayed).sort(),
+      [false, true],
+    );
+    assert.equal(results[0].costEventId, results[1].costEventId);
+    const restartedAdapter = new OpenClawRuntimeAdapter({
+      pool,
+      runtimeRoot,
+      openClawCommand: process.execPath,
+      openClawCommandArguments: [fixture],
+      gatewayEnvironment: {
+        OPENCLAW_GATEWAY_URL: "ws://127.0.0.1:18789",
+        OPENCLAW_GATEWAY_TOKEN: proofCredential,
+      },
+      wakeTimeoutMs: 2_000,
+      terminationGraceMs: 100,
+    });
+    const restartedReplay = await restartedAdapter.wakeAgent(wake);
+    assert.equal(restartedReplay.replayed, true);
+    assert.equal(restartedReplay.costEventId, results[0].costEventId);
+    assert.equal(
+      (await requests()).slice(before).filter((request) => request.command === "agent").length,
+      1,
+    );
+    const persisted = await pool.query(
+      `SELECT count(*)::int AS cost_count,
+              max(tokens_in)::int AS tokens_in,
+              max(tokens_out)::int AS tokens_out
+       FROM cost_events WHERE run_id = $1`,
+      [runId],
+    );
+    assert.deepEqual(persisted.rows[0], {
+      cost_count: 1,
+      tokens_in: 17,
+      tokens_out: 8,
+    });
+    const aggregate = await pool.query(
+      "SELECT total_tokens::int, total_cost::text FROM workflow_runs WHERE id = $1",
+      [runId],
+    );
+    assert.deepEqual(aggregate.rows[0], {
+      total_tokens: 25,
+      total_cost: "0.00250000",
+    });
+    const receipt = await pool.query(
+      `SELECT count(*)::int AS count FROM messages
+       WHERE run_id = $1
+         AND payload->>'kind' = 'openclaw_invocation_result'`,
+      [runId],
+    );
+    assert.equal(receipt.rows[0].count, 1);
+
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          ...wake,
+          nodeSystemPrompt: "Changed input must not reuse the invocation id.",
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError &&
+        error.code === "openclaw_invocation_conflict",
+    );
+    assert.equal(
+      (await requests()).slice(before).filter((request) => request.command === "agent").length,
+      1,
+    );
+  });
+
+  await t.test("rejects output whose session identity does not match the requested session", async () => {
+    const runId = await createRun("session-mismatch");
+    await createTicket(runId, 21, "session mismatch");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("stale-output"),
+        reportedSessionId: "stale-session-id",
       },
     ]);
     await assert.rejects(
       () =>
         adapter.wakeAgent({
-          runId: blockedRunId,
+          runId,
           agentId,
-          invocationId: "false-zero-exit",
-          nodeId: "blocked",
-          nodeSystemPrompt: "A zero exit is not sufficient.",
+          invocationId: "session-mismatch",
+          nodeId: "session-binding",
+          nodeSystemPrompt: "Reject stale output.",
         }),
       (error) =>
-        error instanceof RuntimeAdapterError && error.code === "openclaw_turn_failed",
+        error instanceof RuntimeAdapterError &&
+        error.code === "openclaw_session_mismatch",
     );
     const durableError = await pool.query(
       "SELECT payload FROM messages WHERE run_id = $1",
-      [blockedRunId],
+      [runId],
     );
     assert.equal(durableError.rowCount, 1);
-    assert.equal(durableError.rows[0].payload.code, "openclaw_turn_failed");
+    assert.equal(durableError.rows[0].payload.code, "openclaw_session_mismatch");
   });
 
   await t.test("inserts one durable FACT-9 system error after two malformed outputs", async () => {
@@ -477,7 +671,10 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.equal(message.rows[0].payload.code, "openclaw_timeout");
     assert.equal(message.rows[0].payload.attempts, 1);
     const abort = (await requests()).filter((request) => request.command === "sessions-abort").at(-1);
-    assert.match(abort.sessionKey, new RegExp(`^agent:orbitflow-${agentId}:orbitflow-`));
+    assert.match(
+      abort.sessionKey,
+      new RegExp(`^agent:orbitflow-${agentId}:explicit:orbitflow-`),
+    );
   });
 
   await t.test("explicit termination kills the active session and surfaces a durable error", async () => {
@@ -513,6 +710,9 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.equal(message.rowCount, 1);
     assert.equal(message.rows[0].payload.code, "openclaw_terminated");
     const abort = (await requests()).filter((request) => request.command === "sessions-abort").at(-1);
-    assert.match(abort.sessionKey, new RegExp(`^agent:orbitflow-${agentId}:orbitflow-`));
+    assert.match(
+      abort.sessionKey,
+      new RegExp(`^agent:orbitflow-${agentId}:explicit:orbitflow-`),
+    );
   });
 });

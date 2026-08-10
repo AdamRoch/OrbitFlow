@@ -13,6 +13,15 @@ const agentsPath = path.join(stateDirectory, "fake-agents.json");
 const planPath = path.join(stateDirectory, "fake-plan.json");
 const requestsPath = path.join(stateDirectory, "fake-requests.ndjson");
 const counterPath = path.join(stateDirectory, "fake-turn-counter.txt");
+const sessionsPath = path.join(stateDirectory, "fake-sessions.json");
+const forbiddenEnvironmentNames = [
+  "OPENROUTER_API_KEY",
+  "ORBITFLOW_EXFIL_SENTINEL",
+  "AWS_SECRET_ACCESS_KEY",
+  "DATABASE_URL",
+  "GITHUB_TOKEN",
+  "NPM_TOKEN",
+];
 
 async function readJson(file, fallback) {
   try {
@@ -29,7 +38,13 @@ async function record(command, details = {}) {
     `${JSON.stringify({
       command,
       arguments: arguments_,
-      credentialPresent: Boolean(process.env.OPENROUTER_API_KEY),
+      gatewayCredentialPresent: Boolean(
+        process.env.OPENCLAW_GATEWAY_TOKEN || process.env.OPENCLAW_GATEWAY_PASSWORD,
+      ),
+      gatewayUrlPresent: Boolean(process.env.OPENCLAW_GATEWAY_URL),
+      forbiddenEnvironmentPresent: forbiddenEnvironmentNames.filter(
+        (name) => process.env[name] !== undefined,
+      ),
       ...details,
     })}\n`,
   );
@@ -50,6 +65,21 @@ if (arguments_[0] === "agents" && arguments_[1] === "list") {
   const agents = await readJson(agentsPath, []);
   await record("agents-list");
   console.log(JSON.stringify([{ id: "main", isDefault: true }, ...agents]));
+  process.exit(0);
+}
+
+if (arguments_[0] === "sessions") {
+  const sessions = await readJson(sessionsPath, []);
+  const agentId = option("--agent");
+  await record("sessions-list", { agentId });
+  console.log(
+    JSON.stringify({
+      path: path.join(stateDirectory, "agents", agentId, "sessions", "sessions.json"),
+      count: sessions.length,
+      activeMinutes: null,
+      sessions: sessions.filter((session) => session.agentId === agentId),
+    }),
+  );
   process.exit(0);
 }
 
@@ -150,34 +180,51 @@ if (arguments_[0] === "agent") {
     process.exit(action.exitCode ?? 0);
   }
 
+  const requestedSessionId = option("--session-id");
+  const agentId = option("--agent");
+  const sessionKey = `agent:${agentId}:explicit:${requestedSessionId}`;
+  const internalSessionId = action.sessionId ?? `internal-${requestedSessionId}`;
+  const sessions = await readJson(sessionsPath, []);
+  const otherSessions = sessions.filter((session) => session.key !== sessionKey);
+  otherSessions.push({
+    key: sessionKey,
+    sessionId: internalSessionId,
+    agentId,
+    updatedAt: Date.now(),
+  });
+  await writeFile(sessionsPath, `${JSON.stringify(otherSessions, null, 2)}\n`);
+
   const final =
     action.mode === "malformed"
       ? action.final ?? "this is not json"
       : JSON.stringify(action.output);
-  const envelope =
-    action.mode === "legacy"
-      ? {
-          payloads: [{ text: final }],
-          meta: {
-            stopReason: "stop",
-            livenessState: "complete",
-            agentMeta: {
-              usage: action.usage ?? { input: 11, output: 7, total: 18 },
-              provider: "openrouter",
-              model: action.model ?? "openrouter/openai/gpt-4.1-mini",
-              sessionId: `fake-session-${turn + 1}`,
-            },
-          },
-        }
-      : {
-      ok: true,
-      status: "ok",
-      final,
-      usage: action.usage ?? { input: 11, output: 7, total: 18, computedCost: "0.0012" },
-      provider: "openrouter",
-      model: action.model ?? "openrouter/openai/gpt-4.1-mini",
-      sessionId: `fake-session-${turn + 1}`,
-        };
+  const stopReason = action.stopReason ?? "stop";
+  const envelope = {
+    runId: action.runId ?? `fake-run-${turn + 1}`,
+    status: action.status ?? "ok",
+    summary: action.summary ?? "completed",
+    result: {
+      payloads: [{ text: final, mediaUrl: null }],
+      meta: {
+        aborted: action.aborted ?? false,
+        replayInvalid: action.replayInvalid ?? false,
+        livenessState: action.livenessState ?? "working",
+        stopReason,
+        ...(action.error === undefined ? {} : { error: action.error }),
+        completion: {
+          stopReason,
+          finishReason: action.finishReason ?? stopReason,
+        },
+        agentMeta: {
+          usage: action.usage ?? { input: 11, output: 7, total: 18 },
+          lastCallUsage: action.lastCallUsage ?? { input: 3, output: 2, total: 5 },
+          provider: Object.hasOwn(action, "provider") ? action.provider : "openrouter",
+          model: action.model ?? "openrouter/openai/gpt-4.1-mini",
+          sessionId: action.reportedSessionId ?? internalSessionId,
+        },
+      },
+    },
+  };
   console.log(JSON.stringify(envelope));
   process.exit(0);
 }

@@ -2,11 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Pool, QueryResultRow } from "pg";
+import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
   insertMessage,
   type JsonObject,
   type JsonValue,
+  type Queryable,
 } from "../postgres/message-bus.ts";
 
 export const EXPECTED_OPENCLAW_VERSION = "2026.4.15";
@@ -17,6 +18,11 @@ const MIN_OPENCLAW_WAKE_TIMEOUT_MS = 50;
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 const OPENCLAW_REF = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const OPENCLAW_GATEWAY_ENVIRONMENT = new Set([
+  "OPENCLAW_GATEWAY_URL",
+  "OPENCLAW_GATEWAY_TOKEN",
+  "OPENCLAW_GATEWAY_PASSWORD",
+]);
 const FIXED_OUTPUT_CONTRACT =
   '{"artifact":{},"handoff_brief":"string","events":[]}';
 
@@ -30,8 +36,11 @@ type ErrorCode =
   | "openclaw_timeout"
   | "openclaw_malformed_output"
   | "openclaw_usage_invalid"
+  | "openclaw_session_mismatch"
   | "openclaw_terminated"
   | "openclaw_termination_failed"
+  | "openclaw_invocation_conflict"
+  | "openclaw_invocation_indeterminate"
   | "runtime_persistence_failed";
 
 export class RuntimeAdapterError extends Error {
@@ -129,6 +138,7 @@ export interface WakeAgentResult {
   completion: RuntimeCompletion;
   attempts: number;
   costEventId: string;
+  replayed: boolean;
 }
 
 export interface SynchronizedAgent {
@@ -146,7 +156,7 @@ export interface RuntimeAdapterOptions {
   expectedOpenClawVersion?: string;
   wakeTimeoutMs?: number;
   terminationGraceMs?: number;
-  providerEnvironment?: Readonly<Record<string, string | undefined>>;
+  gatewayEnvironment?: Readonly<Record<string, string | undefined>>;
 }
 
 interface CommandResult {
@@ -168,6 +178,16 @@ interface ParsedTurn {
   output: RuntimeOutput;
   usage: RuntimeUsage;
   completion: Omit<RuntimeCompletion, "model"> & { model: string | null };
+}
+
+interface RuntimeInvocation {
+  invocationKey: string;
+  requestFingerprint: string;
+  costEventId: string;
+}
+
+interface InvocationReceiptRow extends QueryResultRow {
+  payload: JsonObject;
 }
 
 function positiveId(value: string | number | bigint, field: string): string {
@@ -242,10 +262,9 @@ function parseOutputContract(text: unknown): RuntimeOutput {
   }
 
   const trimmed = text.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fenced ? fenced[1].trim() : trimmed);
+    parsed = JSON.parse(trimmed);
   } catch {
     throw new MalformedOutputError("Agent final output is not strict JSON");
   }
@@ -272,15 +291,15 @@ function parseOutputContract(text: unknown): RuntimeOutput {
   };
 }
 
-function usageInteger(value: unknown, field: string): number {
-  const number = Number(value ?? 0);
-  if (!Number.isSafeInteger(number) || number < 0) {
+function usageInteger(value: unknown, field: string, optional = false): number {
+  if (value === undefined && optional) return 0;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new RuntimeAdapterError(
       "openclaw_usage_invalid",
       `OpenClaw returned invalid usage.${field}`,
     );
   }
-  return number;
+  return value;
 }
 
 function decimal(value: unknown): string {
@@ -302,25 +321,25 @@ function normalizeUsage(raw: unknown): RuntimeUsage {
       "OpenClaw omitted per-turn token usage",
     );
   }
-  const input = usageInteger(raw.input ?? raw.inputTokens, "input");
-  const output = usageInteger(raw.output ?? raw.outputTokens, "output");
-  const cacheRead = usageInteger(raw.cacheRead ?? raw.cacheReadTokens, "cacheRead");
-  const cacheWrite = usageInteger(raw.cacheWrite ?? raw.cacheWriteTokens, "cacheWrite");
-  const total = usageInteger(raw.total ?? input + output, "total");
+  const input = usageInteger(raw.input, "input");
+  const output = usageInteger(raw.output, "output");
+  const cacheRead = usageInteger(raw.cacheRead, "cacheRead", true);
+  const cacheWrite = usageInteger(raw.cacheWrite, "cacheWrite", true);
+  const total = usageInteger(raw.total, "total");
   if (total === 0 || total < input + output) {
     throw new RuntimeAdapterError(
       "openclaw_usage_invalid",
       "OpenClaw returned inconsistent or zero total tokens",
     );
   }
-  const cost = isObject(raw.cost) ? raw.cost.total ?? raw.cost.totalCost : undefined;
+  const cost = isObject(raw.cost) ? raw.cost.total : undefined;
   return {
     input,
     output,
     cacheRead,
     cacheWrite,
     total,
-    computedCost: decimal(raw.computedCost ?? raw.totalCost ?? cost),
+    computedCost: decimal(cost),
   };
 }
 
@@ -341,70 +360,65 @@ function parseTurn(result: CommandResult): ParsedTurn {
     throw new RuntimeAdapterError("openclaw_turn_failed", "OpenClaw envelope must be an object");
   }
 
-  if (Object.hasOwn(envelope, "ok") && Object.hasOwn(envelope, "status")) {
-    if (result.exitCode !== 0 || envelope.ok !== true || envelope.status !== "ok") {
-      throw new RuntimeAdapterError(
-        "openclaw_turn_failed",
-        "OpenClaw stable turn envelope did not complete",
-        {
-          exitCode: result.exitCode,
-          status: typeof envelope.status === "string" ? envelope.status : null,
-        },
-      );
-    }
-    const payloads = Array.isArray(envelope.payloads) ? envelope.payloads : [];
-    const firstPayload = isObject(payloads[0]) ? payloads[0] : {};
-    return {
-      output: parseOutputContract(envelope.final ?? firstPayload.text),
-      usage: normalizeUsage(envelope.usage),
-      completion: {
-        status: "ok",
-        exitCode: 0,
-        sessionId: typeof envelope.sessionId === "string" ? envelope.sessionId : null,
-        provider: typeof envelope.provider === "string" ? envelope.provider : null,
-        model: typeof envelope.model === "string" ? envelope.model : null,
-      },
-    };
-  }
-
-  const meta = isObject(envelope.meta) ? envelope.meta : null;
-  if (!meta) {
-    throw new RuntimeAdapterError(
-      "openclaw_turn_failed",
-      "OpenClaw legacy turn envelope omitted meta",
-    );
-  }
-  const completion = isObject(meta.completion) ? meta.completion : {};
-  const stopReason = meta.stopReason ?? completion.finishReason ?? null;
+  const turn = isObject(envelope.result) ? envelope.result : null;
+  const meta = turn && isObject(turn.meta) ? turn.meta : null;
+  const completion = meta && isObject(meta.completion) ? meta.completion : null;
+  const agentMeta = meta && isObject(meta.agentMeta) ? meta.agentMeta : null;
+  const payloads = turn && Array.isArray(turn.payloads) ? turn.payloads : null;
+  const firstPayload = payloads?.length === 1 && isObject(payloads[0]) ? payloads[0] : null;
+  const envelopeKeys = Object.keys(envelope).sort().join(",");
+  const turnKeys = turn ? Object.keys(turn).sort().join(",") : "";
+  const payloadKeys = firstPayload ? Object.keys(firstPayload).sort().join(",") : "";
   if (
     result.exitCode !== 0 ||
-    meta.error ||
-    meta.aborted === true ||
-    meta.livenessState === "blocked" ||
-    stopReason !== "stop"
+    envelopeKeys !== "result,runId,status,summary" ||
+    envelope.status !== "ok" ||
+    envelope.summary !== "completed" ||
+    typeof envelope.runId !== "string" ||
+    envelope.runId.trim() === "" ||
+    !turn ||
+    !meta ||
+    !completion ||
+    !agentMeta ||
+    !firstPayload ||
+    turnKeys !== "meta,payloads" ||
+    payloadKeys !== "mediaUrl,text" ||
+    firstPayload.mediaUrl !== null ||
+    meta.aborted !== false ||
+    meta.replayInvalid !== false ||
+    meta.livenessState !== "working" ||
+    meta.stopReason !== "stop" ||
+    completion.stopReason !== "stop" ||
+    completion.finishReason !== "stop" ||
+    typeof agentMeta.sessionId !== "string" ||
+    agentMeta.sessionId.trim() === "" ||
+    typeof agentMeta.provider !== "string" ||
+    agentMeta.provider.trim() === "" ||
+    typeof agentMeta.model !== "string" ||
+    agentMeta.model.trim() === "" ||
+    Object.hasOwn(meta, "error")
   ) {
     throw new RuntimeAdapterError(
       "openclaw_turn_failed",
-      "OpenClaw legacy turn envelope did not complete",
+      "OpenClaw 2026.4.15 gateway turn envelope did not complete",
       {
         exitCode: result.exitCode,
-        livenessState: typeof meta.livenessState === "string" ? meta.livenessState : null,
-        stopReason: typeof stopReason === "string" ? stopReason : null,
+        status: typeof envelope.status === "string" ? envelope.status : null,
+        livenessState:
+          meta && typeof meta.livenessState === "string" ? meta.livenessState : null,
+        stopReason: meta && typeof meta.stopReason === "string" ? meta.stopReason : null,
       },
     );
   }
-  const payloads = Array.isArray(envelope.payloads) ? envelope.payloads : [];
-  const firstPayload = isObject(payloads[0]) ? payloads[0] : {};
-  const agentMeta = isObject(meta.agentMeta) ? meta.agentMeta : {};
   return {
     output: parseOutputContract(firstPayload.text),
-    usage: normalizeUsage(agentMeta.usage ?? agentMeta.lastCallUsage),
+    usage: normalizeUsage(agentMeta.usage),
     completion: {
       status: "stop",
       exitCode: 0,
-      sessionId: typeof agentMeta.sessionId === "string" ? agentMeta.sessionId : null,
-      provider: typeof agentMeta.provider === "string" ? agentMeta.provider : null,
-      model: typeof agentMeta.model === "string" ? agentMeta.model : null,
+      sessionId: agentMeta.sessionId,
+      provider: agentMeta.provider,
+      model: agentMeta.model,
     },
   };
 }
@@ -439,7 +453,33 @@ function runtimeSession(ref: string, input: WakeAgentInput, invocationId: string
     .digest("hex")
     .slice(0, 32);
   const sessionId = `orbitflow-${digest}`;
-  return { sessionId, sessionKey: `agent:${ref}:${sessionId}` };
+  return { sessionId, sessionKey: `agent:${ref}:explicit:${sessionId}` };
+}
+
+function runtimeInvocation(
+  input: WakeAgentInput,
+  runId: string,
+  agentId: string,
+  invocationId: string,
+): RuntimeInvocation {
+  const invocationKey = createHash("sha256")
+    .update(stableJson({ runId, agentId, invocationId }))
+    .digest("hex");
+  const requestFingerprint = createHash("sha256")
+    .update(
+      stableJson({
+        nodeId: input.nodeId,
+        nodeSystemPrompt: input.nodeSystemPrompt,
+        ticketIds: [...(input.ticketIds ?? [])].map(String).sort(),
+        upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
+      }),
+    )
+    .digest("hex");
+  const positive =
+    (BigInt(`0x${invocationKey.slice(0, 16)}`) &
+      ((BigInt(1) << BigInt(63)) - BigInt(1))) +
+    BigInt(1);
+  return { invocationKey, requestFingerprint, costEventId: (-positive).toString() };
 }
 
 function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -452,15 +492,18 @@ function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-function safeBaseEnvironment(): NodeJS.ProcessEnv {
-  const allowed = ["HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TMPDIR", "TZ"] as const;
+function safeBaseEnvironment(runtimeRoot: string): NodeJS.ProcessEnv {
+  const allowed = ["LANG", "LC_ALL", "PATH", "TMPDIR", "TZ"] as const;
   return {
     ...(Object.fromEntries(
       allowed.flatMap((name) =>
         process.env[name] === undefined ? [] : [[name, process.env[name]]],
       ),
     ) as NodeJS.ProcessEnv),
-    NODE_ENV: process.env.NODE_ENV,
+    HOME: path.join(runtimeRoot, "home"),
+    XDG_CACHE_HOME: path.join(runtimeRoot, "home", ".cache"),
+    XDG_CONFIG_HOME: path.join(runtimeRoot, "home", ".config"),
+    XDG_DATA_HOME: path.join(runtimeRoot, "home", ".local", "share"),
   };
 }
 
@@ -469,6 +512,83 @@ function safeError(error: unknown): RuntimeAdapterError {
   return new RuntimeAdapterError("openclaw_turn_failed", "OpenClaw runtime operation failed", {
     errorName: error instanceof Error ? error.name : "unknown",
   });
+}
+
+function storedUsage(value: unknown): RuntimeUsage {
+  if (!isObject(value)) {
+    throw new RuntimeAdapterError(
+      "runtime_persistence_failed",
+      "Stored OpenClaw invocation usage is invalid",
+    );
+  }
+  const input = usageInteger(value.input, "input");
+  const output = usageInteger(value.output, "output");
+  const cacheRead = usageInteger(value.cacheRead, "cacheRead");
+  const cacheWrite = usageInteger(value.cacheWrite, "cacheWrite");
+  const total = usageInteger(value.total, "total");
+  if (total === 0 || total < input + output) {
+    throw new RuntimeAdapterError(
+      "runtime_persistence_failed",
+      "Stored OpenClaw invocation usage is inconsistent",
+    );
+  }
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    total,
+    computedCost: decimal(value.computedCost),
+  };
+}
+
+function storedCompletion(value: unknown): RuntimeCompletion {
+  if (
+    !isObject(value) ||
+    value.status !== "stop" ||
+    value.exitCode !== 0 ||
+    typeof value.sessionId !== "string" ||
+    value.sessionId.trim() === "" ||
+    (value.provider !== null && typeof value.provider !== "string") ||
+    typeof value.model !== "string" ||
+    value.model.trim() === ""
+  ) {
+    throw new RuntimeAdapterError(
+      "runtime_persistence_failed",
+      "Stored OpenClaw invocation completion is invalid",
+    );
+  }
+  return value as unknown as RuntimeCompletion;
+}
+
+function storedAttempts(value: unknown): number {
+  if (value !== 1 && value !== 2) {
+    throw new RuntimeAdapterError(
+      "runtime_persistence_failed",
+      "Stored OpenClaw invocation attempt count is invalid",
+    );
+  }
+  return value;
+}
+
+function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === "string" && [
+    "agent_not_found",
+    "run_not_found",
+    "ticket_context_invalid",
+    "openclaw_version_mismatch",
+    "openclaw_configuration_failed",
+    "openclaw_turn_failed",
+    "openclaw_timeout",
+    "openclaw_malformed_output",
+    "openclaw_usage_invalid",
+    "openclaw_session_mismatch",
+    "openclaw_terminated",
+    "openclaw_termination_failed",
+    "openclaw_invocation_conflict",
+    "openclaw_invocation_indeterminate",
+    "runtime_persistence_failed",
+  ].includes(value);
 }
 
 export class OpenClawRuntimeAdapter {
@@ -480,7 +600,7 @@ export class OpenClawRuntimeAdapter {
   private readonly expectedVersion: string;
   private readonly wakeTimeoutMs: number;
   private readonly terminationGraceMs: number;
-  private readonly providerEnvironment: Readonly<Record<string, string | undefined>>;
+  private readonly gatewayEnvironment: Readonly<Record<string, string | undefined>>;
   private readonly activeCommands = new Map<string, Set<RunningCommand>>();
   private readonly externallyTerminatedCommands = new WeakSet<ChildProcess>();
   private versionProof: Promise<void> | null = null;
@@ -498,7 +618,15 @@ export class OpenClawRuntimeAdapter {
       options.terminationGraceMs,
       DEFAULT_TERMINATION_GRACE_MS,
     );
-    this.providerEnvironment = options.providerEnvironment ?? {};
+    this.gatewayEnvironment = options.gatewayEnvironment ?? {};
+    const rejectedEnvironment = Object.keys(this.gatewayEnvironment).filter(
+      (name) => !OPENCLAW_GATEWAY_ENVIRONMENT.has(name),
+    );
+    if (rejectedEnvironment.length > 0) {
+      throw new TypeError(
+        `gatewayEnvironment contains unsupported variables: ${rejectedEnvironment.sort().join(", ")}`,
+      );
+    }
   }
 
   async syncAgent(agentIdValue: string | number | bigint): Promise<SynchronizedAgent> {
@@ -517,108 +645,137 @@ export class OpenClawRuntimeAdapter {
     const nodeId = nonBlank(input.nodeId, "nodeId");
     const nodeSystemPrompt = nonBlank(input.nodeSystemPrompt, "nodeSystemPrompt");
     const wakeTimeoutMs = timeout(input.timeoutMs, this.wakeTimeoutMs);
+    const normalizedInput: WakeAgentInput = {
+      ...input,
+      runId,
+      agentId,
+      invocationId,
+      nodeId,
+      nodeSystemPrompt,
+    };
     const context = await this.loadContext(runId, agentId, input.ticketIds);
-    let synchronized: SynchronizedAgent | null = null;
-    let sessionKey: string | null = null;
-    let attempts = 0;
-    try {
-      synchronized = await this.withConfigurationLock(async () => {
-        await this.ensureVersion();
-        return await this.syncAgentRow(context.agent);
-      });
-      const prompt = this.composePrompt({
-        invocationId,
-        nodeId,
-        nodeSystemPrompt,
-        agent: context.agent,
-        run: context.run,
-        tickets: context.tickets,
-        upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
-      });
-      const session = runtimeSession(synchronized.openclawRef, input, invocationId);
-      sessionKey = session.sessionKey;
-      for (;;) {
-        attempts += 1;
-        const commandTimeoutSeconds = Math.max(1, Math.ceil(wakeTimeoutMs / 1_000));
-        const deliveredPrompt =
-          attempts === 1
-            ? prompt
-            : `${prompt}\n\n# Structured-output retry\nYour previous response did not satisfy the fixed output contract. This is the only retry. Return only the required strict JSON object.`;
-        const result = await this.runCommand(
-          [
-            "agent",
-            "--agent",
-            synchronized.openclawRef,
-            "--session-id",
-            session.sessionId,
-            "--message",
-            deliveredPrompt,
-            "--timeout",
-            String(commandTimeoutSeconds),
-            "--json",
-          ],
-          {
-            timeoutMs: wakeTimeoutMs,
-            activeAgentRef: synchronized.openclawRef,
-            activeSessionKey: session.sessionKey,
-          },
-        );
-        try {
-          const parsed = parseTurn(result);
-          const completion: RuntimeCompletion = {
-            ...parsed.completion,
-            model: parsed.completion.model ?? context.agent.model,
-          };
-          const costEventId = await this.persistUsage({
-            runId,
-            agentId,
-            model: completion.model,
-            usage: parsed.usage,
-          });
-          return {
-            output: parsed.output,
-            usage: parsed.usage,
-            completion,
-            attempts,
-            costEventId,
-          };
-        } catch (error) {
-          if (error instanceof MalformedOutputError && attempts === 1) continue;
-          throw error;
-        }
-      }
-    } catch (error) {
-      let runtimeError = safeError(error);
-      const ref = synchronized?.openclawRef ?? openClawRef(context.agent);
-      try {
-        await this.terminateRef(
-          ref,
-          runtimeError.code === "openclaw_timeout" ||
-            runtimeError.code === "openclaw_terminated"
-            ? sessionKey
-            : null,
-        );
-      } catch (terminationError) {
-        runtimeError = new RuntimeAdapterError(
-          "openclaw_termination_failed",
-          "OpenClaw wake failed and its gateway session could not be confirmed aborted",
-          {
-            originalErrorCode: runtimeError.code,
-            terminationErrorName:
-              terminationError instanceof Error ? terminationError.name : "unknown",
-          },
-        );
-      }
-      await this.persistSystemError({
+    const invocation = runtimeInvocation(normalizedInput, runId, agentId, invocationId);
+    const ref = openClawRef(context.agent);
+    const session = runtimeSession(ref, normalizedInput, invocationId);
+
+    return await this.withInvocationLock(invocation.invocationKey, async (client) => {
+      const reserved = await this.reserveInvocation(client, {
+        ...invocation,
         runId,
         agentId,
-        ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
-        ref,
-        attempts,
-        error: runtimeError,
+        model: context.agent.model,
       });
-      throw runtimeError;
-    }
+      if (!reserved) {
+        return await this.replayInvocation(client, {
+          ...invocation,
+          runId,
+          agentId,
+          ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
+          ref,
+        });
+      }
+
+      let attempts = 0;
+      try {
+        const synchronized = await this.withConfigurationLock(async () => {
+          await this.ensureVersion();
+          return await this.syncAgentRow(context.agent, client);
+        });
+        const prompt = this.composePrompt({
+          invocationId,
+          nodeId,
+          nodeSystemPrompt,
+          agent: context.agent,
+          run: context.run,
+          tickets: context.tickets,
+          upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
+        });
+        for (;;) {
+          attempts += 1;
+          const commandTimeoutSeconds = Math.max(1, Math.ceil(wakeTimeoutMs / 1_000));
+          const deliveredPrompt =
+            attempts === 1
+              ? prompt
+              : `${prompt}\n\n# Structured-output retry\nYour previous response did not satisfy the fixed output contract. This is the only retry. Return only the required strict JSON object.`;
+          const result = await this.runCommand(
+            [
+              "agent",
+              "--agent",
+              synchronized.openclawRef,
+              "--session-id",
+              session.sessionId,
+              "--message",
+              deliveredPrompt,
+              "--timeout",
+              String(commandTimeoutSeconds),
+              "--json",
+            ],
+            {
+              timeoutMs: wakeTimeoutMs,
+              activeAgentRef: synchronized.openclawRef,
+              activeSessionKey: session.sessionKey,
+            },
+          );
+          try {
+            const parsed = parseTurn(result);
+            await this.verifySessionIdentity(
+              synchronized.openclawRef,
+              session,
+              parsed.completion.sessionId,
+            );
+            const completion: RuntimeCompletion = {
+              ...parsed.completion,
+              model: parsed.completion.model ?? context.agent.model,
+            };
+            return await this.persistSuccessfulInvocation(client, {
+              ...invocation,
+              runId,
+              agentId,
+              ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
+              attempts,
+              output: parsed.output,
+              usage: parsed.usage,
+              completion,
+            });
+          } catch (error) {
+            if (error instanceof MalformedOutputError && attempts === 1) continue;
+            throw error;
+          }
+        }
+      } catch (error) {
+        let runtimeError = safeError(error);
+        try {
+          await this.terminateRef(
+            ref,
+            runtimeError.code === "openclaw_timeout" ||
+              runtimeError.code === "openclaw_terminated" ||
+              runtimeError.code === "openclaw_session_mismatch"
+              ? session.sessionKey
+              : null,
+          );
+        } catch (terminationError) {
+          runtimeError = new RuntimeAdapterError(
+            "openclaw_termination_failed",
+            "OpenClaw wake failed and its gateway session could not be confirmed aborted",
+            {
+              originalErrorCode: runtimeError.code,
+              terminationErrorName:
+                terminationError instanceof Error ? terminationError.name : "unknown",
+            },
+          );
+        }
+        await this.persistSystemError(client, {
+          ...invocation,
+          runId,
+          agentId,
+          ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
+          ref,
+          attempts,
+          error: runtimeError,
+        });
+        throw runtimeError;
+      }
+    });
   }
 
   async terminateAgent(agentIdValue: string | number | bigint): Promise<void> {
@@ -648,7 +805,10 @@ export class OpenClawRuntimeAdapter {
     return agent;
   }
 
-  private async syncAgentRow(agent: AgentRow): Promise<SynchronizedAgent> {
+  private async syncAgentRow(
+    agent: AgentRow,
+    database: Queryable = this.pool,
+  ): Promise<SynchronizedAgent> {
     const ref = openClawRef(agent);
     const workspace = path.join(this.runtimeRoot, "workspaces", ref);
     await this.writeWorkspace(workspace, agent);
@@ -722,7 +882,7 @@ export class OpenClawRuntimeAdapter {
       "--json",
     ]);
 
-    const persisted = await this.pool.query(
+    const persisted = await database.query(
       `UPDATE agents
        SET openclaw_ref = $2,
            updated_at = CASE WHEN openclaw_ref IS DISTINCT FROM $2 THEN now() ELSE updated_at END
@@ -874,29 +1034,217 @@ export class OpenClawRuntimeAdapter {
     );
   }
 
-  private async persistUsage(input: {
-    runId: string;
-    agentId: string;
-    model: string;
-    usage: RuntimeUsage;
-  }): Promise<string> {
+  private async verifySessionIdentity(
+    ref: string,
+    requested: { sessionId: string; sessionKey: string },
+    returnedSessionId: string | null,
+  ): Promise<void> {
+    const result = await this.runCommand(
+      ["sessions", "--agent", ref, "--json"],
+      { timeoutMs: 30_000 },
+    );
+    const payload =
+      !result.timedOut && result.exitCode === 0
+        ? parseJsonDocument(result.stdout)
+        : null;
+    const sessions = isObject(payload) && Array.isArray(payload.sessions)
+      ? payload.sessions
+      : [];
+    const matches = sessions.filter(
+      (session) => isObject(session) && session.key === requested.sessionKey,
+    );
+    if (
+      typeof returnedSessionId !== "string" ||
+      returnedSessionId.trim() === "" ||
+      matches.length !== 1 ||
+      !isObject(matches[0]) ||
+      matches[0].sessionId !== returnedSessionId
+    ) {
+      throw new RuntimeAdapterError(
+        "openclaw_session_mismatch",
+        "OpenClaw returned output from a session other than the requested session",
+        { requestedSessionId: requested.sessionId },
+      );
+    }
+  }
+
+  private async withInvocationLock<T>(
+    invocationKey: string,
+    operation: (client: PoolClient) => Promise<T>,
+  ): Promise<T> {
     const client = await this.pool.connect();
+    const lockName = `orbitflow:openclaw-invocation:${invocationKey}`;
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [lockName]);
+      return await operation(client);
+    } finally {
+      try {
+        await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [lockName]);
+      } finally {
+        client.release();
+      }
+    }
+  }
+
+  private async reserveInvocation(
+    client: PoolClient,
+    input: RuntimeInvocation & {
+      runId: string;
+      agentId: string;
+      model: string;
+    },
+  ): Promise<boolean> {
+    const reservationModel = `orbitflow-invocation:${input.invocationKey}`;
+    const result = await client.query(
+      `INSERT INTO cost_events (
+         id, run_id, agent_id, model, tokens_in, tokens_out, computed_cost
+       ) VALUES ($1, $2, $3, $4, 0, 0, 0)
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [input.costEventId, input.runId, input.agentId, reservationModel],
+    );
+    if (result.rowCount === 1) return true;
+
+    const existing = await client.query<{
+      run_id: string;
+      agent_id: string;
+      model: string;
+    }>(
+      `SELECT run_id::text, agent_id::text, model
+       FROM cost_events WHERE id = $1`,
+      [input.costEventId],
+    );
+    const row = existing.rows[0];
+    if (!row || row.run_id !== input.runId || row.agent_id !== input.agentId) {
+      throw new RuntimeAdapterError(
+        "openclaw_invocation_conflict",
+        "Durable OpenClaw invocation key conflicts with another attribution record",
+      );
+    }
+    return false;
+  }
+
+  private async invocationReceipts(
+    client: PoolClient,
+    runId: string,
+    invocationKey: string,
+  ): Promise<InvocationReceiptRow[]> {
+    const result = await client.query<InvocationReceiptRow>(
+      `SELECT payload
+       FROM messages
+       WHERE run_id = $1
+         AND sender = 'runtime:openclaw'
+         AND payload->>'invocationKey' = $2
+         AND payload->>'kind' IN (
+           'openclaw_invocation_result',
+           'openclaw_invocation_error'
+         )
+       ORDER BY id`,
+      [runId, invocationKey],
+    );
+    return result.rows;
+  }
+
+  private async replayInvocation(
+    client: PoolClient,
+    input: RuntimeInvocation & {
+      runId: string;
+      agentId: string;
+      ticketId: string | null;
+      ref: string;
+    },
+  ): Promise<WakeAgentResult> {
+    const receipts = await this.invocationReceipts(
+      client,
+      input.runId,
+      input.invocationKey,
+    );
+    if (receipts.length > 1) {
+      throw new RuntimeAdapterError(
+        "runtime_persistence_failed",
+        "Durable OpenClaw invocation has multiple terminal receipts",
+      );
+    }
+    const receipt = receipts[0]?.payload;
+    if (!receipt) {
+      const error = new RuntimeAdapterError(
+        "openclaw_invocation_indeterminate",
+        "OpenClaw invocation was reserved but has no durable terminal result",
+      );
+      await this.persistSystemError(client, { ...input, attempts: 0, error });
+      throw error;
+    }
+    if (receipt.requestFingerprint !== input.requestFingerprint) {
+      throw new RuntimeAdapterError(
+        "openclaw_invocation_conflict",
+        "invocationId was reused with different OpenClaw wake input",
+      );
+    }
+    if (receipt.kind === "openclaw_invocation_error") {
+      if (!isErrorCode(receipt.code) || typeof receipt.message !== "string") {
+        throw new RuntimeAdapterError(
+          "runtime_persistence_failed",
+          "Stored OpenClaw invocation error is invalid",
+        );
+      }
+      throw new RuntimeAdapterError(receipt.code, receipt.message, { replayed: true });
+    }
+    if (
+      receipt.kind !== "openclaw_invocation_result" ||
+      receipt.costEventId !== input.costEventId
+    ) {
+      throw new RuntimeAdapterError(
+        "runtime_persistence_failed",
+        "Stored OpenClaw invocation result is invalid",
+      );
+    }
+    return {
+      output: parseOutputContract(JSON.stringify(receipt.output)),
+      usage: storedUsage(receipt.usage),
+      completion: storedCompletion(receipt.completion),
+      attempts: storedAttempts(receipt.attempts),
+      costEventId: input.costEventId,
+      replayed: true,
+    };
+  }
+
+  private async persistSuccessfulInvocation(
+    client: PoolClient,
+    input: RuntimeInvocation & {
+      runId: string;
+      agentId: string;
+      ticketId: string | null;
+      attempts: number;
+      output: RuntimeOutput;
+      usage: RuntimeUsage;
+      completion: RuntimeCompletion;
+    },
+  ): Promise<WakeAgentResult> {
     try {
       await client.query("BEGIN");
-      const inserted = await client.query<{ id: string }>(
-        `INSERT INTO cost_events (
-           run_id, agent_id, model, tokens_in, tokens_out, computed_cost
-         ) VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id::text`,
+      const attributed = await client.query(
+        `UPDATE cost_events
+         SET model = $4,
+             tokens_in = $5,
+             tokens_out = $6,
+             computed_cost = $7,
+             updated_at = now()
+         WHERE id = $1
+           AND run_id = $2
+           AND agent_id = $3
+           AND model = $8`,
         [
+          input.costEventId,
           input.runId,
           input.agentId,
-          input.model,
+          input.completion.model,
           input.usage.input,
           input.usage.output,
           input.usage.computedCost,
+          `orbitflow-invocation:${input.invocationKey}`,
         ],
       );
+      if (attributed.rowCount !== 1) throw new Error("invocation reservation changed");
       const updated = await client.query(
         `UPDATE workflow_runs
          SET total_tokens = total_tokens + $2,
@@ -906,36 +1254,95 @@ export class OpenClawRuntimeAdapter {
         [input.runId, input.usage.total, input.usage.computedCost],
       );
       if (updated.rowCount !== 1) throw new Error("calling run disappeared");
+      await insertMessage(client, {
+        runId: input.runId,
+        ticketId: input.ticketId,
+        sender: "runtime:openclaw",
+        recipient: "runtime:openclaw-replay",
+        type: "system",
+        payload: {
+          kind: "openclaw_invocation_result",
+          version: 1,
+          state: "completed",
+          invocationKey: input.invocationKey,
+          requestFingerprint: input.requestFingerprint,
+          costEventId: input.costEventId,
+          attempts: input.attempts,
+          output: {
+            artifact: input.output.artifact,
+            handoff_brief: input.output.handoff_brief,
+            events: input.output.events,
+          },
+          usage: {
+            input: input.usage.input,
+            output: input.usage.output,
+            cacheRead: input.usage.cacheRead,
+            cacheWrite: input.usage.cacheWrite,
+            total: input.usage.total,
+            computedCost: input.usage.computedCost,
+          },
+          completion: {
+            status: input.completion.status,
+            exitCode: input.completion.exitCode,
+            sessionId: input.completion.sessionId,
+            provider: input.completion.provider,
+            model: input.completion.model,
+          },
+        },
+        handoffBrief: input.output.handoff_brief,
+        tokenUsage: {
+          input: input.usage.input,
+          output: input.usage.output,
+          cacheRead: input.usage.cacheRead,
+          cacheWrite: input.usage.cacheWrite,
+          total: input.usage.total,
+          computedCost: input.usage.computedCost,
+        },
+      });
       await client.query("COMMIT");
-      return inserted.rows[0].id;
+      return {
+        output: input.output,
+        usage: input.usage,
+        completion: input.completion,
+        attempts: input.attempts,
+        costEventId: input.costEventId,
+        replayed: false,
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw new RuntimeAdapterError(
         "runtime_persistence_failed",
-        "OpenClaw completed but usage attribution could not be persisted",
+        "OpenClaw completed but its durable result and usage could not be persisted",
         { errorName: error instanceof Error ? error.name : "unknown" },
       );
-    } finally {
-      client.release();
     }
   }
 
-  private async persistSystemError(input: {
-    runId: string;
-    agentId: string;
-    ticketId: string | null;
-    ref: string;
-    attempts: number;
-    error: RuntimeAdapterError;
-  }): Promise<void> {
+  private async persistSystemError(
+    database: Queryable,
+    input: RuntimeInvocation & {
+      runId: string;
+      agentId: string;
+      ticketId: string | null;
+      ref: string;
+      attempts: number;
+      error: RuntimeAdapterError;
+    },
+  ): Promise<void> {
     try {
-      await insertMessage(this.pool, {
+      await insertMessage(database, {
         runId: input.runId,
         ticketId: input.ticketId,
         sender: "runtime:openclaw",
         recipient: "workflow-engine",
         type: "system",
         payload: {
+          kind: "openclaw_invocation_error",
+          version: 1,
+          state: "failed",
+          invocationKey: input.invocationKey,
+          requestFingerprint: input.requestFingerprint,
+          costEventId: input.costEventId,
           code: input.error.code,
           message: input.error.message,
           agentId: input.agentId,
@@ -1007,10 +1414,11 @@ export class OpenClawRuntimeAdapter {
     },
   ): Promise<CommandResult> {
     await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
+    await mkdir(path.join(this.runtimeRoot, "home"), { recursive: true, mode: 0o700 });
     const environment: NodeJS.ProcessEnv = {
-      ...safeBaseEnvironment(),
+      ...safeBaseEnvironment(this.runtimeRoot),
       ...Object.fromEntries(
-        Object.entries(this.providerEnvironment).filter((entry): entry is [string, string] =>
+        Object.entries(this.gatewayEnvironment).filter((entry): entry is [string, string] =>
           entry[1] !== undefined,
         ),
       ),
