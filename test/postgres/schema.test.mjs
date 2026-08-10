@@ -255,6 +255,38 @@ async function migrateQuietly(options) {
   return migratePostgres({ ...options, log: () => {} });
 }
 
+async function readPlatformToolInvocationIndexKeys(client) {
+  const result = await client.query(`
+    SELECT key_column.ordinality::integer AS ordinality,
+           key_column.attribute_number::integer AS attribute_number,
+           attribute.attname AS attribute_name
+    FROM pg_index AS index_metadata
+    JOIN pg_class AS index_class ON index_class.oid = index_metadata.indexrelid
+    JOIN pg_class AS table_class ON table_class.oid = index_metadata.indrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace
+    CROSS JOIN LATERAL unnest(index_metadata.indkey)
+      WITH ORDINALITY AS key_column(attribute_number, ordinality)
+    LEFT JOIN pg_attribute AS attribute
+      ON attribute.attrelid = table_class.oid
+     AND attribute.attnum = key_column.attribute_number
+     AND NOT attribute.attisdropped
+    WHERE namespace.nspname = 'public'
+      AND table_class.relname = 'agent_tool_invocations'
+      AND index_class.relname = 'idx_agent_tool_invocations_run_id'
+      AND index_metadata.indisvalid
+    ORDER BY key_column.ordinality
+  `);
+  return result.rows;
+}
+
+function assertPlatformToolInvocationRunIndex(keys) {
+  assert.deepEqual(keys, [{
+    ordinality: 1,
+    attribute_number: 2,
+    attribute_name: 'run_id',
+  }]);
+}
+
 test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
   const databaseUrl = process.env.DATABASE_URL;
   assert.ok(databaseUrl, "DATABASE_URL must point to the disposable proof database");
@@ -552,28 +584,37 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       const indexNames = new Set(indexes.rows.map((row) => row.indexname));
       for (const name of requiredIndexes) assert.ok(indexNames.has(name), name);
 
-      const invocationRunIndex = await client.query(`
-        SELECT index_class.relname AS index_name,
-               json_agg(attribute.attname ORDER BY key_column.ordinality) AS key_columns
-        FROM pg_index AS index_metadata
-        JOIN pg_class AS index_class ON index_class.oid = index_metadata.indexrelid
-        JOIN pg_class AS table_class ON table_class.oid = index_metadata.indrelid
-        JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace
-        CROSS JOIN LATERAL unnest(index_metadata.indkey)
-          WITH ORDINALITY AS key_column(attribute_number, ordinality)
-        JOIN pg_attribute AS attribute
-          ON attribute.attrelid = table_class.oid
-         AND attribute.attnum = key_column.attribute_number
-        WHERE namespace.nspname = 'public'
-          AND table_class.relname = 'agent_tool_invocations'
-          AND index_class.relname = 'idx_agent_tool_invocations_run_id'
-          AND index_metadata.indisvalid
-        GROUP BY index_class.relname
-      `);
-      assert.deepEqual(invocationRunIndex.rows, [{
-        index_name: "idx_agent_tool_invocations_run_id",
-        key_columns: ["run_id"],
-      }]);
+      assertPlatformToolInvocationRunIndex(
+        await readPlatformToolInvocationIndexKeys(client),
+      );
+
+      await t.test("rejects an expression-first invocation run index", async () => {
+        await client.query("DROP INDEX idx_agent_tool_invocations_run_id");
+        try {
+          await client.query(`
+            CREATE INDEX idx_agent_tool_invocations_run_id
+              ON agent_tool_invocations ((lower(idempotency_key)), run_id)
+          `);
+          const expressionFirstKeys = await readPlatformToolInvocationIndexKeys(client);
+          assert.deepEqual(expressionFirstKeys, [
+            { ordinality: 1, attribute_number: 0, attribute_name: null },
+            { ordinality: 2, attribute_number: 2, attribute_name: "run_id" },
+          ]);
+          assert.throws(
+            () => assertPlatformToolInvocationRunIndex(expressionFirstKeys),
+            assert.AssertionError,
+          );
+        } finally {
+          await client.query("DROP INDEX IF EXISTS idx_agent_tool_invocations_run_id");
+          await client.query(`
+            CREATE INDEX idx_agent_tool_invocations_run_id
+              ON agent_tool_invocations(run_id)
+          `);
+        }
+        assertPlatformToolInvocationRunIndex(
+          await readPlatformToolInvocationIndexKeys(client),
+        );
+      });
 
       const triggers = await client.query(`
         SELECT tgname
