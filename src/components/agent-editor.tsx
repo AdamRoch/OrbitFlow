@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { AgentDTO, JsonObject, ScheduleDTO, SkillDTO } from "@/lib/control-plane/types";
 import { AlienIcon, CheckIcon, CometIcon, RadarIcon, SignalIcon, UfoIcon } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
@@ -235,9 +236,15 @@ export function AgentEditor() {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const selectedAgentId = useRef<string | null>(null);
   const scheduleRequestGeneration = useRef(0);
-  const contentRef = useRef<HTMLDivElement>(null);
   const deleteDialogRef = useRef<HTMLDivElement>(null);
   const deleteOpenerRef = useRef<HTMLElement | null>(null);
+  const [modalRoot, setModalRoot] = useState<HTMLDivElement | null>(null);
+
+  // The confirmation lives beside the application root so its modal boundary
+  // covers both this editor and layout-owned controls such as SiteNav.
+  useEffect(() => {
+    return () => modalRoot?.remove();
+  }, [modalRoot]);
 
   const loadSchedules = useCallback(async (agentId: string) => {
     const generation = ++scheduleRequestGeneration.current;
@@ -309,17 +316,28 @@ export function AgentEditor() {
 
   const beginDelete = (record: PendingDelete) => {
     deleteOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!modalRoot) {
+      const root = document.createElement("div");
+      root.dataset.agentEditorModalRoot = "";
+      document.body.appendChild(root);
+      setModalRoot(root);
+    }
     setPendingDelete(record);
   };
 
   useEffect(() => {
-    const content = contentRef.current;
     if (!pendingDelete) {
-      content?.removeAttribute("inert");
       deleteOpenerRef.current?.focus();
       return;
     }
-    content?.setAttribute("inert", "");
+    if (!modalRoot) return;
+
+    // `inert` removes background controls from both the accessibility tree and
+    // sequential focus order. Keeping this at the body-child boundary matters:
+    // SiteNav is a layout sibling, not a child of AgentEditor.
+    const background = Array.from(document.body.children).filter((child) => child !== modalRoot);
+    const alreadyInert = new Set(background.filter((child) => child.hasAttribute("inert")));
+    background.forEach((child) => child.setAttribute("inert", ""));
     const dialog = deleteDialogRef.current;
     const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? []);
     window.setTimeout(() => focusable()[0]?.focus(), 0);
@@ -340,12 +358,29 @@ export function AgentEditor() {
         }
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      content?.removeAttribute("inert");
-      document.removeEventListener("keydown", onKeyDown);
+    // Modern browsers enforce inert themselves. These capture guards retain
+    // the same modal boundary in partial implementations and in test DOMs.
+    const keepFocusInDialog = (event: FocusEvent) => {
+      if (event.target instanceof Node && !modalRoot.contains(event.target)) focusable()[0]?.focus();
     };
-  }, [pendingDelete]);
+    const blockBackgroundInteraction = (event: Event) => {
+      if (event.target instanceof Node && !modalRoot.contains(event.target)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", keepFocusInDialog, true);
+    document.addEventListener("pointerdown", blockBackgroundInteraction, true);
+    document.addEventListener("click", blockBackgroundInteraction, true);
+    return () => {
+      background.filter((child) => !alreadyInert.has(child)).forEach((child) => child.removeAttribute("inert"));
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", keepFocusInDialog, true);
+      document.removeEventListener("pointerdown", blockBackgroundInteraction, true);
+      document.removeEventListener("click", blockBackgroundInteraction, true);
+    };
+  }, [modalRoot, pendingDelete]);
 
   const applyTemplate = (templateId: string) => {
     const template = templates.find((item) => item.id === templateId);
@@ -424,7 +459,7 @@ export function AgentEditor() {
 
   return (
     <>
-    <div ref={contentRef} className="min-w-0">
+    <div className="min-w-0">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <span className="eyebrow"><UfoIcon className="h-3 w-3" /> Control plane</span>
@@ -438,7 +473,7 @@ export function AgentEditor() {
       {error && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[--danger]/45 bg-[--danger]/10 px-3 py-2 text-sm text-[--danger]"><span>{error}</span>{stale && <Button size="sm" onClick={() => void load(selected?.id)}>Refresh current record</Button>}</div>}
 
       <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(15rem,0.75fr)_minmax(0,1.75fr)]">
-        <aside className="glass rounded-2xl p-2 lg:self-start">
+        <aside className="glass min-w-0 rounded-2xl p-2 lg:self-start">
           <div className="flex items-center justify-between px-2 py-2"><span className="text-xs font-medium uppercase tracking-[0.16em] text-[--foreground-subtle]">Roster</span><Badge>{agents.length}</Badge></div>
           {loading ? <p className="px-3 py-8 text-sm text-[--foreground-muted]">Loading agents…</p> : agentsLoadError ? (
             <div className="px-3 py-8 text-center"><p className="text-sm text-[--danger]">Could not load agents.</p><Button className="mt-3" size="sm" onClick={() => void load(selectedAgentId.current ?? undefined)}>Retry</Button></div>
@@ -457,14 +492,14 @@ export function AgentEditor() {
           <p className="mt-2 rounded-xl border border-[--border] bg-[--surface-2]/40 p-3 text-xs leading-relaxed text-[--foreground-muted]"><strong className="text-[--foreground]">Fixed runtime contract.</strong> Structured output, platform tool surface, and message types are applied by the runtime and are not editable here.</p>
 
           <Section title="Tools and channel" icon={<SignalIcon className="h-4 w-4" />}>
-            <label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input type="checkbox" checked={form.codingToolEnabled} onChange={(event) => setField("codingToolEnabled", event.target.checked)} className="h-4 w-4 accent-[--accent]" /> Enable coding-tool access</label>
+            <label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input id="agent-coding-tool-enabled" name="codingToolEnabled" type="checkbox" checked={form.codingToolEnabled} onChange={(event) => setField("codingToolEnabled", event.target.checked)} className="h-4 w-4 accent-[--accent]" /> Enable coding-tool access</label>
             <div className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Channel provider" htmlFor="channel-provider"><Input id="channel-provider" value={form.channelProvider} onChange={(event) => { setField("channelProvider", event.target.value); setField("channelProviderTouched", true); }} placeholder="telegram" /></Field><Field label="Channel chat / destination" htmlFor="channel-chat"><Input id="channel-chat" value={form.channelChatId} onChange={(event) => { setField("channelChatId", event.target.value); setField("channelChatIdTouched", true); }} placeholder="42" /></Field></div>
             <p className="mt-2 text-xs text-[--foreground-subtle]">Destination is the provider-specific recipient, such as a Telegram chat ID. It is not an agent name or a workflow ID.</p>
             <Advanced label="Additional channel fields" id="channel-advanced" value={form.channelBindingAdvanced} onChange={(value) => setField("channelBindingAdvanced", value)} description="JSON object only. Use it for provider-supported keys beyond provider and destination, such as a threadId string." />
           </Section>
 
           <Section title="Interaction rules" icon={<RadarIcon className="h-4 w-4" />}>
-            <div className="grid min-w-0 gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input type="checkbox" checked={form.mayAnswerQuestions} onChange={(event) => { setField("mayAnswerQuestions", event.target.checked); setField("mayAnswerQuestionsTouched", true); }} className="h-4 w-4 accent-[--accent]" /> May answer questions</label><Field label="Autonomy level" htmlFor="agent-autonomy"><Input id="agent-autonomy" value={form.autonomy} onChange={(event) => { setField("autonomy", event.target.value); setField("autonomyTouched", true); }} placeholder="ask-before-risk" /></Field></div>
+            <div className="grid min-w-0 gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input id="agent-may-answer-questions" name="mayAnswerQuestions" type="checkbox" checked={form.mayAnswerQuestions} onChange={(event) => { setField("mayAnswerQuestions", event.target.checked); setField("mayAnswerQuestionsTouched", true); }} className="h-4 w-4 accent-[--accent]" /> May answer questions</label><Field label="Autonomy level" htmlFor="agent-autonomy"><Input id="agent-autonomy" value={form.autonomy} onChange={(event) => { setField("autonomy", event.target.value); setField("autonomyTouched", true); }} placeholder="ask-before-risk" /></Field></div>
             <p className="mt-2 text-xs text-[--foreground-subtle]">Autonomy describes when this agent should pause for human direction. Use a short policy such as “ask-before-risk”; runtime enforcement remains out of scope.</p>
             <Advanced label="Additional interaction rules" id="interaction-advanced" value={form.interactionRulesAdvanced} onChange={(value) => setField("interactionRulesAdvanced", value)} description="JSON object only. Use this for a schema-supported persisted rule that has no dedicated control." />
           </Section>
@@ -476,19 +511,28 @@ export function AgentEditor() {
             <Advanced label="Additional guardrail fields" id="guardrails-advanced" value={form.guardrailsAdvanced} onChange={(value) => setField("guardrailsAdvanced", value)} description="JSON object only. Preserve valid nested values here when they do not have a clearer dedicated control." />
           </Section>
 
-          <Section title="Memory facts" icon={<AlienIcon className="h-4 w-4" />}><p className="mb-3 text-xs text-[--foreground-muted]">Facts are stored canonically in this agent’s <code className="text-[--accent]">memory.facts</code> field.</p><div className="space-y-2">{form.facts.map((fact, index) => <div key={index} className="flex min-w-0 gap-2"><Input aria-label={`Memory fact ${index + 1}`} value={fact} onChange={(event) => setFacts(form.facts.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><Button variant="danger" size="sm" aria-label={`Delete memory fact ${index + 1}`} onClick={() => setFacts(form.facts.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button></div>)}</div><Button className="mt-3" size="sm" onClick={() => setFacts([...form.facts, ""])}>Add fact</Button><Advanced label="Additional memory details" id="memory-advanced" value={form.memoryAdvanced} onChange={(value) => setField("memoryAdvanced", value)} description="JSON object only, for canonical memory details beyond individual facts." /></Section>
+          <Section title="Memory facts" icon={<AlienIcon className="h-4 w-4" />}><p className="mb-3 text-xs text-[--foreground-muted]">Facts are stored canonically in this agent’s <code className="text-[--accent]">memory.facts</code> field.</p><div className="space-y-2">{form.facts.map((fact, index) => <div key={index} className="flex min-w-0 gap-2"><Input name={`memoryFact${index + 1}`} aria-label={`Memory fact ${index + 1}`} value={fact} onChange={(event) => setFacts(form.facts.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><Button variant="danger" size="sm" aria-label={`Delete memory fact ${index + 1}`} onClick={() => setFacts(form.facts.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button></div>)}</div><Button className="mt-3" size="sm" onClick={() => setFacts([...form.facts, ""])}>Add fact</Button><Advanced label="Additional memory details" id="memory-advanced" value={form.memoryAdvanced} onChange={(value) => setField("memoryAdvanced", value)} description="JSON object only, for canonical memory details beyond individual facts." /></Section>
 
           <div className="mt-7 flex flex-wrap justify-end gap-3"><Button type="submit" variant="primary" disabled={saving}>{saving ? "Saving…" : selected ? "Save changes" : "Create agent"}</Button></div>
           </form>
 
           {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><UfoIcon className="h-4 w-4 text-[--accent]" /> Attached skills</h3><p className="mt-1 text-xs text-[--foreground-muted]">Attachments use the FACT-8 skill endpoints; skill definitions remain managed by the control plane.</p><div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2">{skills.length === 0 ? <p className="text-sm text-[--foreground-muted]">No skills exist yet.</p> : skills.map((skill) => { const attached = attachedSkillIds.has(skill.id); return <button key={skill.id} type="button" aria-pressed={attached} onClick={() => void toggleSkill(skill, attached)} className={`min-w-0 rounded-xl border p-3 text-left text-sm transition-colors ${attached ? "border-[--accent]/50 bg-[--accent]/10" : "border-[--border] bg-[--surface-2]/35 hover:bg-[--surface-hover]"}`}><span className="block truncate font-medium text-[--foreground]">{skill.name}</span><span className="mt-1 block truncate text-xs text-[--foreground-muted]">{attached ? "Attached · click to detach" : "Click to attach"}</span></button>; })}</div></section>}
 
-          {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><CometIcon className="h-4 w-4 text-[--accent]" /> Schedule associations</h3><p className="mt-1 text-xs text-[--foreground-muted]">Persisted standing tasks only. Cron execution and hot enable/disable behavior belong to FACT-25.</p><div className="mt-3 space-y-2">{schedulesLoading ? <p className="rounded-xl border border-[--border] p-3 text-sm text-[--foreground-muted]">Loading schedules…</p> : schedulesLoadError ? <div className="rounded-xl border border-[--danger]/45 p-3 text-sm text-[--danger]"><p>Could not load schedules.</p><Button className="mt-2" size="sm" onClick={() => void loadSchedules(selected.id)}>Retry schedules</Button></div> : schedules.length === 0 ? <p className="rounded-xl border border-dashed border-[--border] p-3 text-sm text-[--foreground-muted]">No schedules are associated with this agent.</p> : schedules.map((schedule) => <div key={schedule.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-[--accent]">{schedule.cronExpression}</p><p className="mt-1 truncate text-sm text-[--foreground]">{schedule.taskPrompt}</p><p className="mt-1 text-xs text-[--foreground-muted]">{schedule.enabled ? "Persisted as enabled" : "Persisted as disabled"}</p></div><div className="flex gap-2"><Button size="sm" onClick={() => { setEditingSchedule(schedule); setScheduleForm({ cronExpression: schedule.cronExpression, taskPrompt: schedule.taskPrompt ?? "", enabled: schedule.enabled }); }}>Edit</Button><Button variant="danger" size="sm" onClick={() => beginDelete({ kind: "schedule", id: schedule.id, name: schedule.taskPrompt ?? schedule.cronExpression })}>Delete</Button></div></div>)}</div><form onSubmit={(event) => void submitSchedule(event)} className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/25 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-medium text-[--foreground]">{editingSchedule ? "Edit schedule" : "Add schedule"}</h4>{editingSchedule && <Button size="sm" onClick={() => { setEditingSchedule(null); setScheduleForm(blankSchedule()); }}>Cancel edit</Button>}</div><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Cron expression" htmlFor="schedule-cron"><Input id="schedule-cron" value={scheduleForm.cronExpression} onChange={(event) => setScheduleForm((current) => ({ ...current, cronExpression: event.target.value }))} required /></Field><label className="flex items-end gap-2 pb-2 text-sm text-[--foreground]"><input type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} className="h-4 w-4 accent-[--accent]" /> Persist as enabled</label></div><p className="mt-2 text-xs text-[--foreground-subtle]">Use five numeric fields: minute hour day-of-month month day-of-week. Example: 0 9 * * 1-5.</p><div className="mt-3"><Field label="Standing task" htmlFor="schedule-task"><Textarea id="schedule-task" className="min-h-24" value={scheduleForm.taskPrompt} onChange={(event) => setScheduleForm((current) => ({ ...current, taskPrompt: event.target.value }))} required /></Field></div><Button className="mt-3" type="submit" size="sm" disabled={saving}>{editingSchedule ? "Save schedule" : "Add schedule"}</Button></form></section>}
+          {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><CometIcon className="h-4 w-4 text-[--accent]" /> Schedule associations</h3><p className="mt-1 text-xs text-[--foreground-muted]">Persisted standing tasks only. Cron execution and hot enable/disable behavior belong to FACT-25.</p><div className="mt-3 space-y-2">{schedulesLoading ? <p className="rounded-xl border border-[--border] p-3 text-sm text-[--foreground-muted]">Loading schedules…</p> : schedulesLoadError ? <div className="rounded-xl border border-[--danger]/45 p-3 text-sm text-[--danger]"><p>Could not load schedules.</p><Button className="mt-2" size="sm" onClick={() => void loadSchedules(selected.id)}>Retry schedules</Button></div> : schedules.length === 0 ? <p className="rounded-xl border border-dashed border-[--border] p-3 text-sm text-[--foreground-muted]">No schedules are associated with this agent.</p> : schedules.map((schedule) => <div key={schedule.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-[--accent]">{schedule.cronExpression}</p><p className="mt-1 truncate text-sm text-[--foreground]">{schedule.taskPrompt}</p><p className="mt-1 text-xs text-[--foreground-muted]">{schedule.enabled ? "Persisted as enabled" : "Persisted as disabled"}</p></div><div className="flex gap-2"><Button size="sm" onClick={() => { setEditingSchedule(schedule); setScheduleForm({ cronExpression: schedule.cronExpression, taskPrompt: schedule.taskPrompt ?? "", enabled: schedule.enabled }); }}>Edit</Button><Button variant="danger" size="sm" onClick={() => beginDelete({ kind: "schedule", id: schedule.id, name: schedule.taskPrompt ?? schedule.cronExpression })}>Delete</Button></div></div>)}</div><form onSubmit={(event) => void submitSchedule(event)} className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/25 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-medium text-[--foreground]">{editingSchedule ? "Edit schedule" : "Add schedule"}</h4>{editingSchedule && <Button size="sm" onClick={() => { setEditingSchedule(null); setScheduleForm(blankSchedule()); }}>Cancel edit</Button>}</div><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Cron expression" htmlFor="schedule-cron"><Input id="schedule-cron" value={scheduleForm.cronExpression} onChange={(event) => setScheduleForm((current) => ({ ...current, cronExpression: event.target.value }))} required /></Field><label className="flex items-end gap-2 pb-2 text-sm text-[--foreground]"><input id="schedule-enabled" name="scheduleEnabled" type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} className="h-4 w-4 accent-[--accent]" /> Persist as enabled</label></div><p className="mt-2 text-xs text-[--foreground-subtle]">Use five numeric fields: minute hour day-of-month month day-of-week. Example: 0 9 * * 1-5.</p><div className="mt-3"><Field label="Standing task" htmlFor="schedule-task"><Textarea id="schedule-task" className="min-h-24" value={scheduleForm.taskPrompt} onChange={(event) => setScheduleForm((current) => ({ ...current, taskPrompt: event.target.value }))} required /></Field></div><Button className="mt-3" type="submit" size="sm" disabled={saving}>{editingSchedule ? "Save schedule" : "Add schedule"}</Button></form></section>}
         </div>
       </div>
 
     </div>
-      {pendingDelete && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm"><div ref={deleteDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description" className="glass w-full max-w-md rounded-2xl p-5 shadow-2xl"><h2 id="delete-title" className="text-lg font-semibold text-[--foreground]">Delete {pendingDelete.kind === "agent" ? "agent" : "schedule"}?</h2><p id="delete-description" className="mt-2 text-sm text-[--foreground-muted]">{pendingDelete.kind === "agent" ? `Delete ${pendingDelete.name}? Existing schedule associations must be removed first.` : `Delete the schedule for “${pendingDelete.name}”? This cannot be undone.`}</p><div className="mt-5 flex justify-end gap-3"><Button onClick={() => setPendingDelete(null)}>Cancel</Button><Button variant="danger" onClick={() => void confirmDelete()} disabled={saving}>Delete</Button></div></div></div>}
+      {pendingDelete && modalRoot && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
+          <div ref={deleteDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description" className="glass w-full max-w-md rounded-2xl p-5 shadow-2xl">
+            <h2 id="delete-title" className="text-lg font-semibold text-[--foreground]">Delete {pendingDelete.kind === "agent" ? "agent" : "schedule"}?</h2>
+            <p id="delete-description" className="mt-2 text-sm text-[--foreground-muted]">{pendingDelete.kind === "agent" ? `Delete ${pendingDelete.name}? Existing schedule associations must be removed first.` : `Delete the schedule for “${pendingDelete.name}”? This cannot be undone.`}</p>
+            <div className="mt-5 flex justify-end gap-3"><Button onClick={() => setPendingDelete(null)}>Cancel</Button><Button variant="danger" onClick={() => void confirmDelete()} disabled={saving}>Delete</Button></div>
+          </div>
+        </div>,
+        modalRoot,
+      )}
     </>
   );
 }

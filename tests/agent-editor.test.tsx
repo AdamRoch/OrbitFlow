@@ -88,6 +88,24 @@ describe("AgentEditor regressions", () => {
     expect(container.textContent).not.toContain("A standing task");
   });
 
+  it("keeps the roster shrinkable and gives checkbox controls stable form identities", async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Agent A")]));
+      if (url === "/api/skills" || url === "/api/agents/1/schedules") return Promise.resolve(json([]));
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await renderAndLoad();
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Agent A"))!));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.querySelector("aside")?.className).toContain("min-w-0");
+    expect(container.querySelector<HTMLInputElement>("#agent-coding-tool-enabled")?.name).toBe("codingToolEnabled");
+    expect(container.querySelector<HTMLInputElement>("#agent-may-answer-questions")?.name).toBe("mayAnswerQuestions");
+    expect(container.querySelector<HTMLInputElement>("#schedule-enabled")?.name).toBe("scheduleEnabled");
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent === "Add fact")!));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Memory fact 1"]')?.name).toBe("memoryFact1");
+  });
+
   it("preserves opaque JSON while saving an unrelated dedicated field", async () => {
     const opaqueAgent = {
       ...agent("1", "Opaque Agent"),
@@ -136,13 +154,44 @@ describe("AgentEditor regressions", () => {
     deleteButton.focus();
     await act(async () => { click(deleteButton); });
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
-    const dialog = container.querySelector('[role="alertdialog"]')!;
+    const dialog = document.body.querySelector('[role="alertdialog"]')!;
     expect(dialog.getAttribute("aria-describedby")).toBe("delete-description");
-    expect(container.querySelector("[inert]")).not.toBeNull();
+    expect(container.hasAttribute("inert")).toBe(true);
     expect(document.activeElement?.textContent).toContain("Cancel");
 
     await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
     expect(document.activeElement).toBe(deleteButton);
+  });
+
+  it("makes layout-level controls inert while either deletion dialog is open", async () => {
+    let outsideClicks = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Delete Me")]));
+      if (url === "/api/skills") return Promise.resolve(json([]));
+      if (url === "/api/agents/1/schedules") return Promise.resolve(json([schedule("1", "1", "Standing task")]));
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await act(async () => root.render(<><button onClick={() => { outsideClicks += 1; }}>Layout navigation</button><AgentEditor /></>));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); await Promise.resolve(); });
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Delete Me"))!));
+    await act(async () => { await Promise.resolve(); });
+
+    const outside = [...container.querySelectorAll("button")].find((button) => button.textContent === "Layout navigation")!;
+    const openDialog = async (label: string) => {
+      await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent === label)!));
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+      expect(container.hasAttribute("inert")).toBe(true);
+      expect(document.body.querySelector('[role="alertdialog"]')).not.toBeNull();
+      outside.focus();
+      expect(document.activeElement?.textContent).toContain("Cancel");
+      await act(async () => click(outside));
+      expect(outsideClicks).toBe(0);
+      await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      expect(container.hasAttribute("inert")).toBe(false);
+    };
+
+    await openDialog("Delete agent");
+    await openDialog("Delete");
   });
 });
