@@ -164,6 +164,86 @@ describe("MonitoringDashboard", () => {
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
 
+  it("discharges the recovery debt when Retry snapshot succeeds after a failed recovery fetch", async () => {
+    const failedRecovery = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(() => failedRecovery.promise));
+    const stream = FakeEventSource.instances[0]!;
+    await act(async () => stream.emit("error"));
+    await act(async () => stream.emit("open"));
+
+    // The epoch-matched recovery fetch fails: the page honestly reports the
+    // unavailable refresh and retains the last successful snapshot.
+    await act(async () => failedRecovery.resolve(new Response("nope", { status: 503 })));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Live refresh is unavailable. Showing the last successful snapshot.");
+
+    // The page's own Retry snapshot succeeds: the fresh authoritative read
+    // clears both the refresh failure and the recovery debt.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(snapshotWithTitle("Retried snapshot")), { status: 200 })));
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="status"] button')!.click());
+    expect(container.textContent).toContain("Retried snapshot");
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.textContent).toContain("Snapshot current");
+    expect(container.textContent).not.toContain("Waiting for an authoritative snapshot");
+  });
+
+  it("discharges the recovery debt when a filter supersede read succeeds while recovery is pending", async () => {
+    const requests: ReturnType<typeof deferred<Response>>[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => {
+      const request = deferred<Response>();
+      requests.push(request);
+      return request.promise;
+    }));
+    const stream = FakeEventSource.instances[0]!;
+    await act(async () => stream.emit("error"));
+    await act(async () => stream.emit("open"));
+    expect(requests).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Waiting for an authoritative snapshot.");
+
+    // A filter change supersedes the pending recovery fetch; its successful
+    // read began after the disconnect and discharges the recovery debt.
+    const agent = container.querySelectorAll<HTMLSelectElement>("select")[1]!;
+    await act(async () => {
+      agent.value = "2";
+      agent.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(requests).toHaveLength(2);
+    await act(async () => requests[1]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.textContent).toContain("Snapshot current");
+    expect(container.textContent).not.toContain("Waiting for an authoritative snapshot");
+  });
+
+  it("does not let a pre-disconnect read clear the recovery debt after a newer disconnect", async () => {
+    const requests: ReturnType<typeof deferred<Response>>[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => {
+      const request = deferred<Response>();
+      requests.push(request);
+      return request.promise;
+    }));
+    const stream = FakeEventSource.instances[0]!;
+    await act(async () => stream.emit("open"));
+    await act(async () => requests[0]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
+    expect(container.textContent).toContain("Snapshot current");
+
+    // A wake-driven read starts while healthy, then the transport drops
+    // before it completes.
+    await act(async () => stream.emit("state", JSON.stringify({ schemaVersion: 1, type: "ticket.updated", runId: "9", agentId: "2", ticketId: "11", occurredAt: "2026-08-10T12:00:01.000Z" })));
+    expect(requests).toHaveLength(2);
+    await act(async () => stream.emit("error"));
+
+    // The stale pre-disconnect read succeeds: it must not clear the debt.
+    await act(async () => requests[1]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Live listener is reconnecting. Showing the last authoritative snapshot.");
+    expect(container.textContent).not.toContain("Snapshot current");
+
+    // Only the epoch-matched post-disconnect recovery read clears it.
+    await act(async () => stream.emit("open"));
+    expect(requests).toHaveLength(3);
+    await act(async () => requests[2]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.textContent).toContain("Snapshot current");
+  });
+
   it("uses roving tab focus and keeps all selected-run agent choices after filtering", async () => {
     const tabs = container.querySelectorAll<HTMLButtonElement>('[role="tab"]');
     expect(tabs[0]!.tabIndex).toBe(0);

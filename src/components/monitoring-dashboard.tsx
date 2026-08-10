@@ -87,6 +87,11 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
     const controller = new AbortController();
     activeRequest.current = controller;
     const sequence = ++refreshSequence.current;
+    // Capture the recovery epoch at fetch start: any successful authoritative
+    // read begun after the latest disconnect discharges the recovery debt,
+    // while a read begun before a newer disconnect carries a stale epoch and
+    // cannot clear it.
+    const effectiveEpoch = recoveryEpoch ?? streamRecoveryEpoch.current;
     let timedOut = false;
     const timeout = window.setTimeout(() => {
       timedOut = true;
@@ -100,7 +105,7 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
       if (sequence !== refreshSequence.current || controller.signal.aborted) return;
       setSnapshot(nextSnapshot);
       setRefreshFailure(null);
-      if (recoveryEpoch === streamRecoveryEpoch.current) setStreamRecoveryPending(false);
+      if (effectiveEpoch === streamRecoveryEpoch.current) setStreamRecoveryPending(false);
     } catch {
       if (sequence !== refreshSequence.current || (controller.signal.aborted && !timedOut)) return;
       // Keep the last authoritative snapshot visible. A stream wake-up has no
