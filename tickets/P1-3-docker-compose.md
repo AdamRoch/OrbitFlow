@@ -18,13 +18,15 @@
 
 ## Implementation status
 
-In progress: FACT-7 has integrated `origin/main` at
-`5bc39fa3aac0af052811719c11f8533bc49fa801` without a rebase. The retained
-no-cache Compose proof requires the complete current migration chain through
-`0004-message-consumption.sql`, health, UI, and PostgreSQL-backed
-`GET /api/agents` before and after a full restart. It also retains the
-required-config, failed-dependency, hermetic interpolation, credential-boundary,
-and exact label-scoped teardown checks. The inherited tests, FACT-6, FACT-8,
-and FACT-9 PostgreSQL proofs, typecheck, lint, production build, and production
-dependency audits passed locally. Firstmate owns independent exact-head review,
-merge, and tracker completion.
+In progress: FACT-7 now has the current `origin/main` through FACT-19 merged
+at `36be14457e46acba81f06c7f5aba92cdea053914`, without a rebase. The documented
+coding-adapter command is forced through a dedicated entrypoint, so its task
+reaches the committed wrapper instead of replacing it; the retained proof uses
+that exact command shape with a no-credit fake child that checks the scoped
+FACT-3 environment. The inherited tests, typecheck, lint, production build,
+and production dependency audit passed at this head. The final Docker-backed
+proofs are not claimed: Docker Desktop currently fails label-scoped proof
+teardown with a host-level `meta.db` input/output error while the host volume
+has about 1.9 GiB free. Firstmate owns the remaining exact-head Compose/FACT
+proof, independent review, merge, and tracker completion after that external
+Docker state is repaired.
