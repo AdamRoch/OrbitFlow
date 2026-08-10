@@ -10,3 +10,12 @@ REST CRUD on the control plane for `agents` (all §4 fields incl. guardrails, in
 - [ ] Agent guardrails and interaction_rules round-trip intact.
 - [ ] Workflow graph JSON round-trips byte-for-byte (builder in P4-3 depends on this).
 - [ ] Covered later by the CRUD round-trip test in P5-4 — keep handlers testable (no framework globals in logic).
+
+## Implementation status
+
+**in_progress** — Review corrections are complete: every PATCH requires an
+`expectedUpdatedAt` compare-and-set precondition, and duplicate workflow
+transitions are rejected using stable condition identity without rewriting the
+submitted graph. Disposable PostgreSQL route proof and local gates passed.
+Direct PR #7 remains open; Firstmate owns independent exact-head review, merge,
+and tracker completion.
