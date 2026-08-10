@@ -19,11 +19,14 @@ import type {
   EdgePredicate,
   JsonObject,
   JsonValue,
+  PlanMode,
   PredicateOperator,
+  EscalationTarget,
   WorkflowEdge,
   WorkflowGraph,
   WorkflowNode,
 } from "@/lib/workflow/graph-contract";
+import { cycleReturnEdgeIndexes } from "@/lib/workflow/cycle-routes";
 
 type CanvasPosition = { x: number; y: number };
 type Notice = { tone: "success" | "error" | "neutral"; text: string } | null;
@@ -156,7 +159,7 @@ export function WorkflowEditor() {
     setNotice(null);
   }, []);
 
-  const newWorkflow = (availableAgents: AgentDTO[] = agents) => {
+  const resetNewWorkflow = useCallback((availableAgents: AgentDTO[]) => {
     const nextGraph = initialGraph(availableAgents[0]?.id);
     setWorkflowId(null);
     setName("Untitled workflow");
@@ -170,7 +173,7 @@ export function WorkflowEditor() {
     setValueText("");
     setFieldError(null);
     setNotice(availableAgents.length ? null : { tone: "error", text: "Create an agent before adding workflow nodes." });
-  };
+  }, []);
 
   const loadAll = useCallback(async (preferredId?: string | null) => {
     const [agentsResponse, workflowsResponse] = await Promise.all([
@@ -186,22 +189,8 @@ export function WorkflowEditor() {
     setWorkflows(nextWorkflows);
     const preferred = nextWorkflows.find((workflow) => workflow.id === preferredId) ?? nextWorkflows[0];
     if (preferred) selectWorkflow(preferred);
-    else {
-      const nextGraph = initialGraph(nextAgents[0]?.id);
-      setWorkflowId(null);
-      setName("Untitled workflow");
-      setDescription("");
-      setUpdatedAt(null);
-      setGraph(nextGraph);
-      setSelectedNodeId(nextGraph.nodes[0]?.id ?? null);
-      setNodeIdText(nextGraph.nodes[0]?.id ?? "");
-      setSelectedEdgeIndex(null);
-      setPathText("");
-      setValueText("");
-      setFieldError(null);
-      setNotice(nextAgents.length ? null : { tone: "error", text: "Create an agent before adding workflow nodes." });
-    }
-  }, [selectWorkflow]);
+    else resetNewWorkflow(nextAgents);
+  }, [resetNewWorkflow, selectWorkflow]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -223,10 +212,9 @@ export function WorkflowEditor() {
     ariaLabel: `${node.id}, assigned to ${agentNames.get(String(node.agentId)) ?? `agent ${node.agentId}`}`,
     selected: node.id === selectedNodeId,
   }));
+  const returnEdgeIndexes = cycleReturnEdgeIndexes(graph);
   const flowEdges = graph.edges.map((edge, index) => {
-    const sourceIndex = graph.nodes.findIndex((node) => node.id === edge.source);
-    const targetIndex = graph.nodes.findIndex((node) => node.id === edge.target);
-    const isLoopRoute = edge.source === edge.target || graph.edges.some((candidate) => candidate.source === edge.target && candidate.target === edge.source) && sourceIndex > targetIndex;
+    const isLoopRoute = returnEdgeIndexes.has(index);
     return {
       id: `edge-${index}`,
       source: edge.source,
@@ -282,8 +270,9 @@ export function WorkflowEditor() {
 
   const renameNode = () => {
     if (!selectedNode) return;
-    const nextId = nodeIdText.trim();
-    if (!nextId) return setFieldError("Node ID cannot be empty.");
+    const nextId = nodeIdText;
+    if (!nextId.trim()) return setFieldError("Node ID cannot be empty.");
+    if (nextId !== nextId.trim() || nextId !== nextId.normalize("NFC")) return setFieldError("Node ID must already be in canonical form.");
     if (graph.nodes.some((node) => node.id === nextId && node.id !== selectedNode.id)) return setFieldError("Node IDs must be unique.");
     const oldId = selectedNode.id;
     if (nextId === oldId) return;
@@ -411,7 +400,7 @@ export function WorkflowEditor() {
         <aside className="glass min-w-0 rounded-3xl p-3">
           <div className="mb-3 flex items-center justify-between gap-2 px-1">
             <h2 className="text-xs font-semibold uppercase tracking-[0.16em] text-[--foreground-muted]">Workflows</h2>
-            <button type="button" onClick={() => newWorkflow()} className="rounded-full border border-[--border-strong] px-2.5 py-1 text-xs text-[--accent] hover:bg-[--surface-hover]">New</button>
+            <button type="button" onClick={() => resetNewWorkflow(agents)} className="rounded-full border border-[--border-strong] px-2.5 py-1 text-xs text-[--accent] hover:bg-[--surface-hover]">New</button>
           </div>
           <div className="flex max-h-48 gap-2 overflow-auto pb-1 lg:max-h-[620px] lg:flex-col lg:pb-0">
             {workflows.map((workflow) => (
@@ -518,7 +507,9 @@ function NodePanel({ agents, graph, selectedNode, nodeIdText, setNodeIdText, ren
   updateNodeConfig: (mutator: (config: WorkflowNode["config"]) => WorkflowNode["config"]) => void;
   setGraph: React.Dispatch<React.SetStateAction<WorkflowGraph>>;
 }) {
-  const escalation = isObject(selectedNode.config.questionEscalation) ? selectedNode.config.questionEscalation : {};
+  const escalation = (
+    isObject(selectedNode.config.questionEscalation) ? selectedNode.config.questionEscalation : {}
+  ) as Partial<NonNullable<WorkflowNode["config"]["questionEscalation"]>> & JsonObject;
   const approvals = isObject(selectedNode.config.approvalGates) ? selectedNode.config.approvalGates : {};
   return (
     <div className="grid gap-5">
@@ -543,10 +534,10 @@ function NodePanel({ agents, graph, selectedNode, nodeIdText, setNodeIdText, ren
       </fieldset>
       <fieldset className="grid gap-3 border-t border-[--border] pt-4">
         <legend className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[--foreground-muted]">Judgment<Tooltip text="Cheaper models benefit from required planning because the plan gives them a smaller, explicit decision path before acting." /></legend>
-        <label className={labelClass}>Plan mode<select className={inputClass} value={typeof selectedNode.config.planMode === "string" ? selectedNode.config.planMode : "off"} onChange={(event) => updateNodeConfig((config) => ({ ...config, planMode: event.target.value }))}><option value="off">Off</option><option value="allowed">Allowed</option><option value="required">Required</option></select></label>
+        <label className={labelClass}>Plan mode<select className={inputClass} value={typeof selectedNode.config.planMode === "string" ? selectedNode.config.planMode : "off"} onChange={(event) => updateNodeConfig((config) => ({ ...config, planMode: event.target.value as PlanMode }))}><option value="off">Off</option><option value="allowed">Allowed</option><option value="required">Required</option></select></label>
         <CheckField label="May answer questions" checked={selectedNode.config.may_answer_questions === true} onChange={(checked) => updateNodeConfig((config) => ({ ...config, may_answer_questions: checked }))} />
-        <label className={labelClass}>Question escalation<select className={inputClass} value={typeof escalation.target === "string" ? escalation.target : "human-via-UI"} onChange={(event) => updateNodeConfig((config) => ({ ...config, questionEscalation: { ...escalation, target: event.target.value } as JsonObject }))}><option value="agent">Agent</option><option value="human-via-channel">Human via channel</option><option value="human-via-UI">Human via UI</option></select></label>
-        {escalation.target === "agent" && <label className={labelClass}>Escalation agent<select className={inputClass} value={typeof escalation.agentId === "string" ? escalation.agentId : agents[0]?.id ?? ""} onChange={(event) => updateNodeConfig((config) => ({ ...config, questionEscalation: { ...escalation, target: "agent", agentId: event.target.value } as JsonObject }))}>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
+        <label className={labelClass}>Question escalation<select className={inputClass} value={typeof escalation.target === "string" ? escalation.target : "human-via-UI"} onChange={(event) => updateNodeConfig((config) => { const target = event.target.value as EscalationTarget; return { ...config, questionEscalation: { ...escalation, target, ...(target === "agent" && escalation.agentId === undefined ? { agentId: agents[0]?.id } : {}) } as NonNullable<WorkflowNode["config"]["questionEscalation"]> }; })}><option value="agent">Agent</option><option value="human-via-channel">Human via channel</option><option value="human-via-UI">Human via UI</option></select></label>
+        {escalation.target === "agent" && <label className={labelClass}>Escalation agent<select className={inputClass} value={escalation.agentId === undefined ? agents[0]?.id ?? "" : String(escalation.agentId)} onChange={(event) => updateNodeConfig((config) => ({ ...config, questionEscalation: { ...escalation, target: "agent", agentId: event.target.value } as NonNullable<WorkflowNode["config"]["questionEscalation"]> }))}>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
       </fieldset>
       <fieldset className="grid gap-3 border-t border-[--border] pt-4">
         <legend className="text-xs font-semibold uppercase tracking-[0.14em] text-[--foreground-muted]">Approval gates</legend>
@@ -591,7 +582,7 @@ function CheckField({ label, detail, checked, onChange }: { label: string; detai
 }
 
 function Tooltip({ text }: { text: string }) {
-  return <span className="group relative inline-flex"><button type="button" aria-label="Plan mode guidance" title={text} className="grid h-5 w-5 place-items-center rounded-full border border-[--border-strong] text-[10px] normal-case tracking-normal text-[--foreground-muted]">?</button><span role="tooltip" className="pointer-events-none absolute left-0 top-7 z-20 hidden w-56 max-w-[calc(100vw-2rem)] rounded-xl border border-[--border-strong] bg-[#0b111f] p-3 text-left text-xs font-normal normal-case leading-5 tracking-normal text-[--foreground-muted] shadow-2xl group-hover:block group-focus-within:block">{text}</span></span>;
+  return <span className="group relative inline-flex"><button type="button" aria-label="Plan mode guidance" title={text} className="grid h-5 w-5 place-items-center rounded-full border border-[--border-strong] text-[10px] normal-case tracking-normal text-[--foreground-muted]">?</button><span role="tooltip" className="pointer-events-none absolute left-0 top-7 z-20 hidden w-40 max-w-[calc(100vw-2rem)] rounded-xl border border-[--border-strong] bg-[#0b111f] p-3 text-left text-xs font-normal normal-case leading-5 tracking-normal text-[--foreground-muted] shadow-2xl group-hover:block group-focus-within:block">{text}</span></span>;
 }
 
 function NoticeBanner({ notice }: { notice: Exclude<Notice, null> }) {

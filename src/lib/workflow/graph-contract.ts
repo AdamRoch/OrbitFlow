@@ -5,6 +5,8 @@ export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
 export type JsonObject = { [key: string]: JsonValue | undefined };
 
 export type PredicateOperator = "always" | "equals" | "notEquals" | "in" | "exists";
+export type PlanMode = "off" | "allowed" | "required";
+export type EscalationTarget = "agent" | "human-via-channel" | "human-via-UI";
 
 export interface EdgePredicate extends JsonObject {
   operator: PredicateOperator;
@@ -17,11 +19,23 @@ export interface WorkflowNode extends JsonObject {
   agentId: string | number;
   config: JsonObject & {
     entry?: boolean;
-    fanOut?: JsonObject & { maxConcurrency: number };
+    channelBinding?: boolean;
+    fanOut?: JsonObject & { over: "openTickets"; maxConcurrency: number };
+    planMode?: PlanMode;
+    may_answer_questions?: boolean;
+    questionEscalation?: JsonObject & {
+      target: EscalationTarget;
+      agentId?: string | number;
+    };
+    approvalGates?: JsonObject & {
+      pauseBefore?: boolean;
+      pauseAfter?: boolean;
+    };
   };
 }
 
 export interface WorkflowEdge extends JsonObject {
+  id?: string;
   source: string;
   target: string;
   condition: EdgePredicate;
@@ -32,8 +46,15 @@ export interface WorkflowGraph extends JsonObject {
   edges: WorkflowEdge[];
 }
 
+export class WorkflowGraphError extends ValidationError {
+  constructor(message: string) {
+    super(message, "invalid_graph");
+    this.name = "WorkflowGraphError";
+  }
+}
+
 function invalidGraph(message: string): never {
-  throw new ValidationError(message, "invalid_graph");
+  throw new WorkflowGraphError(message);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -59,18 +80,84 @@ function isJsonValue(value: unknown, seen = new Set<object>()): value is JsonVal
   return valid;
 }
 
-function requiredString(value: unknown, field: string): string {
+function requiredCanonicalId(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     return invalidGraph(`${field} must be a non-blank string`);
   }
-  return value.trim();
+  if (value !== value.trim() || value !== value.normalize("NFC")) {
+    return invalidGraph(`${field} must already be in canonical form`);
+  }
+  return value;
 }
 
-function validateAgentId(value: unknown, nodeId: string): void {
+function validateAgentId(value: unknown, field: string): void {
   const validNumber = typeof value === "number" && Number.isSafeInteger(value) && value > 0;
   const validString = typeof value === "string" && /^[1-9]\d*$/.test(value);
   if (!validNumber && !validString) {
-    invalidGraph(`node ${nodeId} agentId must be a positive integer`);
+    invalidGraph(`${field} must be a positive integer`);
+  }
+}
+
+function validateKnownNodeConfig(config: Record<string, unknown>, nodeId: string): void {
+  if (config.entry !== undefined && typeof config.entry !== "boolean") {
+    invalidGraph(`node ${nodeId} config.entry must be a boolean`);
+  }
+  if (config.channelBinding !== undefined && typeof config.channelBinding !== "boolean") {
+    invalidGraph(`node ${nodeId} config.channelBinding must be a boolean`);
+  }
+  if (config.fanOut !== undefined) {
+    if (!isObject(config.fanOut)) {
+      invalidGraph(`node ${nodeId} config.fanOut must be an object`);
+    }
+    if (config.fanOut.over !== "openTickets") {
+      invalidGraph(`node ${nodeId} config.fanOut.over must be openTickets`);
+    }
+    if (!Number.isSafeInteger(config.fanOut.maxConcurrency) || Number(config.fanOut.maxConcurrency) <= 0) {
+      invalidGraph(`node ${nodeId} config.fanOut.maxConcurrency must be a positive integer`);
+    }
+  }
+  if (
+    config.planMode !== undefined &&
+    config.planMode !== "off" &&
+    config.planMode !== "allowed" &&
+    config.planMode !== "required"
+  ) {
+    invalidGraph(`node ${nodeId} config.planMode must be off, allowed, or required`);
+  }
+  if (config.may_answer_questions !== undefined && typeof config.may_answer_questions !== "boolean") {
+    invalidGraph(`node ${nodeId} config.may_answer_questions must be a boolean`);
+  }
+  if (config.questionEscalation !== undefined) {
+    if (!isObject(config.questionEscalation)) {
+      invalidGraph(`node ${nodeId} config.questionEscalation must be an object`);
+    }
+    const target = config.questionEscalation.target;
+    if (target !== "agent" && target !== "human-via-channel" && target !== "human-via-UI") {
+      invalidGraph(`node ${nodeId} config.questionEscalation.target is unsupported`);
+    }
+    if (target === "agent" || config.questionEscalation.agentId !== undefined) {
+      validateAgentId(
+        config.questionEscalation.agentId,
+        `node ${nodeId} config.questionEscalation.agentId`,
+      );
+    }
+  }
+  if (config.approvalGates !== undefined) {
+    if (!isObject(config.approvalGates)) {
+      invalidGraph(`node ${nodeId} config.approvalGates must be an object`);
+    }
+    if (
+      config.approvalGates.pauseBefore !== undefined &&
+      typeof config.approvalGates.pauseBefore !== "boolean"
+    ) {
+      invalidGraph(`node ${nodeId} config.approvalGates.pauseBefore must be a boolean`);
+    }
+    if (
+      config.approvalGates.pauseAfter !== undefined &&
+      typeof config.approvalGates.pauseAfter !== "boolean"
+    ) {
+      invalidGraph(`node ${nodeId} config.approvalGates.pauseAfter must be a boolean`);
+    }
   }
 }
 
@@ -118,6 +205,15 @@ export function canonicalWorkflowGraphJson(graph: WorkflowGraph): string {
   return JSON.stringify(canonical(graph));
 }
 
+export function parseWorkflowGraph(value: unknown): WorkflowGraph {
+  validateWorkflowGraph(value);
+  return value;
+}
+
+export function workflowEntryNodeId(graph: WorkflowGraph): string {
+  return graph.nodes.find((node) => node.config.entry === true)!.id;
+}
+
 export function validateWorkflowGraph(value: unknown): asserts value is WorkflowGraph {
   if (!isObject(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
     invalidGraph("workflow graph must contain nodes and edges arrays");
@@ -130,23 +226,12 @@ export function validateWorkflowGraph(value: unknown): asserts value is Workflow
     if (!isObject(node) || !isObject(node.config)) {
       invalidGraph(`node ${index} must contain a JSON object config`);
     }
-    const id = requiredString(node.id, `node ${index} id`);
+    const id = requiredCanonicalId(node.id, `node ${index} id`);
     if (nodeIds.has(id)) invalidGraph(`duplicate node id: ${id}`);
     nodeIds.add(id);
-    validateAgentId(node.agentId, id);
-    if (node.config.entry !== undefined && typeof node.config.entry !== "boolean") {
-      invalidGraph(`node ${id} config.entry must be a boolean`);
-    }
+    validateAgentId(node.agentId, `node ${id} agentId`);
+    validateKnownNodeConfig(node.config, id);
     if (node.config.entry === true) entryCount += 1;
-    if (node.config.fanOut !== undefined) {
-      if (
-        !isObject(node.config.fanOut) ||
-        !Number.isSafeInteger(node.config.fanOut.maxConcurrency) ||
-        Number(node.config.fanOut.maxConcurrency) <= 0
-      ) {
-        invalidGraph(`node ${id} config.fanOut.maxConcurrency must be a positive integer`);
-      }
-    }
   });
 
   if (entryCount !== 1) invalidGraph("workflow graph must have exactly one entry node");
@@ -154,8 +239,9 @@ export function validateWorkflowGraph(value: unknown): asserts value is Workflow
   const edgeIdentities = new Set<string>();
   value.edges.forEach((edge, index) => {
     if (!isObject(edge)) invalidGraph(`edge ${index} must be an object`);
-    const source = requiredString(edge.source, `edge ${index} source`);
-    const target = requiredString(edge.target, `edge ${index} target`);
+    if (edge.id !== undefined) requiredCanonicalId(edge.id, `edge ${index} id`);
+    const source = requiredCanonicalId(edge.source, `edge ${index} source`);
+    const target = requiredCanonicalId(edge.target, `edge ${index} target`);
     if (!nodeIds.has(source) || !nodeIds.has(target)) {
       invalidGraph(`edge ${index} must reference existing nodes`);
     }

@@ -10,7 +10,7 @@ import type {
   UpdateWorkflowInput,
   UpdateScheduleInput,
 } from "./types";
-import { validateWorkflowGraph } from "@/lib/workflow/graph-contract";
+import { parseWorkflowGraph } from "@/lib/workflow/graph-contract";
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -230,8 +230,7 @@ export function parseUpdateSkill(body: Record<string, unknown>): UpdateSkillInpu
  */
 export function parseGraph(value: unknown): JsonObject {
   const graph = requiredObject(value, "graph");
-  validateWorkflowGraph(graph);
-  return graph;
+  return parseWorkflowGraph(graph);
 }
 
 export function parseCreateWorkflow(body: Record<string, unknown>): CreateWorkflowInput {

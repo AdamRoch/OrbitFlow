@@ -289,7 +289,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     expect((await response(await deleteWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
   });
 
-  it("round-trips a rejection loop byte-equivalently and rejects a stale graph save", async () => {
+  it("round-trips a three-node rejection loop byte-equivalently and rejects a stale graph save", async () => {
     const graph: WorkflowGraph = {
       nodes: [
         {
@@ -307,12 +307,25 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
           },
         },
         { id: "test", agentId: "2", config: { entry: false } },
+        { id: "review", agentId: "2", config: { entry: false } },
       ],
       edges: [
         { source: "implement", target: "test", condition: { operator: "always" } },
-        { source: "test", target: "implement", condition: { operator: "equals", path: ["verdict"], value: "rejected" } },
+        { source: "test", target: "review", condition: { operator: "always" } },
+        {
+          source: "review",
+          target: "implement",
+          condition: { operator: "equals", path: ["verdict"], value: "rejected" },
+          futureEdgeField: { keep: true },
+        },
       ],
-      builderMetadata: { positions: { implement: { x: 20, y: 40 }, test: { x: 360, y: 40 } } },
+      builderMetadata: {
+        positions: {
+          implement: { x: 20, y: 40 },
+          test: { x: 360, y: 40 },
+          review: { x: 700, y: 40 },
+        },
+      },
     };
     const created = await response(await createWorkflow(jsonRequest({
       name: "PostgreSQL rejection loop",

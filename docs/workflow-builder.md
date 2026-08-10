@@ -10,27 +10,41 @@ conflict instead of overwriting a newer graph.
 The stored graph follows the FACT-10 contract from PR #13 directly:
 
 - `nodes[]`: `id`, positive `agentId`, and a JSON object `config`
+- node IDs, optional edge IDs, and edge endpoints must already be trimmed and
+  NFC Unicode-normalized; raw endpoint strings must exactly match raw node IDs
 - exactly one `config.entry: true`
-- optional `config.fanOut.maxConcurrency` as a positive integer
+- optional boolean `config.channelBinding`
+- optional `config.fanOut` with `over: "openTickets"` and a positive integer
+  `maxConcurrency`
+- optional `config.planMode`: `off`, `allowed`, or `required`
+- optional boolean `config.may_answer_questions`
+- optional `config.questionEscalation.target`: `agent`,
+  `human-via-channel`, or `human-via-UI`; agent targets include a positive
+  `agentId`
+- optional `config.approvalGates.pauseBefore` and `pauseAfter` booleans
 - `edges[]`: `source`, `target`, and a structured `condition`
 - conditions: `always`, `equals`, `notEquals`, `in`, or `exists`
 - condition paths are arrays of output object keys
 - edge array order is transition priority
 
-Cycles are valid. The rejection loop is an ordinary edge whose target is an
-earlier node. The builder renders that edge on a separate return path, but it
-does not add routing data to the engine graph.
+Cycles are valid. A cycle-closing edge whose target is an earlier node renders
+on a separate return path. Reachability detects that closing edge for cycles of
+any length, but the builder does not add routing data to the engine graph.
 
 Node config also exposes `channelBinding`, `planMode`,
 `may_answer_questions`, `questionEscalation`, and `approvalGates`. Unknown JSON
-fields remain intact when a user edits a known field. Optional
+fields, including future fields nested inside known configuration objects,
+remain intact when a user edits a known field. Optional
 `builderMetadata.positions` stores canvas coordinates at the top level. FACT-10
-ignores that metadata when parsing a run, while PostgreSQL preserves it with the
+can ignore that metadata while running, while PostgreSQL preserves it with the
 rest of the submitted graph.
 
-PR #13 remains open. When it lands, keep `validateWorkflowGraph` aligned with
-`src/lib/workflow/graph.ts`, or delegate validation to that parser without
-normalizing or translating the graph saved by FACT-20.
+PR #13 remains open. `src/lib/workflow/graph-contract.ts` is the shared boundary
+for the control plane, builder, and pending engine. FACT-10 must consume
+`parseWorkflowGraph`, `workflowEntryNodeId`, and these exported graph types
+instead of retaining its narrower parser. `parseWorkflowGraph` validates and
+returns the submitted object by reference; it does not normalize, default,
+project, reorder, or translate stored JSON.
 
 ## Proof
 

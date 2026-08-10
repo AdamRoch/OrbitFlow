@@ -17,7 +17,7 @@ vi.mock("@xyflow/react", async () => {
     Position: { Left: "left", Right: "right" },
     ReactFlow: ({ nodes, edges, onNodeClick, onEdgeClick, children }: {
       nodes: Array<{ id: string }>;
-      edges: Array<{ id: string; source: string; target: string }>;
+      edges: Array<{ id: string; source: string; target: string; sourceHandle?: string; targetHandle?: string }>;
       onNodeClick: (event: unknown, node: { id: string }) => void;
       onEdgeClick: (event: unknown, edge: { id: string }) => void;
       children: React.ReactNode;
@@ -25,7 +25,13 @@ vi.mock("@xyflow/react", async () => {
       "div",
       { "aria-label": "Mock workflow canvas" },
       ...nodes.map((node) => React.createElement("button", { key: node.id, type: "button", onClick: (event) => onNodeClick(event, node) }, `Node ${node.id}`)),
-      ...edges.map((edge) => React.createElement("button", { key: edge.id, type: "button", onClick: (event) => onEdgeClick(event, edge) }, `Edge ${edge.source} to ${edge.target}`)),
+      ...edges.map((edge) => React.createElement("button", {
+        key: edge.id,
+        type: "button",
+        "data-source-handle": edge.sourceHandle,
+        "data-target-handle": edge.targetHandle,
+        onClick: (event) => onEdgeClick(event, edge),
+      }, `Edge ${edge.source} to ${edge.target}`)),
       children,
     ),
   };
@@ -67,6 +73,24 @@ const workflow: WorkflowDTO = {
       { source: "test", target: "implement", condition: { operator: "equals", path: ["verdict"], value: "rejected" }, futureEdgeField: ["keep"] },
     ],
     builderMetadata: { positions: { implement: { x: 10, y: 20 }, test: { x: 300, y: 20 } }, futureBuilderField: "keep" },
+  },
+};
+
+const threeNodeCycle: WorkflowDTO = {
+  ...workflow,
+  id: "8",
+  name: "Three-node review cycle",
+  graph: {
+    nodes: [
+      { id: "A", agentId: "1", config: { entry: true } },
+      { id: "B", agentId: "2", config: {} },
+      { id: "C", agentId: "2", config: {} },
+    ],
+    edges: [
+      { source: "A", target: "B", condition: { operator: "always" } },
+      { source: "B", target: "C", condition: { operator: "always" } },
+      { source: "C", target: "A", condition: { operator: "equals", path: ["verdict"], value: "rejected" } },
+    ],
   },
 };
 
@@ -178,5 +202,18 @@ describe("WorkflowEditor", () => {
     });
     expect(container.textContent).toContain("Save conflict");
     expect(container.textContent).not.toContain("Saved to PostgreSQL");
+  });
+
+  it("renders the closing edge of a three-node cycle on the return path", async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Implementer"), agent("2", "Reviewer")]));
+      if (url === "/api/workflows") return Promise.resolve(json([threeNodeCycle]));
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await renderAndLoad();
+
+    expect(findButton(container, "Edge A to B").dataset.sourceHandle).toBeUndefined();
+    expect(findButton(container, "Edge C to A").dataset.sourceHandle).toBe("loop-source");
+    expect(findButton(container, "Edge C to A").dataset.targetHandle).toBe("loop-target");
   });
 });
