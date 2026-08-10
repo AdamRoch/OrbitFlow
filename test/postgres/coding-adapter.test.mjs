@@ -35,6 +35,16 @@ const HANGING_OPENCODE = fileURLToPath(
   new URL("../../coding-adapter/fixtures/hanging-opencode.mjs", import.meta.url),
 );
 const TEST_CREDENTIAL = "fact12-disposable-secret"; // gitleaks:allow, deterministic fake
+const migrationDirectory = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const migrationFile = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(migrationDirectory))
+    .filter((name) => migrationFile.test(name))
+    .sort();
+}
 
 test("FACT-12 production coding-tool contract", async (t) => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -47,14 +57,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     const identity = await pool.query("SELECT current_database() AS name");
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT12_PROOF_DATABASE);
     const cleanMigration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(cleanMigration.applied, [
-      "0001-control-plane.sql",
-      "0002-tickets.sql",
-      "0003-message-plane.sql",
-      "0004-message-consumption.sql",
-      "0009-state-stream-notify.sql",
-      "0010-coding-tool-usage.sql",
-    ]);
+    assert.deepEqual(cleanMigration.applied, await committedMigrationFiles());
     const root = await realpath(configuredRoot);
     const fixtures = await seedFixtures(pool, 16);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
