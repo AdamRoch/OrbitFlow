@@ -60,15 +60,21 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
   const activeRequest = useRef<AbortController | null>(null);
   const refreshSequence = useRef(0);
   const queuedWake = useRef(false);
-  const refreshSnapshotRef = useRef<(nextFilters: MonitoringFilters, supersede?: boolean) => void>(() => {});
+  const queuedRecoveryEpoch = useRef<number | undefined>(undefined);
+  const streamRecoveryEpoch = useRef(0);
+  const refreshSnapshotRef = useRef<(nextFilters: MonitoringFilters, supersede?: boolean, recoveryEpoch?: number) => void>(() => {});
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const degraded = refreshFailure ?? (streamConnected ? null : "Live listener is reconnecting. Showing the last authoritative snapshot.");
+  const [streamRecoveryPending, setStreamRecoveryPending] = useState(false);
+  const degraded = refreshFailure ?? (streamRecoveryPending
+    ? "Live listener is connected. Waiting for an authoritative snapshot."
+    : streamConnected ? null : "Live listener is reconnecting. Showing the last authoritative snapshot.");
 
   useEffect(() => {
-    refreshSnapshotRef.current = async (nextFilters: MonitoringFilters, supersede = false) => {
+    refreshSnapshotRef.current = async (nextFilters: MonitoringFilters, supersede = false, recoveryEpoch?: number) => {
     if (activeRequest.current) {
       if (!supersede) {
         queuedWake.current = true;
+        if (recoveryEpoch !== undefined) queuedRecoveryEpoch.current = recoveryEpoch;
         return;
       }
       activeRequest.current.abort();
@@ -89,6 +95,7 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
       if (sequence !== refreshSequence.current || controller.signal.aborted) return;
       setSnapshot(nextSnapshot);
       setRefreshFailure(null);
+      if (recoveryEpoch === streamRecoveryEpoch.current) setStreamRecoveryPending(false);
     } catch {
       if (sequence !== refreshSequence.current || (controller.signal.aborted && !timedOut)) return;
       // Keep the last authoritative snapshot visible. A stream wake-up has no
@@ -103,7 +110,9 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
         setLoading(false);
         if (queuedWake.current) {
           queuedWake.current = false;
-          void refreshSnapshotRef.current(filtersRef.current);
+          const queuedEpoch = queuedRecoveryEpoch.current;
+          queuedRecoveryEpoch.current = undefined;
+          void refreshSnapshotRef.current(filtersRef.current, false, queuedEpoch);
         }
       }
     }
@@ -114,7 +123,7 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
     const stream = new EventSource("/api/state-stream");
     const onOpen = () => {
       setStreamConnected(true);
-      void refreshSnapshotRef.current(filtersRef.current);
+      void refreshSnapshotRef.current(filtersRef.current, false, streamRecoveryEpoch.current);
     };
     const wake = (event: MessageEvent<string>) => {
       try {
@@ -124,6 +133,8 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
       }
     };
     const onError = () => {
+      streamRecoveryEpoch.current += 1;
+      setStreamRecoveryPending(true);
       setStreamConnected(false);
     };
     stream.addEventListener("open", onOpen);

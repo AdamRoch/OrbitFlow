@@ -454,6 +454,7 @@ export class ControlPlaneRepository {
       );
       await this.options.afterMonitoringPanelRead?.("runs");
       const retainedRuns = runs.rows.slice(0, RUN_LIMIT);
+      const runsTruncated = runs.rows.length > RUN_LIMIT;
       const runIds = retainedRuns.map((row) => String(row.id));
       const scopedRuns = runIds.length > 0 ? runIds : ["-1"];
 
@@ -597,10 +598,12 @@ export class ControlPlaneRepository {
         costLimit: row.cost_limit === null ? null : String(row.cost_limit),
         overCostLimit: Boolean(row.over_cost_limit),
       })),
-      runsTruncated: runs.rows.length > RUN_LIMIT,
+      runsTruncated,
       boardTruncated: board.rows.length > MONITORING_LIMIT,
       agentsTruncated: agents.rows.length > MONITORING_LIMIT,
-      runCostsTruncated: runCosts.rows.length > RUN_LIMIT,
+      // runCosts are scoped to the same retained runs. When that run set is
+      // capped, its otherwise-full aggregate list is still incomplete.
+      runCostsTruncated: runsTruncated || runCosts.rows.length > RUN_LIMIT,
       agentCostsTruncated: agentCosts.rows.length > MONITORING_LIMIT,
       agentOptionsTruncated: agentOptions.rows.length > MONITORING_LIMIT,
       };

@@ -456,4 +456,17 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     expect(capped.agentCosts).toHaveLength(200);
     expect(capped).toMatchObject({ boardTruncated: true, agentsTruncated: true, agentCostsTruncated: true, trailTruncated: false });
   });
+
+  it("FACT-22 marks per-run costs truncated when the retained run set exceeds 100", async () => {
+    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Run cap workflow', 'FACT-22', '{}') RETURNING id");
+    const agent = await pool.query("INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Run cap agent', 'worker', 'Prove retained-run cost truncation.', 'test', '{}', '{}', '{}') RETURNING id");
+    await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) SELECT $1, 'running', 'ui', '{}' FROM generate_series(1, 101)", [workflow.rows[0].id]);
+    await pool.query("INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost) SELECT run.id, $2, 'test', 1, 2, 0.01000000 FROM workflow_runs AS run WHERE run.workflow_id = $1", [workflow.rows[0].id, agent.rows[0].id]);
+
+    const capped = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: null, agentId: null, messageType: null });
+
+    expect(capped.runs).toHaveLength(100);
+    expect(capped.runCosts).toHaveLength(100);
+    expect(capped).toMatchObject({ runsTruncated: true, runCostsTruncated: true });
+  });
 });

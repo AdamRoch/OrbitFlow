@@ -136,18 +136,19 @@ describe("MonitoringDashboard", () => {
     await act(async () => requests[1]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
   });
 
-  it("keeps initial and EventSource degradation visible until a later snapshot succeeds", async () => {
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await act(async () => root.render(<MonitoringDashboard initialSnapshot={snapshot} initialTab="board" initialDegraded />));
-    const stream = FakeEventSource.instances.at(-1)!;
-    expect(container.textContent).toContain("Initial PostgreSQL snapshot is unavailable");
+  it("keeps EventSource degradation visible until its recovery snapshot succeeds", async () => {
+    const recovery = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(() => recovery.promise));
+    const stream = FakeEventSource.instances[0]!;
     await act(async () => stream.emit("error"));
-    expect(container.textContent).toContain("Initial PostgreSQL snapshot is unavailable");
     expect(container.textContent).toContain("Degraded snapshot");
     await act(async () => stream.emit("open"));
+    expect(container.textContent).toContain("Waiting for an authoritative snapshot");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Waiting for an authoritative snapshot");
+    expect(container.textContent).not.toContain("Snapshot current");
+    await act(async () => recovery.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
     expect(container.textContent).toContain("Snapshot current");
-    expect(container.textContent).not.toContain("Initial PostgreSQL snapshot is unavailable");
+    expect(container.textContent).not.toContain("Waiting for an authoritative snapshot");
   });
 
   it("uses roving tab focus and keeps all selected-run agent choices after filtering", async () => {
