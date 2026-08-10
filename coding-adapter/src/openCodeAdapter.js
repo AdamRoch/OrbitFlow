@@ -6,11 +6,11 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { devNull, tmpdir } from "node:os";
+import { devNull } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSafeGit } from "./git.js";
+import { createOwnedTempRoot, removeOwnedTempRoot } from "./ownedTemp.js";
 import { getOwnedWorkspace, removeOwnedWorkspace } from "./workspace.js";
 import {
   MissingCredentialsError,
@@ -121,7 +121,9 @@ export function createOpenCodeAdapter({
       };
     } finally {
       try {
-        await rm(isolatedState.root, { recursive: true, force: true });
+        if (!removeOwnedTempRoot(isolatedState.ownership)) {
+          throw new Error("temporary state ownership changed");
+        }
       } catch {
         throw new CliFailureError("failed to clean isolated opencode state");
       }
@@ -132,8 +134,10 @@ export function createOpenCodeAdapter({
 }
 
 async function createIsolatedState(apiKeyEnvVar, credential, toolPath) {
-  const root = await mkdtemp(path.join(tmpdir(), "opencode-state-"));
+  const ownership = await createOwnedTempRoot("opencode-state-");
+  const root = ownership.root;
   return {
+    ownership,
     root,
     env: {
       [apiKeyEnvVar]: credential,

@@ -1,38 +1,34 @@
-import { randomBytes } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstatSync, realpathSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { CliFailureError } from "./errors.js";
 import { runSafeGit } from "./git.js";
+import {
+  createOwnedTempRoot,
+  isOwnedTempRoot,
+  removeOwnedTempRoot,
+} from "./ownedTemp.js";
 
 const WORKSPACE_NAME = "workspace";
-const OWNER_MARKER = ".coding-adapter-owner";
 const ownedWorkspaces = new Map();
 
 export async function createIsolatedGitWorkspace({ prefix = "coding-adapter-" } = {}) {
-  if (!/^[A-Za-z0-9._-]+$/.test(prefix)) {
-    throw new Error("workspace prefix must be a filename prefix");
-  }
-
-  const root = await mkdtemp(path.join(tmpdir(), prefix));
-  const dir = path.join(root, WORKSPACE_NAME);
-  const token = randomBytes(32).toString("hex");
+  const rootOwnership = await createOwnedTempRoot(prefix);
+  const dir = path.join(rootOwnership.root, WORKSPACE_NAME);
   let canonicalWorkspace;
   try {
     await mkdir(dir);
-    await writeFile(path.join(root, OWNER_MARKER), token, { flag: "wx", mode: 0o600 });
-    const canonicalRoot = realpathSync(root);
     canonicalWorkspace = realpathSync(dir);
     ownedWorkspaces.set(
       canonicalWorkspace,
       Object.freeze({
-        root: canonicalRoot,
+        root: rootOwnership.root,
         workspace: canonicalWorkspace,
-        token,
+        rootOwnership,
       })
     );
 
-    runSafeGit(["init", "-q"], { cwd: canonicalWorkspace, home: canonicalRoot });
+    runSafeGit(["init", "-q"], { cwd: canonicalWorkspace, home: rootOwnership.root });
     const gitHome = path.join(canonicalWorkspace, ".git", "isolated-home");
     await writeFile(path.join(canonicalWorkspace, ".gitkeep"), "");
     runSafeGit(["add", "-A"], { cwd: canonicalWorkspace, home: gitHome });
@@ -52,7 +48,13 @@ export async function createIsolatedGitWorkspace({ prefix = "coding-adapter-" } 
     return canonicalWorkspace;
   } catch (err) {
     ownedWorkspaces.delete(canonicalWorkspace);
-    await rm(root, { recursive: true, force: true });
+    try {
+      if (!removeOwnedTempRoot(rootOwnership)) {
+        throw new Error("temporary root ownership changed");
+      }
+    } catch {
+      throw new CliFailureError("failed to clean isolated workspace safely");
+    }
     throw err;
   }
 }
@@ -70,21 +72,7 @@ export function getOwnedWorkspace(workspace) {
     return null;
   }
 
-  try {
-    const marker = path.join(ownership.root, OWNER_MARKER);
-    const markerStat = lstatSync(marker);
-    const canonicalTemp = realpathSync(tmpdir());
-    if (
-      !markerStat.isFile() ||
-      realpathSync(ownership.root) !== ownership.root ||
-      path.dirname(ownership.root) !== canonicalTemp ||
-      readFileSync(marker, "utf8") !== ownership.token
-    ) {
-      return null;
-    }
-  } catch {
-    return null;
-  }
+  if (!isOwnedTempRoot(ownership.rootOwnership)) return null;
 
   return ownership;
 }
@@ -94,26 +82,30 @@ export async function removeOwnedWorkspace(ownership) {
   if (
     !registered ||
     registered !== ownership ||
-    path.dirname(ownership.root) !== realpathSync(tmpdir()) ||
     ownership.workspace !== path.join(ownership.root, WORKSPACE_NAME)
   ) {
     return false;
   }
 
-  await rm(ownership.root, { recursive: true, force: true });
+  if (!removeOwnedTempRoot(ownership.rootOwnership)) return false;
   ownedWorkspaces.delete(ownership.workspace);
   return true;
 }
 
 export async function removeIsolatedGitWorkspace(workspace) {
-  try {
-    lstatSync(workspace);
-  } catch (err) {
-    if (err?.code === "ENOENT") return;
-    throw err;
+  let ownership = getOwnedWorkspace(workspace);
+  if (!ownership) {
+    ownership = ownedWorkspaces.get(path.resolve(workspace));
+    if (!ownership) {
+      try {
+        lstatSync(workspace);
+      } catch (err) {
+        if (err?.code === "ENOENT") return;
+        throw err;
+      }
+    }
   }
-  const ownership = getOwnedWorkspace(workspace);
   if (!ownership || !(await removeOwnedWorkspace(ownership))) {
-    throw new Error("workspace is not owned by the coding adapter");
+    throw new CliFailureError("workspace ownership changed; cleanup refused");
   }
 }

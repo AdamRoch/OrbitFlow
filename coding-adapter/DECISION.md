@@ -103,6 +103,19 @@ subprocess uses a secret-free environment with host configuration, prompting,
 hooks, external diffs, text conversion, pagers, lazy fetching, replacement
 objects, and fsmonitor disabled.
 
+Every recursive cleanup revalidates the temporary root and ownership marker by
+their original filesystem device and inode immediately before removal. A
+renamed or substituted path produces a structured failure and is left intact.
+
+## Trust boundary
+
+This Phase 0 proof assumes evaluator-authored tasks and every program they
+invoke are trusted, and it accepts only an adapter-created temporary workspace.
+It is not a sandbox for hostile task code, tool subprocesses, or detached
+descendants, and it makes no production or untrusted code containment claim.
+Such use requires operating system sandboxing and process tree supervision
+outside this tracer bullet adapter.
+
 ## Proof
 
 Run `npm ci`, then `OPENROUTER_API_KEY=<key> npm run prove` from
@@ -116,5 +129,6 @@ workspace. Run without the key to see the missing-credential failure path.
 It covers pure command construction, minimal environment containment, state
 cleanup, complete streaming usage parsing, bounded/redacted output, unstaged
 diffs, encoded credential detection across ignored and Git state, owned-root
-deletion, caller-workspace preservation, isolated Git behavior, protocol
-validation, timeouts, and structured failure mapping.
+deletion, substituted-root preservation, setup-failure cleanup,
+caller-workspace preservation, isolated Git behavior, protocol validation,
+timeouts, and structured failure mapping.
