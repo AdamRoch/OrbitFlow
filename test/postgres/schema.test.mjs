@@ -288,13 +288,14 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         "0003-message-plane.sql",
         "0004-message-consumption.sql",
         "0005-coding-tool-usage.sql",
+        "0009-state-stream-notify.sql",
       ]);
-      assert.equal(firstLog.length, 5);
+      assert.equal(firstLog.length, 6);
 
       const journalBefore = await client.query(
         "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
       );
-      assert.equal(journalBefore.rowCount, 5);
+      assert.equal(journalBefore.rowCount, 6);
       for (const row of journalBefore.rows) {
         assert.match(row.checksum, /^[a-f0-9]{64}$/);
       }
@@ -587,13 +588,18 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       assert.deepEqual(
         triggers.rows.map((row) => row.tgname),
         [
+          "agents_90_notify_state_stream",
+          "cost_events_90_notify_state_stream",
           "messages_05_preserve_order",
           "messages_10_enforce_ticket_run",
           "messages_20_assign_sequence",
           "messages_30_track_consumption",
           "messages_40_refresh_ready_run",
+          "messages_90_notify_state_stream",
           "tickets_10_enforce_message_runs",
+          "tickets_90_notify_state_stream",
           "workflow_runs_30_initialize_message_consumer",
+          "workflow_runs_90_notify_state_stream",
         ],
       );
     });

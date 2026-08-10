@@ -22,6 +22,8 @@
     "fact6:proof": "bash scripts/fact-6-postgres-proof.sh",
     "fact12:proof": "bash scripts/fact-12-coding-adapter-proof.sh",
     "fact9:proof": "bash scripts/fact-9-message-bus-proof.sh",
+    "test:state-stream": "node --experimental-strip-types --test test/postgres/state-stream.test.mjs",
+    "fact18:proof": "bash scripts/fact-18-state-stream-proof.sh",
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
     "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs",
     "coding-tool": "node bin/orbit-coding-tool.mjs"
