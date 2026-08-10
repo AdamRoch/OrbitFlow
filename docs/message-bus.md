@@ -106,7 +106,10 @@ operator inspection and explicit age-based retention work. Receipt time uses
 consumer state. Per-run cursors cascade only when a run can otherwise be
 deleted; existing messages already restrict run deletion. There is no automatic
 receipt cleanup in v1: retention must explicitly remove receipts before their
-messages in one controlled operation.
+messages in one controlled operation. After FACT-10, workflow dispatches and
+fan-out groups also retain the source and output messages that caused durable
+transitions; retention must preserve or explicitly retire that engine history
+before deleting those messages.
 
 ## Disposable proof
 
