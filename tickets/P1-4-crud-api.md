@@ -10,3 +10,10 @@ REST CRUD on the control plane for `agents` (all §4 fields incl. guardrails, in
 - [ ] Agent guardrails and interaction_rules round-trip intact.
 - [ ] Workflow graph JSON round-trips byte-for-byte (builder in P4-3 depends on this).
 - [ ] Covered later by the CRUD round-trip test in P5-4 — keep handlers testable (no framework globals in logic).
+
+## Implementation status
+
+**in_progress** — PostgreSQL repository, REST adapters, and the disposable
+database proof are complete locally. Final inherited gates and direct-PR
+publication are pending; Firstmate owns independent review, merge, and tracker
+completion.

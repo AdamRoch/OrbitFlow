@@ -54,6 +54,14 @@ export function handleError(err: unknown): NextResponse {
     // Malformed JSON body.
     return badRequest("request body must be valid JSON", "invalid_json");
   }
+  // PostgreSQL's integrity errors are intentionally translated at the HTTP
+  // boundary, rather than exposing a table, constraint, or query to callers.
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === "23505" || code === "23503" || code === "23514") {
+      return conflict("request conflicts with existing control-plane data", "conflict");
+    }
+  }
   // Surface a stable envelope; print the real error for the operator.
   console.error("[api] unhandled error:", err);
   return NextResponse.json(
