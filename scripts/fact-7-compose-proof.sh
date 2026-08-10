@@ -168,7 +168,7 @@ if [[ -z "$migrate_id" ]] || [[ "$(docker inspect --format '{{.State.ExitCode}}'
 fi
 
 assert_app_http() {
-  node -e "Promise.all([fetch('http://127.0.0.1:$app_port/api/health').then(async (response) => { const body = await response.json(); if (!response.ok || body.status !== 'ready') throw new Error('health endpoint is not ready'); }), fetch('http://127.0.0.1:$app_port/').then(async (response) => { const body = await response.text(); if (!response.ok || !body.includes('OrbitFactory')) throw new Error('UI is not reachable'); })]).catch((error) => { console.error(error.message); process.exit(1); });"
+  node -e "Promise.all([fetch('http://127.0.0.1:$app_port/api/health').then(async (response) => { const body = await response.json(); if (!response.ok || body.status !== 'ready') throw new Error('health endpoint is not ready'); }), fetch('http://127.0.0.1:$app_port/api/agents').then(async (response) => { const body = await response.json(); if (!response.ok || !Array.isArray(body)) throw new Error('PostgreSQL-backed agents endpoint is not reachable'); }), fetch('http://127.0.0.1:$app_port/').then(async (response) => { const body = await response.text(); if (!response.ok || !body.includes('OrbitFactory')) throw new Error('UI is not reachable'); })]).catch((error) => { console.error(error.message); process.exit(1); });"
 }
 
 assert_app_http

@@ -18,10 +18,10 @@
 
 ## Implementation status
 
-In progress: the compose stack keeps a fixed internal engine port with separate
-localhost publication. Provider credentials are absent from the long-lived
-engine and reach OpenCode only through the opt-in ephemeral adapter profile and
-its minimal child environment. `docs/fact-7-docker-compose.md` retains
-required-config, failed-dependency, hermetic interpolation, lifecycle,
-credential-boundary, and exact label-scoped resource and image teardown proof.
+In progress: the FACT-7 branch has merged current `origin/main`, and Compose
+now supplies the app's internal PostgreSQL `DATABASE_URL` while retaining the
+inherited board's SQLite foundation path. The retained no-cache proof requires
+health, UI, and PostgreSQL-backed `GET /api/agents` before and after a full
+restart, alongside the existing required-config, failed-dependency, hermetic
+interpolation, credential-boundary, and exact label-scoped teardown checks.
 Firstmate owns independent exact-head review, merge, and tracker completion.

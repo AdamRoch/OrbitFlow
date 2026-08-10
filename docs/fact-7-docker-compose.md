@@ -14,7 +14,8 @@
 
 3. Open `http://127.0.0.1:${ORBITFACTORY_APP_PORT}`. The current inherited
    board UI is reachable there. `GET /api/health` reports its explicit
-   `sqlite-foundation` persistence state.
+   `sqlite-foundation` persistence state, while `GET /api/agents` exercises
+   the current PostgreSQL-backed control plane.
 
 `postgres` must pass `pg_isready` before `migrate` runs. `app` starts only
 after `migrate` exits successfully. `engine` starts only after the app,
@@ -27,7 +28,7 @@ dependencies.
 | --- | --- | --- |
 | `postgres` | FACT-6 PostgreSQL authority | `pg_isready` |
 | `migrate` | One-shot ordered FACT-6 migration runner | exits successfully |
-| `app` | Current OrbitTrack-derived board UI | `GET /api/health` |
+| `app` | Current OrbitTrack-derived board UI plus control-plane API | `GET /api/health`; proof also requires PostgreSQL-backed `GET /api/agents` |
 | `openclaw` | Dedicated FACT-1 gateway container | `GET /readyz` on its internal port |
 | `engine` | Explicit Phase 1 engine entrypoint, not a workflow engine | `GET /readyz` plus `SELECT 1` |
 
@@ -93,8 +94,8 @@ bash scripts/fact-7-compose-proof.sh
 
 It validates required-config failure, hermetic Compose interpolation, a
 meaningful failed-migration dependency path, a no-cache build, ordered startup
-and health, both the health endpoint and UI reachability before and after
-restart, the exact migration history, gateway and OpenCode executables, the
+and health, UI, and PostgreSQL-backed `GET /api/agents` reachability
+before and after restart, the exact migration history, gateway and OpenCode executables, the
 credential-free FACT-3 adapter contract, and a fake OpenCode child that proves
 the scoped adapter key and minimal child environment without a provider call.
 It then verifies a no-op migration rerun, restart, and teardown. The proof uses
