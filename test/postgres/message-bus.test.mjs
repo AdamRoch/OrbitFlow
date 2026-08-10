@@ -723,6 +723,61 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       }
     });
 
+    await t.test("rolls back a late message without leaving a durable queue entry", async () => {
+      const runId = await createRun("late-message-rollback");
+      const earlier = new Client({ connectionString: databaseUrl });
+      const later = new Client({ connectionString: databaseUrl });
+      await Promise.all([earlier.connect(), later.connect()]);
+      let laterOpen = false;
+
+      try {
+        await earlier.query("BEGIN");
+        const first = await insertMessage(earlier, {
+          runId,
+          sender: "agent:early",
+          recipient: "agent:next",
+          type: "output",
+          payload: { order: "first" },
+        });
+        await earlier.query("COMMIT");
+
+        await later.query("BEGIN");
+        laterOpen = true;
+        const second = await insertMessage(later, {
+          runId,
+          sender: "agent:late",
+          recipient: "agent:next",
+          type: "output",
+          payload: { order: "second" },
+        });
+        assert.deepEqual([first.sequenceNumber, second.sequenceNumber], ["1", "2"]);
+        await later.query("ROLLBACK");
+        laterOpen = false;
+
+        const persisted = await client.query(
+          `SELECT sequence_number, payload
+           FROM messages
+           WHERE run_id = $1
+           ORDER BY sequence_number`,
+          [runId],
+        );
+        assert.deepEqual(persisted.rows, [{ sequence_number: "1", payload: { order: "first" } }]);
+        const routed = await consumeNextMessage(pool, route("late-message-rollback"), {
+          consumerId: "late-message-rollback-engine",
+        });
+        assert.equal(routed?.message.sequenceNumber, "1");
+        assert.equal(
+          await consumeNextMessage(pool, route("late-message-rollback"), {
+            consumerId: "late-message-rollback-engine",
+          }),
+          null,
+        );
+      } finally {
+        if (laterOpen) await later.query("ROLLBACK");
+        await Promise.all([earlier.end(), later.end()]);
+      }
+    });
+
     await t.test("observes handler failure, retries, and stops cleanly", async () => {
       const runId = await createRun("worker-retry");
       const message = await insertMessage(pool, {

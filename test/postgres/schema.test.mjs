@@ -204,6 +204,7 @@ const requiredConstraints = [
 
 const requiredIndexes = [
   "idx_agent_skills_skill",
+  "idx_agent_tool_invocations_run_id",
   "idx_cost_events_run_agent",
   "idx_cost_events_run_ordered",
   "idx_dependencies_blocked",

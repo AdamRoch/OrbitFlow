@@ -14,3 +14,6 @@ CREATE TABLE agent_tool_invocations (
   CONSTRAINT agent_tool_invocations_hash_format CHECK (request_hash ~ '^[0-9a-f]{64}$'),
   CONSTRAINT agent_tool_invocations_response_object CHECK (jsonb_typeof(response) = 'object')
 );
+
+CREATE INDEX idx_agent_tool_invocations_run_id
+  ON agent_tool_invocations(run_id);

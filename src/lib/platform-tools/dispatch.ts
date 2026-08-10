@@ -61,6 +61,10 @@ export class PlatformToolError extends Error {
   }
 }
 
+function isPlatformToolCommand(value: string): value is PlatformToolCommand {
+  return PLATFORM_TOOL_COMMANDS.includes(value as PlatformToolCommand);
+}
+
 type CreateTicketInput = Attribution & {
   command: "create_ticket";
   projectId: string;
@@ -100,10 +104,12 @@ type ListTicketsInput = Attribution & {
   status?: TicketStatus;
   limit: number;
   afterId?: string;
+  idempotencyKey: string;
 };
 
 type ParsedInput = CreateTicketInput | UpdateTicketInput | PostMessageInput | ListTicketsInput;
 type MutationInput = CreateTicketInput | UpdateTicketInput | PostMessageInput;
+type InvocationInput = MutationInput | ListTicketsInput;
 type Row = Record<string, unknown>;
 
 const TICKET_STATUSES = new Set<TicketStatus>(["backlog", "todo", "in_progress", "done", "canceled"]);
@@ -250,7 +256,7 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
       idempotencyKey: idempotencyKey(input.idempotencyKey),
     };
   }
-  knownFields(input, [...base, "projectId", "status", "limit", "afterId"]);
+  knownFields(input, [...base, "projectId", "status", "limit", "afterId", "idempotencyKey"]);
   const limit = input.limit === undefined ? 50 : input.limit;
   if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new PlatformToolError("invalid_limit", "limit must be an integer from 1 to 100");
@@ -258,7 +264,7 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
   return {
     command, ...attribution(input), ...(input.projectId === undefined ? {} : { projectId: id(input.projectId, "projectId") }),
     ...(input.status === undefined ? {} : { status: status(input.status) }), limit,
-    ...(input.afterId === undefined ? {} : { afterId: id(input.afterId, "afterId") }),
+    ...(input.afterId === undefined ? {} : { afterId: id(input.afterId, "afterId") }), idempotencyKey: idempotencyKey(input.idempotencyKey),
   };
 }
 
@@ -269,7 +275,7 @@ function stableJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
 }
 
-function requestHash(input: MutationInput): string {
+function requestHash(input: InvocationInput): string {
   return createHash("sha256").update(stableJson(input)).digest("hex");
 }
 
@@ -379,7 +385,11 @@ async function postMessage(client: PoolClient, input: PostMessageInput): Promise
   return { message: messageFromRow(message), replayed: false };
 }
 
-async function mutate(client: PoolClient, input: MutationInput): Promise<PlatformToolResult> {
+async function invoke<T extends PlatformToolResult>(
+  client: PoolClient,
+  input: InvocationInput,
+  operation: () => Promise<T>,
+): Promise<T> {
   const hash = requestHash(input);
   const inserted = await one<Row>(
     client,
@@ -397,13 +407,9 @@ async function mutate(client: PoolClient, input: MutationInput): Promise<Platfor
     if (!prior || prior.request_hash !== hash) {
       throw new PlatformToolError("idempotency_key_reused", "idempotencyKey was already used for a different request");
     }
-    return { ...(prior.response as PlatformToolResult), replayed: true } as PlatformToolResult;
+    return { ...(prior.response as T), replayed: true } as T;
   }
-  const result = input.command === "create_ticket"
-    ? await createTicket(client, input)
-    : input.command === "update_ticket"
-      ? await updateTicket(client, input)
-      : await postMessage(client, input);
+  const result = await operation();
   await client.query(
     `UPDATE agent_tool_invocations SET response = $4::jsonb, updated_at = clock_timestamp()
      WHERE agent_id = $1 AND run_id = $2 AND idempotency_key = $3`,
@@ -457,12 +463,22 @@ async function transaction<T>(pool: Pool, operation: (client: PoolClient) => Pro
  */
 export async function dispatchPlatformTool(
   pool: Pool,
-  command: PlatformToolCommand,
+  command: string,
   value: unknown,
 ): Promise<PlatformToolResult> {
+  if (!isPlatformToolCommand(command)) {
+    throw new PlatformToolError("unknown_command", "command must be a supported platform tool command");
+  }
   const input = parseInput(command, value);
   return transaction(pool, async (client) => {
     await requireAttribution(client, input);
-    return input.command === "list_tickets" ? listTickets(client, input) : mutate(client, input);
+    if (input.command === "list_tickets") {
+      return invoke(client, input, () => listTickets(client, input));
+    }
+    return invoke(client, input, () => input.command === "create_ticket"
+      ? createTicket(client, input)
+      : input.command === "update_ticket"
+        ? updateTicket(client, input)
+        : postMessage(client, input));
   });
 }

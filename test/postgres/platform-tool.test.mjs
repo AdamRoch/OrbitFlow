@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
+import { PlatformToolError, dispatchPlatformTool } from "../../src/lib/platform-tools/dispatch.ts";
 
 const { Client } = pg;
 pg.types.setTypeParser(1184, (value) => value);
@@ -33,6 +34,21 @@ function callAgentTool(command, input, environment = {}) {
     });
   });
 }
+
+test("dispatch rejects unknown commands before parsing input or opening PostgreSQL", async () => {
+  const pool = {
+    connect: async () => assert.fail("unknown commands must not open PostgreSQL"),
+  };
+  await assert.rejects(
+    () => dispatchPlatformTool(pool, "delete_ticket", null),
+    (error) => {
+      assert.ok(error instanceof PlatformToolError);
+      assert.equal(error.code, "unknown_command");
+      assert.equal(error.message, "command must be a supported platform tool command");
+      return true;
+    },
+  );
+});
 
 test("FACT-13 production agent CLI persists attributed ticket and message mutations", { skip: !databaseUrl }, async (t) => {
   assert.equal(proofDatabase, new URL(databaseUrl).pathname.slice(1), "proof database identity must match ORBITFACTORY_FACT13_PROOF_DATABASE");
@@ -150,15 +166,31 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
         runId: attribution.runId,
         ticketId: String(ticket.rows[0].id),
       });
-      const listed = await callAgentTool("list_tickets", attribution);
+      const listInput = { ...attribution, idempotencyKey: "agent-turn-1-list" };
+      const listed = await callAgentTool("list_tickets", listInput);
       assert.equal(listed.exitCode, 0);
       assert.deepEqual(listed.stdout.result.tickets.map((item) => item.id), [String(ticket.rows[0].id)]);
       assert.equal(listed.stdout.result.nextCursor, null);
+      const listRetry = await callAgentTool("list_tickets", listInput);
+      assert.equal(listRetry.exitCode, 0);
+      assert.equal(listRetry.stdout.result.replayed, true);
+      const listInvocation = await client.query(
+        `SELECT agent_id, run_id, idempotency_key, response
+         FROM agent_tool_invocations
+         WHERE idempotency_key = $1`,
+        [listInput.idempotencyKey],
+      );
+      assert.deepEqual(listInvocation.rows, [{
+        agent_id: attribution.agentId,
+        run_id: attribution.runId,
+        idempotency_key: listInput.idempotencyKey,
+        response: listed.stdout.result,
+      }]);
     });
 
     await t.test("invalid attribution, malformed ids, conflicting retry keys, and failed mutations leave no partial rows", async () => {
       const before = await client.query("SELECT count(*)::int AS tickets, (SELECT count(*)::int FROM messages) AS messages FROM tickets");
-      const missingAgent = await callAgentTool("list_tickets", { runId: attribution.runId });
+      const missingAgent = await callAgentTool("list_tickets", { runId: attribution.runId, idempotencyKey: "agent-turn-missing-agent" });
       assert.equal(missingAgent.exitCode, 1);
       assert.equal(missingAgent.stdout.error.code, "invalid_id");
       const invalidTicket = await callAgentTool("post_message", {

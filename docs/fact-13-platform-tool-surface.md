@@ -7,11 +7,11 @@ four commands and a single JSON argument:
 node bin/orbit-agent-tools.mjs create_ticket '{"agentId":"1","runId":"1","projectId":"1","title":"Investigate queue","idempotencyKey":"turn-12-create-1"}'
 node bin/orbit-agent-tools.mjs update_ticket '{"agentId":"1","runId":"1","ticketId":"1","expectedUpdatedAt":"2026-08-10T12:00:00Z","status":"todo","idempotencyKey":"turn-12-update-1"}'
 node bin/orbit-agent-tools.mjs post_message '{"agentId":"1","runId":"1","ticketId":"1","recipient":"agent:reviewer","type":"question","payload":{"question":"Should this be split?"},"idempotencyKey":"turn-12-question-1"}'
-node bin/orbit-agent-tools.mjs list_tickets '{"agentId":"1","runId":"1"}'
+node bin/orbit-agent-tools.mjs list_tickets '{"agentId":"1","runId":"1","idempotencyKey":"turn-12-list-1"}'
 ```
 
 The CLI emits one bounded JSON response to stdout and does not require an API
-credential. `DATABASE_URL` is its only configuration. Mutating commands require
+credential. `DATABASE_URL` is its only configuration. Every command requires
 an idempotency key and complete agent/run/ticket attribution; ticket creation
 derives the new ticket attribution in the same PostgreSQL transaction.
 
@@ -24,7 +24,8 @@ ticket ownership directly in PostgreSQL, and uses parameterized SQL only.
 appends the requested message type, including `question`. All use FACT-9's
 `insertMessage` producer inside the ticket transaction, so the ticket mutation,
 durable message, enqueue, ready projection, and idempotency result commit or
-roll back together. `list_tickets` is read-only and is scoped to the calling run.
+roll back together. `list_tickets` is read-only, scoped to the calling run, and
+records its durable idempotent invocation in the same PostgreSQL authority.
 
 Migration `0008-platform-tool-idempotency.sql` is required because a retry after
 the agent loses a successful response must replay its first durable result,
