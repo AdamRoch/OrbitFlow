@@ -9,11 +9,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 v1 wraps the `opencode` CLI headlessly, authenticated via `OPENROUTER_API_KEY`
 only. See `coding-adapter/DECISION.md` for why (and why `claude`/`codex` were
 rejected for v1). Interface + implementation: `coding-adapter/src/openCodeAdapter.js`.
-Tests: `cd coding-adapter && node --test` (all fakes, no live calls). Live proof:
-`node coding-adapter/proof/run-proof.js` (needs a real `OPENROUTER_API_KEY`,
-makes a real paid API call). `coding-adapter/` is a standalone Phase 0 spike
-package (no build step, plain ESM) -- Phase 1 (fork OrbitTrack) should fold it
-into the real app rather than leaving it as a separate package.
+OpenCode is pinned as an npm dependency. Install with `cd coding-adapter && npm ci`.
+Tests: `npm test` (all fakes, no live calls). Live proof:
+`OPENROUTER_API_KEY=<key> npm run prove` (makes a real paid API call and verifies
+the pinned CLI version). `coding-adapter/` is a standalone Phase 0 spike package
+(no build step, plain ESM) -- Phase 1 (fork OrbitTrack) should fold it into the
+real app rather than leaving it as a separate package.
 
 ## Maintaining this file
 

@@ -39,3 +39,11 @@ export class MalformedOutputError extends Error {
     this.rawTail = rawTail;
   }
 }
+
+export class CredentialExposureError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CredentialExposureError";
+    this.code = "credential_exposure";
+  }
+}

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
 import { makeFakeChild } from "./fakeChild.js";
+import { TEST_CREDENTIAL } from "./protocolFixture.js";
 
 test("a CLI that never exits is killed and rejected as TimeoutError", async () => {
   const workspace = await createIsolatedGitWorkspace();
@@ -15,7 +16,7 @@ test("a CLI that never exits is killed and rejected as TimeoutError", async () =
 
   const adapter = createOpenCodeAdapter({
     spawn: fakeSpawn,
-    env: { OPENROUTER_API_KEY: "k" },
+    env: { OPENROUTER_API_KEY: TEST_CREDENTIAL },
     timeoutMs: 20,
   });
 
