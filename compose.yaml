@@ -67,11 +67,9 @@ services:
       target: engine
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       OPENCLAW_GATEWAY_URL: ws://openclaw:18789
-      ORBITFACTORY_ENGINE_PORT: ${ORBITFACTORY_ENGINE_PORT:?set ORBITFACTORY_ENGINE_PORT in .env}
     ports:
-      - "127.0.0.1:${ORBITFACTORY_ENGINE_PORT:?set ORBITFACTORY_ENGINE_PORT in .env}:3001"
+      - "127.0.0.1:${ORBITFACTORY_ENGINE_HOST_PORT:?set ORBITFACTORY_ENGINE_HOST_PORT in .env}:3001"
     depends_on:
       app:
         condition: service_healthy

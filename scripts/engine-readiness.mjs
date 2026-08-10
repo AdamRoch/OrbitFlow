@@ -8,10 +8,9 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required for the engine readiness service");
 }
 
-const port = Number(process.env.ORBITFACTORY_ENGINE_PORT ?? "3001");
-if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-  throw new Error("ORBITFACTORY_ENGINE_PORT must be a valid TCP port");
-}
+// Compose health checks and service-to-service callers need a stable internal
+// address. Host publication is configured separately in compose.yaml.
+const port = 3001;
 
 const pool = new Pool({
   connectionString: databaseUrl,

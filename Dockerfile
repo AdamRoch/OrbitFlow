@@ -26,6 +26,12 @@ CMD ["npm", "run", "start"]
 
 FROM app AS engine
 
+USER root
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes git \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN npm ci --prefix coding-adapter --omit=dev
 
 ENV PATH=/app/coding-adapter/node_modules/.bin:$PATH

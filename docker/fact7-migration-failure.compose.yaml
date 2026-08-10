@@ -1,0 +1,3 @@
+services:
+  migrate:
+    command: ["sh", "-c", "exit 17"]

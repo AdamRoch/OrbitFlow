@@ -18,8 +18,9 @@
 
 ## Implementation status
 
-In progress: local implementation and lifecycle proof are complete. The stack
-builds the app, PostgreSQL, ordered migration step, dedicated OpenClaw gateway,
-and engine-owned OpenCode runtime; it has retained configuration, health,
-restart, and teardown proof in `docs/fact-7-docker-compose.md`. Firstmate owns
-independent exact-head review, merge, and tracker completion.
+In progress: the compose stack keeps a fixed internal engine port with separate
+localhost publication, isolates provider credentials from the long-lived
+engine, and retains required-config, failed-dependency, hermetic
+interpolation, lifecycle, and label-scoped teardown proof in
+`docs/fact-7-docker-compose.md`. Firstmate owns independent exact-head review,
+merge, and tracker completion.

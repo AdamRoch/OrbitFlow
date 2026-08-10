@@ -31,7 +31,10 @@ dependencies.
 | `openclaw` | Dedicated FACT-1 gateway container | `GET /readyz` on its internal port |
 | `engine` | Explicit Phase 1 engine entrypoint, not a workflow engine | `GET /readyz` plus `SELECT 1` |
 
-The engine response says `workflowEngine: not_implemented` deliberately.
+The engine response says `workflowEngine: not_implemented` deliberately. It
+always listens on internal port `3001`; `ORBITFACTORY_ENGINE_HOST_PORT` changes
+only its localhost publication, so Compose health and service checks are not
+coupled to a host port choice.
 FACT-7 does not fabricate a dispatch loop, message bus, CRUD control plane,
 Telegram integration, or product UI. Those belong to later tickets.
 
@@ -43,11 +46,15 @@ in its named state volume; it is neither an evaluator-provided credential nor
 baked into an image. The gateway has no host port and accepts only the
 Compose-internal network. Do not publish port `18789`.
 
-The engine image installs the FACT-3 selection, `opencode-ai@1.18.4`, from the
-committed `coding-adapter/package-lock.json`. `opencode --version` is the
-structural readiness check; it makes no provider request and spends no API
-credits. The gateway image has verified upstream Linux `arm64` and `amd64`
-manifests, and the OpenCode package declares Linux `arm64` and `x64` support.
+The engine image installs Git and the FACT-3 selection, `opencode-ai@1.18.4`,
+from the committed `coding-adapter/package-lock.json`. `opencode --version`
+and the credential-free adapter structural proof are readiness checks; they
+make no provider request and spend no API credits. The long-lived engine
+readiness process has no provider credential. When P2-4 invokes the existing
+adapter, its minimal child environment accepts only `OPENROUTER_API_KEY`, the
+tool path, and temporary isolated state. The gateway image has verified
+upstream Linux `arm64` and `amd64` manifests, and the OpenCode package declares
+Linux `arm64` and `x64` support.
 
 ## State, restart, teardown
 
@@ -72,12 +79,14 @@ Run the complete disposable proof from the repository root:
 bash scripts/fact-7-compose-proof.sh
 ```
 
-It validates Compose configuration, a no-cache build, ordered startup and
-health, app HTTP reachability, the exact migration history, gateway and
-OpenCode executables, a no-op migration rerun, restart, and teardown. It uses
-a per-run Compose project name and a fake key only because no provider request
-is made; it removes precisely the containers, network, and volumes bearing
-that project label before returning.
+It validates required-config failure, hermetic Compose interpolation, a
+meaningful failed-migration dependency path, a no-cache build, ordered startup
+and health, both the health endpoint and UI reachability before and after
+restart, the exact migration history, gateway and OpenCode executables, the
+credential-free FACT-3 adapter contract, a no-op migration rerun, restart, and
+teardown. It uses a per-run Compose project name and a fake key only because no
+provider request is made; it removes precisely the containers, network, and
+volumes bearing both proof project labels before returning.
 
 For an iterative local rerun only, `FACT7_BUILD_NO_CACHE=0` retains Docker's
 build cache. The default proof command always uses a no-cache build.
