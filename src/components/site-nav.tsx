@@ -9,6 +9,7 @@ import { UfoIcon, AlienIcon, StarIcon, CometIcon } from "@/components/icons";
 const LINKS = [
   { href: "/", label: "Tickets", Icon: StarIcon },
   { href: "/frontier", label: "Frontier", Icon: CometIcon },
+  { href: "/agents", label: "Agents", Icon: UfoIcon },
   { href: "/labels", label: "Labels", Icon: AlienIcon },
 ];
 
@@ -102,42 +103,38 @@ function RouteSiteNav({ pathname }: { pathname: string }) {
         </nav>
       </header>
 
-      {/* Mobile overlay */}
-      <div
-        className={cn(
-          "fixed inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-[--background]/80 backdrop-blur-3xl transition-opacity duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] md:hidden",
-          open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
-        )}
-      >
-        {LINKS.map(({ href, label, Icon }, i) => (
-          <Link
-            key={href}
-            href={href}
-            className={cn(
-              "flex items-center gap-3 rounded-2xl px-6 py-3 text-2xl font-medium transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]",
-              open
-                ? "translate-y-0 opacity-100"
-                : "translate-y-12 opacity-0",
-              isActive(href) ? "text-[--accent]" : "text-[--foreground]",
-            )}
-            style={{ transitionDelay: open ? `${100 + i * 70}ms` : "0ms" }}
-          >
-            <Icon className="h-5 w-5" />
-            {label}
-          </Link>
-        ))}
-        <Link
-          href="/new"
-          className={cn(
-            "mt-4 flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-3 text-lg font-medium text-[#04121a] ring-1 ring-[color-mix(in_srgb,var(--accent)_55%,transparent)] transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]",
-            open ? "translate-y-0 opacity-100" : "translate-y-12 opacity-0",
-          )}
-          style={{ transitionDelay: open ? `${100 + LINKS.length * 70}ms` : "0ms" }}
+      {/*
+       * Do not merely hide this menu with opacity: its links would stay in the
+       * accessibility tree and Tab sequence. Mounting it only while open
+       * makes the visual and keyboard states agree.
+       */}
+      {open && (
+        <nav
+          aria-label="Mobile navigation"
+          className="fixed inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-[--background]/80 backdrop-blur-3xl md:hidden"
         >
-          New ticket
-          <CometIcon className="h-4 w-4" />
-        </Link>
-      </div>
+          {LINKS.map(({ href, label, Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex items-center gap-3 rounded-2xl px-6 py-3 text-2xl font-medium transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]",
+                isActive(href) ? "text-[--accent]" : "text-[--foreground]",
+              )}
+            >
+              <Icon className="h-5 w-5" />
+              {label}
+            </Link>
+          ))}
+          <Link
+            href="/new"
+            className="mt-4 flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-3 text-lg font-medium text-[#04121a] ring-1 ring-[color-mix(in_srgb,var(--accent)_55%,transparent)] transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
+          >
+            New ticket
+            <CometIcon className="h-4 w-4" />
+          </Link>
+        </nav>
+      )}
     </>
   );
 }
