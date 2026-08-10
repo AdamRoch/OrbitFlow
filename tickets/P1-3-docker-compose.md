@@ -19,8 +19,9 @@
 ## Implementation status
 
 In progress: the compose stack keeps a fixed internal engine port with separate
-localhost publication, isolates provider credentials from the long-lived
-engine, and retains required-config, failed-dependency, hermetic
-interpolation, lifecycle, and label-scoped teardown proof in
-`docs/fact-7-docker-compose.md`. Firstmate owns independent exact-head review,
-merge, and tracker completion.
+localhost publication. Provider credentials are absent from the long-lived
+engine and reach OpenCode only through the opt-in ephemeral adapter profile and
+its minimal child environment. `docs/fact-7-docker-compose.md` retains
+required-config, failed-dependency, hermetic interpolation, lifecycle,
+credential-boundary, and exact label-scoped resource and image teardown proof.
+Firstmate owns independent exact-head review, merge, and tracker completion.

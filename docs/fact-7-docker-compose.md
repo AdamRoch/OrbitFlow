@@ -50,11 +50,23 @@ The engine image installs Git and the FACT-3 selection, `opencode-ai@1.18.4`,
 from the committed `coding-adapter/package-lock.json`. `opencode --version`
 and the credential-free adapter structural proof are readiness checks; they
 make no provider request and spend no API credits. The long-lived engine
-readiness process has no provider credential. When P2-4 invokes the existing
-adapter, its minimal child environment accepts only `OPENROUTER_API_KEY`, the
-tool path, and temporary isolated state. The gateway image has verified
-upstream Linux `arm64` and `amd64` manifests, and the OpenCode package declares
-Linux `arm64` and `x64` support.
+readiness process has no provider credential.
+
+The opt-in `coding-adapter` Compose profile is the only coding-runtime service
+given the evaluator key. It is an ephemeral one-shot boundary, not part of
+`docker compose up`; invoke it with the already-created `.env` and no other
+setup:
+
+```sh
+docker compose --profile coding-adapter run --rm coding-adapter 'create hello.txt containing hello'
+```
+
+That wrapper passes the key only into FACT-3's existing adapter, whose child
+process receives the key, tool path, and temporary isolated state paths only.
+P2-4 still owns production engine workspace lifecycle. The gateway separately
+uses the same evaluator key for its FACT-1 runtime configuration. The gateway
+image has verified upstream Linux `arm64` and `amd64` manifests, and the
+OpenCode package declares Linux `arm64` and `x64` support.
 
 ## State, restart, teardown
 
@@ -83,10 +95,12 @@ It validates required-config failure, hermetic Compose interpolation, a
 meaningful failed-migration dependency path, a no-cache build, ordered startup
 and health, both the health endpoint and UI reachability before and after
 restart, the exact migration history, gateway and OpenCode executables, the
-credential-free FACT-3 adapter contract, a no-op migration rerun, restart, and
-teardown. It uses a per-run Compose project name and a fake key only because no
-provider request is made; it removes precisely the containers, network, and
-volumes bearing both proof project labels before returning.
+credential-free FACT-3 adapter contract, and a fake OpenCode child that proves
+the scoped adapter key and minimal child environment without a provider call.
+It then verifies a no-op migration rerun, restart, and teardown. The proof uses
+a per-run Compose project name and fake key only because no provider request is
+made; its trap removes and verifies precisely the containers, networks,
+volumes, and images bearing either proof project label before returning.
 
 For an iterative local rerun only, `FACT7_BUILD_NO_CACHE=0` retains Docker's
 build cache. The default proof command always uses a no-cache build.

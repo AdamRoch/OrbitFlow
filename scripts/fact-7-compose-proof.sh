@@ -46,28 +46,46 @@ assert_empty() {
   output="$2"
   if [[ -n "$output" ]]; then
     echo "FACT-7 proof left $resource_type for $project: $output" >&2
-    exit 1
+    return 1
   fi
+}
+
+remove_project_images() {
+  local project_name="$1"
+  local image_ids
+  image_ids="$(docker image ls -aq --filter "label=com.docker.compose.project=$project_name" | sort -u)"
+  if [[ -n "$image_ids" ]] && ! docker image rm $image_ids >/dev/null; then
+    echo "FACT-7 proof could not remove images for $project_name" >&2
+    return 1
+  fi
+  assert_empty "images" "$(docker image ls -aq --filter "label=com.docker.compose.project=$project_name")"
 }
 
 cleanup() {
   local status=$?
+  local cleanup_failed="false"
   trap - EXIT
 
   if [[ "$positive_started" == "true" ]]; then
-    compose down --volumes --remove-orphans >/dev/null 2>&1 || status=1
+    compose down --volumes --remove-orphans >/dev/null 2>&1 || cleanup_failed="true"
   fi
   if [[ "$failure_started" == "true" ]]; then
-    failure_compose down --volumes --remove-orphans >/dev/null 2>&1 || status=1
+    failure_compose down --volumes --remove-orphans >/dev/null 2>&1 || cleanup_failed="true"
   fi
 
-  rm -f "$env_file"
-  assert_empty "containers" "$(docker ps -aq --filter "label=com.docker.compose.project=$project")"
-  assert_empty "networks" "$(docker network ls -q --filter "label=com.docker.compose.project=$project")"
-  assert_empty "volumes" "$(docker volume ls -q --filter "label=com.docker.compose.project=$project")"
-  assert_empty "dependency-failure containers" "$(docker ps -aq --filter "label=com.docker.compose.project=$failure_project")"
-  assert_empty "dependency-failure networks" "$(docker network ls -q --filter "label=com.docker.compose.project=$failure_project")"
-  assert_empty "dependency-failure volumes" "$(docker volume ls -q --filter "label=com.docker.compose.project=$failure_project")"
+  rm -f "$env_file" || cleanup_failed="true"
+  assert_empty "containers" "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" || cleanup_failed="true"
+  assert_empty "networks" "$(docker network ls -q --filter "label=com.docker.compose.project=$project")" || cleanup_failed="true"
+  assert_empty "volumes" "$(docker volume ls -q --filter "label=com.docker.compose.project=$project")" || cleanup_failed="true"
+  assert_empty "dependency-failure containers" "$(docker ps -aq --filter "label=com.docker.compose.project=$failure_project")" || cleanup_failed="true"
+  assert_empty "dependency-failure networks" "$(docker network ls -q --filter "label=com.docker.compose.project=$failure_project")" || cleanup_failed="true"
+  assert_empty "dependency-failure volumes" "$(docker volume ls -q --filter "label=com.docker.compose.project=$failure_project")" || cleanup_failed="true"
+  remove_project_images "$project" || cleanup_failed="true"
+  remove_project_images "$failure_project" || cleanup_failed="true"
+
+  if [[ "$cleanup_failed" == "true" && "$status" -eq 0 ]]; then
+    status=1
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -164,6 +182,7 @@ compose exec -T openclaw node -e "fetch('http://127.0.0.1:18789/readyz').then((r
 compose exec -T engine opencode --version | grep -Fx "1.18.4" >/dev/null
 compose exec -T engine node -e "if ('OPENROUTER_API_KEY' in process.env) throw new Error('engine readiness process received a provider credential')"
 compose exec -T engine node scripts/opencode-structural-proof.mjs | grep -Fx "OpenCode adapter missing-credential contract verified" >/dev/null
+compose --profile coding-adapter run --rm --no-deps coding-adapter node scripts/opencode-scoped-adapter-proof.mjs | grep -Fx "Scoped OpenCode adapter child credential proof verified" >/dev/null
 
 no_op_output="$(compose run --rm migrate 2>&1)"
 if [[ "$no_op_output" != *"No migrations to apply."* ]]; then

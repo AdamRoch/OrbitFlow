@@ -34,6 +34,8 @@ RUN apt-get update \
 
 RUN npm ci --prefix coding-adapter --omit=dev
 
+RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
+
 ENV PATH=/app/coding-adapter/node_modules/.bin:$PATH
 
 CMD ["node", "scripts/engine-readiness.mjs"]

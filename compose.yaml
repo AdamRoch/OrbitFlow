@@ -84,6 +84,20 @@ services:
       retries: 30
       start_period: 5s
 
+  # This is deliberately opt-in: a provider key belongs only to an ephemeral
+  # coding delegation, never to the long-lived engine readiness process.
+  coding-adapter:
+    profiles: ["coding-adapter"]
+    build:
+      context: .
+      target: engine
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
+    command: ["node", "scripts/coding-adapter-invocation.mjs"]
+    depends_on:
+      engine:
+        condition: service_healthy
+
 volumes:
   app-data:
   openclaw-state:
