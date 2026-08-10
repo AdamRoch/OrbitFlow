@@ -3,6 +3,7 @@
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
 - OpenClaw execution-plane proof, the verified OpenRouter endpoint override, and the repeat runbook live in `docs/fact-1-openclaw-spike.md`; run contracts with `npm test`.
+- The OrbitFactory ticket foundation is adapted from OrbitTrack commit `589e04165a0744be10b7fc1b05984c6a3bff234c`; `docs/fact-5-orbittrack-inventory.md` owns its keep/delete boundary and provenance.
 
 ## CodingToolAdapter (PRD §5)
 

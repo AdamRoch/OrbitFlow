@@ -1,0 +1,445 @@
+@import "tailwindcss";
+
+/*
+ * OrbitFactory design tokens — a deep-space / UFO glass theme.
+ *
+ * We keep the same token *names* the app already references (--surface,
+ * --accent, ...) so every existing component keeps working, but shift the
+ * values to a vantablack glass palette. Surfaces are translucent so the fixed
+ * starfield/nebula behind them reads through as glass. The alien accent system
+ * is driven by --accent / --glow.
+ */
+:root {
+  --background: #04060c;
+  --surface: rgba(13, 18, 30, 0.62);
+  --surface-2: rgba(20, 27, 42, 0.7);
+  --surface-hover: rgba(30, 40, 60, 0.82);
+  --border: rgba(140, 170, 220, 0.12);
+  --border-strong: rgba(160, 190, 240, 0.22);
+  --foreground: #e8f0ff;
+  --foreground-muted: #9fb2cf;
+  --foreground-subtle: #5e6f8c;
+  --accent: #a3e635; /* vivid lime */
+  --accent-hover: #bef264;
+  --danger: #ff6b81;
+  --success: #4ade80;
+  /* RGB triplet for glow shadows (rgba(var(--glow), x)) */
+  --glow: 163, 230, 53;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-foreground-subtle: var(--foreground-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Cohesion polish: a calm, slightly inset scrollbar and a consistent
+ * focus-visible ring across primitives.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--foreground-subtle);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Space backdrop layers (fixed, pointer-events-none, GPU-only transforms).
+ * ------------------------------------------------------------------------- */
+.nebula {
+  position: fixed;
+  inset: -10%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(45% 40% at 12% 8%, rgba(163, 230, 53, 0.14), transparent 60%),
+    radial-gradient(42% 38% at 88% 16%, rgba(167, 139, 250, 0.14), transparent 62%),
+    radial-gradient(50% 45% at 78% 92%, rgba(125, 211, 252, 0.09), transparent 60%),
+    radial-gradient(40% 36% at 20% 88%, rgba(163, 230, 53, 0.09), transparent 60%);
+  filter: blur(28px);
+  animation: aurora 26s ease-in-out infinite alternate;
+}
+.starfield {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1.5px 1.5px at 25px 35px, rgba(255, 255, 255, 0.9), transparent),
+    radial-gradient(1px 1px at 90px 120px, rgba(200, 220, 255, 0.7), transparent),
+    radial-gradient(1px 1px at 160px 60px, rgba(255, 255, 255, 0.6), transparent),
+    radial-gradient(1.5px 1.5px at 210px 180px, rgba(180, 230, 255, 0.8), transparent),
+    radial-gradient(1px 1px at 300px 90px, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(1px 1px at 350px 220px, rgba(220, 200, 255, 0.7), transparent);
+  background-size: 400px 300px;
+  opacity: 0.4;
+  animation: twinkle 6s ease-in-out infinite;
+}
+.starfield-2 {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 50px 150px, rgba(255, 255, 255, 0.7), transparent),
+    radial-gradient(2px 2px at 180px 40px, rgba(160, 230, 255, 0.6), transparent),
+    radial-gradient(1px 1px at 260px 200px, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(1.5px 1.5px at 330px 120px, rgba(200, 180, 255, 0.6), transparent);
+  background-size: 380px 260px;
+  opacity: 0.3;
+  animation: twinkle 9s ease-in-out infinite reverse;
+}
+.grid-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(140, 170, 220, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(140, 170, 220, 0.04) 1px, transparent 1px);
+  background-size: 52px 52px;
+  -webkit-mask-image: radial-gradient(circle at 50% 28%, black, transparent 82%);
+  mask-image: radial-gradient(circle at 50% 28%, black, transparent 82%);
+}
+
+/* ---------------------------------------------------------------------------
+ * Glass system — the building blocks for every premium surface.
+ * ------------------------------------------------------------------------- */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+    0 22px 48px -30px rgba(0, 0, 0, 0.9);
+}
+.glass-bezel {
+  padding: 0.375rem;
+  border-radius: 1.75rem;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.glass-core {
+  border-radius: calc(1.75rem - 0.375rem);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 9999px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  font-weight: 500;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.text-glow {
+  text-shadow: 0 0 36px rgba(var(--glow), 0.75);
+}
+
+/* ---------------------------------------------------------------------------
+ * Scroll-reveal — gentle heavy fade-up driven by IntersectionObserver.
+ * ------------------------------------------------------------------------- */
+.reveal {
+  opacity: 0;
+  transform: translateY(26px);
+  filter: blur(6px);
+  transition:
+    opacity 0.85s cubic-bezier(0.32, 0.72, 0, 1),
+    transform 0.85s cubic-bezier(0.32, 0.72, 0, 1),
+    filter 0.85s cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: opacity, transform;
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+  filter: blur(0);
+}
+
+/* ---------------------------------------------------------------------------
+ * Hamburger morph — two lines rotate into a perfect X.
+ * ------------------------------------------------------------------------- */
+.hamburger {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 1.5px;
+  background: var(--foreground);
+  border-radius: 2px;
+  transition: background 0.3s ease;
+}
+.hamburger::before,
+.hamburger::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 18px;
+  height: 1.5px;
+  background: var(--foreground);
+  border-radius: 2px;
+  transition: transform 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hamburger::before {
+  top: -6px;
+}
+.hamburger::after {
+  top: 6px;
+}
+.hamburger.open {
+  background: transparent;
+}
+.hamburger.open::before {
+  transform: translateY(6px) rotate(45deg);
+}
+.hamburger.open::after {
+  transform: translateY(-6px) rotate(-45deg);
+}
+
+/* ---------------------------------------------------------------------------
+ * Green glowing edges + dynamic motion utilities.
+ *
+ * Reusable accents so every surface can borrow the alien lime glow and a bit
+ * of life without re-declaring the same box-shadow soup inline.
+ * ------------------------------------------------------------------------- */
+.glow-edge {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+    0 0 22px -6px rgba(var(--glow), 0.55),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+.glow-edge-pulse {
+  animation: edge-pulse 3.2s ease-in-out infinite;
+}
+@keyframes edge-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+      0 0 18px -6px rgba(var(--glow), 0.45),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent),
+      0 0 34px -4px rgba(var(--glow), 0.75),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+  }
+}
+
+/*
+ * Ticket panel — a more opaque, lime-edged tray that sits *under* the issue
+ * rows so they stay legible against the moving 3D backdrop. A faint scan line
+ * sweeps across it for extra life.
+ */
+.ticket-panel {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(
+    180deg,
+    rgba(10, 15, 24, 0.86),
+    rgba(6, 10, 18, 0.92)
+  );
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 0 40px -10px rgba(var(--glow), 0.45),
+    0 30px 60px -34px rgba(0, 0, 0, 0.95),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+}
+.ticket-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 42%,
+    rgba(var(--glow), 0.1) 50%,
+    transparent 58%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: panel-scan 6.5s linear infinite;
+}
+@keyframes panel-scan {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+@keyframes aurora {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1.02);
+  }
+  100% {
+    transform: translate3d(2%, 2%, 0) scale(1.08);
+  }
+}
+
+/* Rendered markdown inside issue descriptions. */
+.prose-tight p {
+  margin: 0.5em 0;
+}
+.prose-tight h1,
+.prose-tight h2,
+.prose-tight h3 {
+  font-weight: 600;
+  margin: 1em 0 0.4em;
+  line-height: 1.25;
+}
+.prose-tight h1 {
+  font-size: 1.25rem;
+}
+.prose-tight h2 {
+  font-size: 1.1rem;
+}
+.prose-tight h3 {
+  font-size: 1rem;
+}
+.prose-tight ul,
+.prose-tight ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.prose-tight li {
+  margin: 0.2em 0;
+}
+.prose-tight code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.prose-tight pre {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  padding: 0.75em;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.prose-tight pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.prose-tight a {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-tight blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 0.9em;
+  color: var(--foreground-muted);
+  margin: 0.6em 0;
+}
+.prose-tight hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
+.prose-tight input[type="checkbox"] {
+  margin-right: 0.4em;
+}
+
+@keyframes ufo-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+.animate-ufo-float {
+  animation: ufo-float 2.4s ease-in-out infinite;
+}
+
+/*
+ * Respect reduced-motion: drop the animation, keep a static glow so ready
+ * nodes are still distinguishable, and reveal everything immediately.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .starfield,
+  .starfield-2,
+  .nebula,
+  .glow-edge-pulse,
+  .ticket-panel::before {
+    animation: none;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition: none;
+  }
+}
