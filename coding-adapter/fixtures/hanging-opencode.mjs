@@ -16,5 +16,16 @@ writeFileSync(
   pidFile,
   JSON.stringify({ processGroupId: process.pid, descendantPid: descendant.pid }),
 );
+process.stdout.write(`${JSON.stringify({
+  type: "step_start",
+  timestamp: 1,
+  sessionID: "ses_timeout",
+  part: {
+    id: "part_timeout",
+    sessionID: "ses_timeout",
+    messageID: "msg_timeout",
+    type: "step-start",
+  },
+})}\n`);
 process.on("SIGTERM", () => {});
 setInterval(() => {}, 1_000);

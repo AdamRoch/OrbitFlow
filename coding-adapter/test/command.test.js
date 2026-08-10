@@ -84,7 +84,7 @@ test("missing credential short-circuits before spawning the credential-free boun
 });
 
 test("public error responses are bound to the complete authoritative code schema", () => {
-  assert.deepEqual(PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum, [
+  const expectedCodes = [
     "internal_failure",
     "missing_credentials",
     "cli_failure",
@@ -95,12 +95,26 @@ test("public error responses are bound to the complete authoritative code schema
     "workspace_invalid",
     "persistence_failure",
     "invalid_request",
-  ]);
-  for (const code of PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum) {
+  ];
+  assert.deepEqual(PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum, expectedCodes);
+  for (const code of expectedCodes) {
     assert.equal(createPublicErrorResponse({ code, message: code }).code, code);
   }
   assert.deepEqual(createPublicErrorResponse({ code: "not_public", message: "boom" }), {
     code: "internal_failure",
     message: "boom",
   });
+});
+
+test("the runbook public error table matches the authoritative runtime schema", async () => {
+  const runbook = await readFile(
+    new URL("../../docs/coding-tool-adapter.md", import.meta.url),
+    "utf8",
+  );
+  const enumSection = runbook.match(/Its complete code\nenum is:\n\n([\s\S]*?)\n\nRuntime serialization/);
+  assert.ok(enumSection, "runbook must retain the public error enum section");
+  const documentedCodes = [...enumSection[1].matchAll(/^\| `([^`]+)` \|/gm)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(documentedCodes, PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum);
 });

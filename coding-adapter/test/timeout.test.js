@@ -11,32 +11,37 @@ import {
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
 import { HANGING_OPENCODE, TEST_CREDENTIAL } from "./testAdapter.js";
 
-test("timeout kills the complete CLI process group on the first and repeated launches", async () => {
+test("timeout kills complete CLI process groups after bounded child-start handshakes", async () => {
   if (process.platform === "win32") return;
-  const workspace = await createIsolatedGitWorkspace();
   const control = await mkdtemp(path.join(tmpdir(), "coding-adapter-timeout-proof-"));
   try {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const pidFile = path.join(control, `descendant-${attempt}.pid`);
-      const adapter = createOpenCodeAdapter({
-        binary: HANGING_OPENCODE,
-        env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
-        timeoutMs: 500,
-        killGraceMs: 100,
-        killWaitMs: 2_000,
+    for (let round = 0; round < 2; round += 1) {
+      const attempts = Array.from({ length: 3 }, async (_, concurrentIndex) => {
+        const attempt = round * 3 + concurrentIndex;
+        const workspace = await createIsolatedGitWorkspace();
+        const pidFile = path.join(control, `descendant-${attempt}.pid`);
+        const adapter = createOpenCodeAdapter({
+          binary: HANGING_OPENCODE,
+          env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
+          timeoutMs: 500,
+          childStartHandshakeMs: 5_000,
+          killGraceMs: 100,
+          killWaitMs: 2_000,
+        });
+        await assert.rejects(
+          () => adapter.delegate_coding_task(pidFile, workspace),
+          (error) => error.code === "timeout" && error.timeoutMs === 500,
+        );
+        await access(pidFile);
+        const { processGroupId, descendantPid } = JSON.parse(await readFile(pidFile, "utf8"));
+        assert.equal(
+          inspectProcessGroup(processGroupId).state,
+          "absent",
+          `attempt ${attempt} left its process group present or uninspectable`,
+        );
+        assert.equal(processExists(descendantPid), false, `attempt ${attempt} left a descendant`);
       });
-      await assert.rejects(
-        () => adapter.delegate_coding_task(pidFile, workspace),
-        (error) => error.code === "timeout" && error.timeoutMs === 500,
-      );
-      await access(pidFile);
-      const { processGroupId, descendantPid } = JSON.parse(await readFile(pidFile, "utf8"));
-      assert.equal(
-        inspectProcessGroup(processGroupId).state,
-        "absent",
-        `attempt ${attempt} left its process group present or uninspectable`,
-      );
-      assert.equal(processExists(descendantPid), false, `attempt ${attempt} left a descendant`);
+      await Promise.all(attempts);
     }
   } finally {
     await rm(control, { recursive: true, force: true });

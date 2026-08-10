@@ -58,6 +58,7 @@ export function createOpenCodeAdapter({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   killGraceMs = DEFAULT_KILL_GRACE_MS,
   killWaitMs = DEFAULT_KILL_WAIT_MS,
+  childStartHandshakeMs,
   binary = OPEN_CODE_BINARY,
   env = process.env,
   workspaceAuthority = createTemporaryWorkspaceAuthority(),
@@ -93,6 +94,7 @@ export function createOpenCodeAdapter({
           timeoutMs,
           killGraceMs,
           killWaitMs,
+          childStartHandshakeMs,
           secrets,
           signal,
         });
@@ -159,6 +161,7 @@ function runAnchoredBoundary({
   timeoutMs,
   killGraceMs,
   killWaitMs,
+  childStartHandshakeMs,
   secrets,
   signal,
 }) {
@@ -186,7 +189,8 @@ function runAnchoredBoundary({
     let stderrTail = "";
     let stdoutTail = "";
     let credentialSent = false;
-    const overallTimeoutMs = timeoutMs + killGraceMs + killWaitMs + 10_000;
+    const overallTimeoutMs =
+      timeoutMs + killGraceMs + killWaitMs + (childStartHandshakeMs ?? 0) + 10_000;
     const settle = (callback, value) => {
       if (settled) return;
       settled = true;
@@ -265,6 +269,7 @@ function runAnchoredBoundary({
               timeoutMs,
               killGraceMs,
               killWaitMs,
+              childStartHandshakeMs,
             },
           });
           return;
@@ -382,6 +387,7 @@ export async function executeAnchoredOpenCode({
   timeoutMs,
   killGraceMs,
   killWaitMs,
+  childStartHandshakeMs,
   onCliStart,
   signal,
 }) {
@@ -407,6 +413,7 @@ export async function executeAnchoredOpenCode({
     timeoutMs,
     killGraceMs,
     killWaitMs,
+    childStartHandshakeMs,
     secrets,
     onCliStart,
     signal,
@@ -469,7 +476,17 @@ function runProcess(
   spawn,
   binary,
   args,
-  { cwd, env, timeoutMs, killGraceMs, killWaitMs, secrets, onCliStart, signal },
+  {
+    cwd,
+    env,
+    timeoutMs,
+    killGraceMs,
+    killWaitMs,
+    childStartHandshakeMs,
+    secrets,
+    onCliStart,
+    signal,
+  },
 ) {
   return new Promise((resolve, reject) => {
     let child;
@@ -503,6 +520,7 @@ function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
+      clearTimeout(handshakeTimer);
       signal?.removeEventListener("abort", abortForDeletion);
       protocol.end();
       resolve({
@@ -518,11 +536,22 @@ function runProcess(
     };
 
     let timeoutTimer;
+    let handshakeTimer;
+    let timeoutArmed = false;
+    const armTimeout = () => {
+      if (timeoutArmed || terminating || settled) return;
+      timeoutArmed = true;
+      clearTimeout(handshakeTimer);
+      timeoutTimer = setTimeout(() => {
+        beginTermination(null, { timeout: true });
+      }, timeoutMs);
+    };
     const beginTermination = (processError, { timeout = false } = {}) => {
       if (terminating || settled) return;
       terminating = true;
       timedOut = timeout;
       clearTimeout(timeoutTimer);
+      clearTimeout(handshakeTimer);
       void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
         .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL", processError))
         .catch((error) =>
@@ -550,9 +579,13 @@ function runProcess(
         abortForDeletion();
         return;
       }
-      timeoutTimer = setTimeout(() => {
-        beginTermination(null, { timeout: true });
-      }, timeoutMs);
+      if (Number.isSafeInteger(childStartHandshakeMs) && childStartHandshakeMs > 0) {
+        handshakeTimer = setTimeout(() => {
+          beginTermination(new CliFailureError("coding CLI child-start handshake timed out"));
+        }, childStartHandshakeMs);
+      } else {
+        armTimeout();
+      }
     };
 
     signal?.addEventListener("abort", abortForDeletion, { once: true });
@@ -560,6 +593,7 @@ function runProcess(
 
     child.stdout?.on("data", (chunk) => {
       const text = chunk.toString();
+      if (childStartHandshakeMs) armTimeout();
       stdoutScanner.write(text);
       protocol.write(text);
       stdoutLog = appendBounded(stdoutLog, text, MAX_LOG_CHARS + overlap);

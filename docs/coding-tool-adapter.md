@@ -45,8 +45,9 @@ enum is:
 | `invalid_request` | The public command request or trusted calling context was invalid. |
 
 Runtime serialization imports this schema and maps any non-enumerated internal
-code to `internal_failure`. Tests assert the exact enum, so code and prose drift
-fails locally.
+code to `internal_failure`. The adapter test reads this table and mechanically
+compares its codes, in order, with the executable schema, so code and prose
+drift fails locally.
 
 OpenClaw registers this executable through its supported `exec` tool, using the
 same `TOOLS.md` pattern proved by FACT-2. The engine binds `ORBITFLOW_RUN_ID`,
@@ -97,6 +98,9 @@ the complete NDJSON stream, validates every event, scans all output and
 workspace/Git state for literal and reversible credential forms, applies one
 10 MiB cap to the complete tracked plus untracked diff, and kills the complete
 POSIX process group on timeout. Unknown process-group liveness fails closed.
+The deterministic timeout fixture uses a bounded child-start acknowledgement
+before its 500 ms execution timer begins, so loaded test hosts cannot time out
+before the fixture records the descendant that cleanup must prove absent.
 
 `cost_events` stores input, output, cache-read, cache-write, and computed cost
 against the calling run and agent. `NULL` means OpenCode omitted that field; `0`

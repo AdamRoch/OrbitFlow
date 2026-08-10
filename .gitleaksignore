@@ -1,0 +1,4 @@
+# FACT-12 deterministic test credentials before their source lines gained gitleaks:allow.
+# These exact historical fingerprints do not suppress other files, lines, rules, or commits.
+e1d6da773805e1ede754ef27456ca16bfee25709:coding-adapter/test/testAdapter.js:generic-api-key:4
+a6f56641323ad539a02d5b4d4dd957c70421ec0f:test/postgres/coding-adapter.test.mjs:generic-api-key:31

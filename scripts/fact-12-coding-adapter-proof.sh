@@ -3,6 +3,7 @@ set -euo pipefail
 
 container_name="orbitfactory-fact12-postgres-proof"
 database_name="orbitfactory_fact12_proof"
+upgrade_database_name="orbitfactory_fact12_upgrade_proof"
 database_user="orbitfactory"
 database_password="fact12-local-proof"
 created_container="false"
@@ -85,6 +86,11 @@ export DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$h
 export ORBITFACTORY_FACT12_PROOF_DATABASE="$database_name"
 export ORBITFLOW_WORKSPACE_ROOT="$workspace_root"
 
+docker exec "$container_name" createdb --username "$database_user" "$upgrade_database_name"
+export ORBITFACTORY_FACT12_UPGRADE_DATABASE="$upgrade_database_name"
+export ORBITFACTORY_FACT12_UPGRADE_DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$upgrade_database_name"
+
+node --test test/postgres/coding-adapter-upgrade.test.mjs
 node --test test/postgres/coding-adapter.test.mjs
 node scripts/fact-12-real-opencode-proof.mjs
 node scripts/fact-12-openclaw-tool-proof.mjs

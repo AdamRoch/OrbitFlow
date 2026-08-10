@@ -46,7 +46,15 @@ test("FACT-12 production coding-tool contract", async (t) => {
   try {
     const identity = await pool.query("SELECT current_database() AS name");
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT12_PROOF_DATABASE);
-    await migratePostgres({ databaseUrl, log: () => {} });
+    const cleanMigration = await migratePostgres({ databaseUrl, log: () => {} });
+    assert.deepEqual(cleanMigration.applied, [
+      "0001-control-plane.sql",
+      "0002-tickets.sql",
+      "0003-message-plane.sql",
+      "0004-message-consumption.sql",
+      "0009-state-stream-notify.sql",
+      "0010-coding-tool-usage.sql",
+    ]);
     const root = await realpath(configuredRoot);
     const fixtures = await seedFixtures(pool, 16);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
@@ -273,6 +281,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
             binary: HANGING_OPENCODE,
             env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
             timeoutMs: 500,
+            childStartHandshakeMs: 5_000,
             killGraceMs: 100,
             killWaitMs: 2_000,
           },

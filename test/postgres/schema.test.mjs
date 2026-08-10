@@ -287,8 +287,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         "0002-tickets.sql",
         "0003-message-plane.sql",
         "0004-message-consumption.sql",
-        "0005-coding-tool-usage.sql",
         "0009-state-stream-notify.sql",
+        "0010-coding-tool-usage.sql",
       ]);
       assert.equal(firstLog.length, 6);
 
