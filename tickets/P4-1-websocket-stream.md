@@ -9,7 +9,8 @@ the live board.
 
 ## Implementation status
 
-**in_progress** — `GET /api/state-stream` emits a versioned SSE wake-up envelope
+**ready_for_review** — [PR #12](https://github.com/AdamRoch/OrbitFlow/pull/12)
+implements `GET /api/state-stream` with a versioned SSE wake-up envelope
 with nullable `runId`, `agentId`, and `ticketId` fields plus a stable event type.
 PostgreSQL `AFTER` triggers emit committed control-plane wake-ups; inherited
 SQLite board mutations emit only after their transaction returns. Clients
