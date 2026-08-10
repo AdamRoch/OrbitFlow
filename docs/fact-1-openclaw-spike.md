@@ -11,9 +11,10 @@ Official references:
 - [Agent CLI](https://docs.openclaw.ai/cli/agent)
 - [Agent workspaces and persona files](https://docs.openclaw.ai/concepts/agent-workspace)
 - [Memory files](https://docs.openclaw.ai/concepts/memory)
-- [Gateway completion protocol](https://docs.openclaw.ai/gateway)
+- [Gateway completion protocol](https://docs.openclaw.ai/gateway/protocol)
 - [Containerized gateway](https://docs.openclaw.ai/install/docker)
 - [OpenRouter provider](https://docs.openclaw.ai/openrouter)
+- [Official OpenRouter API endpoint](https://openrouter.ai/docs/quickstart)
 
 ## Hands-on runbook
 

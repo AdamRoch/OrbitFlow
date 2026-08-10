@@ -170,6 +170,35 @@ test("validateAgentProof binds output to the configured identity, theme, memory,
     persistentMemory: true,
     completeWorkspaceInjection: true,
   });
+  assert.equal(
+    validateAgentProof({
+      agent: AGENT_DEFINITIONS[0],
+      output: {
+        ...JSON.parse(outputContract),
+        artifact: {
+          ...JSON.parse(outputContract).artifact,
+          memory_fact: AGENT_DEFINITIONS[0].memoryFact,
+        },
+      },
+      injectedWorkspaceFiles,
+    }).persistentMemory,
+    true,
+  );
+  assert.throws(
+    () =>
+      validateAgentProof({
+        agent: AGENT_DEFINITIONS[0],
+        output: {
+          ...JSON.parse(outputContract),
+          artifact: {
+            ...JSON.parse(outputContract).artifact,
+            memory_fact: "amber-lattice plus an invented suffix",
+          },
+        },
+        injectedWorkspaceFiles,
+      }),
+    /persistentMemory/,
+  );
   assert.throws(
     () =>
       validateAgentProof({

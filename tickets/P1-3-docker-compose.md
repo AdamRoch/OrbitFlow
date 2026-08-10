@@ -6,7 +6,7 @@
 
 ## Notes
 
-- How OpenClaw gets containerized (or whether it must run as a documented sidecar) is a FACT-1 spike finding. Containerized is the goal; a one-command documented sidecar (`make openclaw` or similar) is the acceptable fallback, with the README stating it plainly.
+- FACT-1 resolved the execution topology: run a dedicated containerized OpenClaw gateway, not a host-side sidecar. The proof, constraints, and Docker-not-launched limitation live in `docs/fact-1-openclaw-spike.md`.
 - The coding CLI must be installed and authenticated (env-var key) inside whatever container calls it.
 
 ## Acceptance criteria

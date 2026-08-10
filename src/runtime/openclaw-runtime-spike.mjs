@@ -115,12 +115,16 @@ function expectedMemoryPhrase(agent) {
     .replace(/\.$/, "");
 }
 
+function matchesExpectedMemory(agent, reportedMemory) {
+  return reportedMemory === expectedMemoryPhrase(agent) || reportedMemory === agent.memoryFact;
+}
+
 export function validateAgentProof({ agent, output, injectedWorkspaceFiles }) {
   const expectedFiles = ["IDENTITY.md", "MEMORY.md", "SOUL.md"];
   const validation = {
     agentIdentity: output.artifact.agent === agent.name,
     personaTheme: output.artifact.persona === agent.theme,
-    persistentMemory: output.artifact.memory_fact === expectedMemoryPhrase(agent),
+    persistentMemory: matchesExpectedMemory(agent, output.artifact.memory_fact),
     completeWorkspaceInjection: expectedFiles.every((name) => {
       const file = injectedWorkspaceFiles.find((candidate) => candidate.name === name);
       return (
