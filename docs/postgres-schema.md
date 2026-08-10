@@ -4,7 +4,7 @@ FACT-6 defines the durable PostgreSQL contract in `db/migrations`. The retained
 board still uses SQLite until its CRUD layer moves in FACT-8; the two schemas are
 intentionally not wired together here.
 
-FACT-12 extends `cost_events` in migration `0004` with cache-token attribution
+FACT-12 extends `cost_events` in migration `0005` with cache-token attribution
 and nullable usage fields. A null means the coding CLI omitted the value; zero
 means it explicitly reported zero.
 
