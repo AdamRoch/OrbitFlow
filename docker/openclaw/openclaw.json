@@ -1,0 +1,40 @@
+{
+  "models": {
+    "mode": "replace",
+    "providers": {
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "openai/gpt-4.1-mini",
+            "name": "OpenAI GPT-4.1 Mini",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openrouter/openai/gpt-4.1-mini"
+      },
+      "models": {
+        "openrouter/openai/gpt-4.1-mini": {}
+      }
+    }
+  },
+  "tools": {
+    "profile": "minimal"
+  }
+}
