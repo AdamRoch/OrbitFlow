@@ -174,7 +174,7 @@ assert_app_http() {
 assert_app_http
 
 applied_migrations="$(compose exec -T postgres psql -U orbitfactory -d orbitfactory_proof -Atc "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations")"
-if [[ "$applied_migrations" != "0001-control-plane.sql,0002-tickets.sql,0003-message-plane.sql" ]]; then
+if [[ "$applied_migrations" != "0001-control-plane.sql,0002-tickets.sql,0003-message-plane.sql,0004-message-consumption.sql" ]]; then
   echo "Unexpected migration state: $applied_migrations" >&2
   exit 1
 fi

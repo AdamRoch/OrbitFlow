@@ -18,10 +18,13 @@
 
 ## Implementation status
 
-In progress: the FACT-7 branch has merged current `origin/main`, and Compose
-now supplies the app's internal PostgreSQL `DATABASE_URL` while retaining the
-inherited board's SQLite foundation path. The retained no-cache proof requires
-health, UI, and PostgreSQL-backed `GET /api/agents` before and after a full
-restart, alongside the existing required-config, failed-dependency, hermetic
-interpolation, credential-boundary, and exact label-scoped teardown checks.
-Firstmate owns independent exact-head review, merge, and tracker completion.
+In progress: FACT-7 has integrated `origin/main` at
+`5bc39fa3aac0af052811719c11f8533bc49fa801` without a rebase. The retained
+no-cache Compose proof requires the complete current migration chain through
+`0004-message-consumption.sql`, health, UI, and PostgreSQL-backed
+`GET /api/agents` before and after a full restart. It also retains the
+required-config, failed-dependency, hermetic interpolation, credential-boundary,
+and exact label-scoped teardown checks. The inherited tests, FACT-6, FACT-8,
+and FACT-9 PostgreSQL proofs, typecheck, lint, production build, and production
+dependency audits passed locally. Firstmate owns independent exact-head review,
+merge, and tracker completion.
