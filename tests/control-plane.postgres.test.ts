@@ -15,6 +15,7 @@ import {
   resetControlPlaneRepository,
 } from "@/lib/control-plane";
 import { handleError } from "@/lib/api";
+import { canonicalWorkflowGraphJson, type WorkflowGraph } from "@/lib/workflow/graph-contract";
 import { migratePostgres } from "../scripts/migrate-postgres.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -35,10 +36,10 @@ const agentBody = {
 const workflowGraph = {
   nodes: [
     { id: "intake", agentId: "1", config: { entry: true, planMode: "required" } },
-    { id: "implement", agentId: 2, config: { fanOut: { maxConcurrent: 3 } } },
+    { id: "implement", agentId: 2, config: { fanOut: { over: "openTickets", maxConcurrency: 3 } } },
   ],
   edges: [
-    { source: "intake", target: "implement", condition: { verdict: "ready" } },
+    { source: "intake", target: "implement", condition: { operator: "equals", path: ["verdict"], value: "ready" } },
   ],
   builderMetadata: { viewport: { x: 10, y: -4, zoom: 1.1 } },
 };
@@ -253,7 +254,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       ...changedGraph,
       edges: [
         ...changedGraph.edges,
-        { source: "intake", target: "implement", condition: { verdict: "ready" } },
+        { source: "intake", target: "implement", condition: { operator: "equals", path: ["verdict"], value: "ready" } },
       ],
     };
     const duplicateOnUpdate = await response(await patchWorkflow(jsonRequest({
@@ -266,10 +267,10 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       name: "Duplicate transition",
       description: "Should not persist.",
       graph: {
-        nodes: [{ id: "one", agentId: 1, config: {} }, { id: "two", agentId: 2, config: {} }],
+        nodes: [{ id: "one", agentId: 1, config: { entry: true } }, { id: "two", agentId: 2, config: {} }],
         edges: [
-          { source: "one", target: "two", condition: { verdict: "ready", labels: { first: true, second: false } } },
-          { source: "one", target: "two", condition: { labels: { second: false, first: true }, verdict: "ready" } },
+          { source: "one", target: "two", condition: { operator: "equals", path: ["verdict"], value: { first: true, second: false } } },
+          { source: "one", target: "two", condition: { value: { second: false, first: true }, path: ["verdict"], operator: "equals" } },
         ],
       },
       isTemplate: false,
@@ -279,13 +280,64 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     const malformed = await response(await createWorkflow(jsonRequest({
       name: "Broken",
       description: "Should not persist.",
-      graph: { nodes: [{ id: "one", agentId: 1, config: {} }], edges: [{ source: "one", target: "missing", condition: {} }] },
+      graph: { nodes: [{ id: "one", agentId: 1, config: { entry: true } }], edges: [{ source: "one", target: "missing", condition: { operator: "always" } }] },
       isTemplate: false,
     })));
     expect(malformed).toMatchObject({ status: 400, body: { error: { code: "invalid_graph" } } });
     expect((await getControlPlaneRepository().listWorkflows()).map((workflow) => workflow.name)).toEqual(["Software Factory"]);
 
     expect((await response(await deleteWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+  });
+
+  it("round-trips a rejection loop byte-equivalently and rejects a stale graph save", async () => {
+    const graph: WorkflowGraph = {
+      nodes: [
+        {
+          id: "implement",
+          agentId: "1",
+          config: {
+            entry: true,
+            channelBinding: true,
+            fanOut: { over: "openTickets", maxConcurrency: 2 },
+            planMode: "required",
+            may_answer_questions: true,
+            questionEscalation: { target: "human-via-channel" },
+            approvalGates: { pauseBefore: false, pauseAfter: true },
+            futureEngineField: { keep: "opaque" },
+          },
+        },
+        { id: "test", agentId: "2", config: { entry: false } },
+      ],
+      edges: [
+        { source: "implement", target: "test", condition: { operator: "always" } },
+        { source: "test", target: "implement", condition: { operator: "equals", path: ["verdict"], value: "rejected" } },
+      ],
+      builderMetadata: { positions: { implement: { x: 20, y: 40 }, test: { x: 360, y: 40 } } },
+    };
+    const created = await response(await createWorkflow(jsonRequest({
+      name: "PostgreSQL rejection loop",
+      description: "FACT-20 identity proof",
+      graph,
+      isTemplate: false,
+    })));
+    expect(created.status).toBe(201);
+
+    const reread = await response(await getWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)));
+    expect(canonicalWorkflowGraphJson(reread.body.graph)).toBe(canonicalWorkflowGraphJson(graph));
+
+    const winner = await response(await patchWorkflow(jsonRequest({
+      graph,
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
+    expect(winner.status).toBe(200);
+    const stale = await response(await patchWorkflow(jsonRequest({
+      graph: { ...graph, futureTopLevelField: "stale writer" },
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
+    expect(stale).toMatchObject({ status: 409, body: { error: { code: "stale_update" } } });
+
+    const finalRead = await response(await getWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)));
+    expect(canonicalWorkflowGraphJson(finalRead.body.graph)).toBe(canonicalWorkflowGraphJson(graph));
   });
 
   it("returns structured validation, not-found, conflict, and database errors", async () => {

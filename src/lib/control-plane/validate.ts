@@ -10,6 +10,7 @@ import type {
   UpdateWorkflowInput,
   UpdateScheduleInput,
 } from "./types";
+import { validateWorkflowGraph } from "@/lib/workflow/graph-contract";
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -229,68 +230,8 @@ export function parseUpdateSkill(body: Record<string, unknown>): UpdateSkillInpu
  */
 export function parseGraph(value: unknown): JsonObject {
   const graph = requiredObject(value, "graph");
-  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
-    throw new ValidationError("graph must contain nodes and edges arrays", "invalid_graph");
-  }
-
-  const nodeIds = new Set<string>();
-  for (const node of graph.nodes) {
-    if (!isObject(node)) {
-      throw new ValidationError("graph.nodes must contain objects", "invalid_graph");
-    }
-    const id = requiredString(node.id, "graph node id");
-    if (nodeIds.has(id)) {
-      throw new ValidationError("graph node ids must be unique", "invalid_graph");
-    }
-    nodeIds.add(id);
-    const agentId = node.agentId;
-    if (
-      !(
-        (typeof agentId === "string" && /^[1-9]\d*$/.test(agentId)) ||
-        (typeof agentId === "number" && Number.isSafeInteger(agentId) && agentId > 0)
-      )
-    ) {
-      throw new ValidationError("graph node agentId must be a positive integer", "invalid_graph");
-    }
-    requiredObject(node.config, "graph node config");
-  }
-
-  const edgeIdentities = new Set<string>();
-  for (const edge of graph.edges) {
-    if (!isObject(edge)) {
-      throw new ValidationError("graph.edges must contain objects", "invalid_graph");
-    }
-    const source = requiredString(edge.source, "graph edge source");
-    const target = requiredString(edge.target, "graph edge target");
-    if (!nodeIds.has(source) || !nodeIds.has(target)) {
-      throw new ValidationError("graph edge must reference existing nodes", "invalid_graph");
-    }
-    if (!("condition" in edge)) {
-      throw new ValidationError("graph edge condition is required", "invalid_graph");
-    }
-    // A transition is defined by its endpoints and condition. Canonicalizing
-    // solely for this comparison makes duplicate detection stable when JSON
-    // object keys arrive in a different order; the submitted graph is still
-    // returned by reference and persisted without normalization.
-    const identity = JSON.stringify([source, target, canonicalJson(edge.condition)]);
-    if (edgeIdentities.has(identity)) {
-      throw new ValidationError("graph edges must not contain duplicate transitions", "invalid_graph");
-    }
-    edgeIdentities.add(identity);
-  }
+  validateWorkflowGraph(graph);
   return graph;
-}
-
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (isObject(value)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalJson(value[key])]),
-    );
-  }
-  return value;
 }
 
 export function parseCreateWorkflow(body: Record<string, unknown>): CreateWorkflowInput {
