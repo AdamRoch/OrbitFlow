@@ -328,15 +328,12 @@ export async function consumeNextMessage(
 
     const candidateRuns = await client.query<{
       run_id: string;
-      next_sequence_number: string;
+      message_id: string;
     }>(
-      `SELECT consumer.run_id, consumer.next_sequence_number
-       FROM message_consumer_runs AS consumer
-       JOIN messages AS message
-         ON message.run_id = consumer.run_id
-        AND message.sequence_number = consumer.next_sequence_number
-       JOIN message_enqueues AS enqueue ON enqueue.message_id = message.id
-       ORDER BY consumer.last_consumed_at ASC NULLS FIRST, consumer.run_id
+      `SELECT ready.run_id, ready.message_id
+       FROM message_ready_runs AS ready
+       WHERE ready.message_id IS NOT NULL
+       ORDER BY ready.ready_at, ready.run_id
        LIMIT $1`,
       [CANDIDATE_RUN_LIMIT],
     );
@@ -356,12 +353,19 @@ export async function consumeNextMessage(
 
       const messageResult = await client.query(
         `SELECT message.*
-         FROM messages AS message
-         WHERE message.run_id = $1
-           AND message.sequence_number = $2
-         FOR UPDATE OF message
-         LIMIT 1`,
-        [candidate.run_id, candidate.next_sequence_number],
+         FROM message_ready_runs AS ready
+         JOIN message_consumer_runs AS consumer
+           ON consumer.run_id = ready.run_id
+         JOIN messages AS message
+           ON message.id = ready.message_id
+          AND message.run_id = consumer.run_id
+          AND message.sequence_number = consumer.next_sequence_number
+         JOIN message_enqueues AS enqueue
+           ON enqueue.message_id = message.id
+         WHERE ready.run_id = $1
+           AND ready.message_id = $2
+         FOR UPDATE OF consumer, message, enqueue`,
+        [candidate.run_id, candidate.message_id],
       );
       if (messageResult.rowCount === 1) {
         message = messageFromRow(messageResult.rows[0]);
@@ -393,7 +397,7 @@ export async function consumeNextMessage(
            last_consumed_at = clock_timestamp()
        WHERE run_id = $1
          AND next_sequence_number = $2
-       RETURNING run_id`,
+       RETURNING next_sequence_number`,
       [message.runId, message.sequenceNumber],
     );
     if (advanced.rowCount !== 1) {
@@ -407,6 +411,41 @@ export async function consumeNextMessage(
     );
     if (dequeued.rowCount !== 1) {
       throw new Error("pending message disappeared inside its advisory lock");
+    }
+
+    // Do not lock this producer-maintained projection until the handler has
+    // finished. A producer that is already updating it commits first; a later
+    // producer waits for this transaction, and either order is reconciled from
+    // the durable per-message enqueue rows below.
+    const readyRun = await client.query(
+      `SELECT run_id
+       FROM message_ready_runs
+       WHERE run_id = $1
+       FOR UPDATE`,
+      [message.runId],
+    );
+    if (readyRun.rowCount !== 1) {
+      throw new Error("message ready-run projection disappeared");
+    }
+    const nextMessage = await client.query<{ id: string }>(
+      `SELECT message.id
+       FROM messages AS message
+       JOIN message_enqueues AS enqueue ON enqueue.message_id = message.id
+       WHERE message.run_id = $1
+         AND message.sequence_number = $2
+       FOR UPDATE OF message, enqueue`,
+      [message.runId, advanced.rows[0].next_sequence_number],
+    );
+    const movedReadyHead = await client.query(
+      `UPDATE message_ready_runs
+       SET message_id = $1,
+           ready_at = CASE WHEN $1::bigint IS NULL THEN NULL ELSE clock_timestamp() END
+       WHERE run_id = $2
+       RETURNING run_id`,
+      [nextMessage.rows[0]?.id ?? null, message.runId],
+    );
+    if (movedReadyHead.rowCount !== 1) {
+      throw new Error("ready message changed inside its advisory lock");
     }
 
     await client.query("COMMIT");

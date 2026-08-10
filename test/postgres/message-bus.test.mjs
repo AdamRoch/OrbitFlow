@@ -253,6 +253,90 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       }
     });
 
+    await t.test("skips a stale contender after the winner advances the ready head", async () => {
+      const runId = await createRun("stale-contender");
+      const first = await insertMessage(pool, {
+        runId,
+        sender: "agent:first",
+        recipient: "agent:next",
+        type: "output",
+        payload: { order: 1 },
+      });
+      const second = await insertMessage(pool, {
+        runId,
+        sender: "agent:second",
+        recipient: "agent:next",
+        type: "output",
+        payload: { order: 2 },
+      });
+      const contenderPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      let releaseReadyScan;
+      let announceReadyScan;
+      const readyScanPaused = new Promise((resolve) => {
+        announceReadyScan = resolve;
+      });
+      const readyScanMayReturn = new Promise((resolve) => {
+        releaseReadyScan = resolve;
+      });
+      let intercepted = false;
+      const pausedPool = {
+        async connect() {
+          const contenderClient = await contenderPool.connect();
+          return new Proxy(contenderClient, {
+            get(target, property) {
+              if (property === "query") {
+                return async (...args) => {
+                  const result = await target.query(...args);
+                  const statement = typeof args[0] === "string" ? args[0] : args[0]?.text;
+                  if (
+                    !intercepted &&
+                    statement?.includes("FROM message_ready_runs AS ready") &&
+                    statement.includes("ORDER BY ready.ready_at")
+                  ) {
+                    intercepted = true;
+                    announceReadyScan();
+                    await readyScanMayReturn;
+                  }
+                  return result;
+                };
+              }
+              const value = Reflect.get(target, property, target);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+        },
+      };
+      let contenderHandlerCalls = 0;
+
+      try {
+        const contender = consumeNextMessage(
+          pausedPool,
+          async () => {
+            contenderHandlerCalls += 1;
+          },
+          { consumerId: "stale-contender" },
+        );
+        await readyScanPaused;
+
+        const winner = await consumeNextMessage(pool, route("stale-winner"), {
+          consumerId: "stale-winner",
+        });
+        assert.equal(winner?.message.id, first.id);
+
+        releaseReadyScan();
+        assert.equal(await contender, null);
+        assert.equal(contenderHandlerCalls, 0);
+
+        const followUp = await consumeNextMessage(pool, route("stale-follow-up"), {
+          consumerId: "stale-follow-up",
+        });
+        assert.equal(followUp?.message.id, second.id);
+      } finally {
+        releaseReadyScan?.();
+        await contenderPool.end();
+      }
+    });
+
     await t.test("routes multiple runs concurrently while preserving each run order", async () => {
       const firstRun = await createRun("parallel-run-a");
       const secondRun = await createRun("parallel-run-b");
@@ -708,6 +792,91 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
         [message.id],
       );
       assert.deepEqual(durable.rows[0], { routes: 1, receipts: 1 });
+    });
+
+    await t.test("bounds ready discovery independently of idle cursors and backlog", async () => {
+      const before = await client.query(
+        `SELECT
+           (SELECT count(*)::int FROM message_consumer_runs) AS cursors,
+           (SELECT count(*)::int FROM message_ready_runs
+             WHERE message_id IS NOT NULL) AS ready_runs,
+           (SELECT count(*)::int FROM message_enqueues) AS enqueues,
+           (SELECT count(*)::int FROM messages) AS messages`,
+      );
+
+      await client.query(
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
+         SELECT $1, 'running', 'ui', jsonb_build_object('plan_idle', series)
+         FROM generate_series(1, 20000) AS series`,
+        [workflowId],
+      );
+      await client.query(
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
+         SELECT $1, 'running', 'ui', jsonb_build_object('plan_active', series)
+         FROM generate_series(1, 20000) AS series`,
+        [workflowId],
+      );
+      for (let first = 1; first <= 20000; first += 500) {
+        await client.query(
+          `INSERT INTO messages (
+             run_id, sequence_number, sender, recipient, type, payload
+           )
+           SELECT run.id, 1, 'system', 'agent:plan', 'system', '{}'::jsonb
+           FROM workflow_runs AS run
+           WHERE (run.spec ->> 'plan_active')::int BETWEEN $1 AND $2`,
+          [first, first + 499],
+        );
+      }
+      const backlogRun = await createRun("plan-backlog");
+      await client.query(
+        `INSERT INTO messages (
+           run_id, sequence_number, sender, recipient, type, payload
+         )
+         SELECT $1, 1, 'system', 'agent:plan', 'system',
+                jsonb_build_object('backlog', series)
+         FROM generate_series(1, 20000) AS series`,
+        [backlogRun],
+      );
+      await client.query("ANALYZE message_ready_runs");
+
+      const after = await client.query(
+        `SELECT
+           (SELECT count(*)::int FROM message_consumer_runs) AS cursors,
+           (SELECT count(*)::int FROM message_ready_runs
+             WHERE message_id IS NOT NULL) AS ready_runs,
+           (SELECT count(*)::int FROM message_enqueues) AS enqueues,
+           (SELECT count(*)::int FROM messages) AS messages`,
+      );
+      assert.deepEqual(
+        {
+          cursors: after.rows[0].cursors - before.rows[0].cursors,
+          readyRuns: after.rows[0].ready_runs - before.rows[0].ready_runs,
+          enqueues: after.rows[0].enqueues - before.rows[0].enqueues,
+          messages: after.rows[0].messages - before.rows[0].messages,
+        },
+        { cursors: 40001, readyRuns: 20001, enqueues: 40000, messages: 40000 },
+        "20,000 idle cursors and a 20,000-message backlog add no ready rows",
+      );
+
+      const explained = await client.query(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+         SELECT ready.run_id, ready.message_id
+         FROM message_ready_runs AS ready
+         WHERE ready.message_id IS NOT NULL
+         ORDER BY ready.ready_at, ready.run_id
+         LIMIT 32`,
+      );
+      const limit = explained.rows[0]["QUERY PLAN"][0].Plan;
+      const scan = limit.Plans[0];
+      assert.equal(limit["Node Type"], "Limit");
+      assert.equal(scan["Node Type"], "Index Only Scan");
+      assert.equal(scan["Index Name"], "idx_message_ready_runs_fair");
+      assert.equal(scan["Actual Rows"], 32);
+      assert.equal(scan["Actual Loops"], 1);
+      assert.ok(
+        (scan["Shared Hit Blocks"] ?? 0) + (scan["Shared Read Blocks"] ?? 0) < 64,
+        `bounded scan touched too many buffers: ${JSON.stringify(scan)}`,
+      );
     });
   } finally {
     await pool.end();

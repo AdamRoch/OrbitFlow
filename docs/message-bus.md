@@ -1,8 +1,9 @@
 # Durable PostgreSQL message bus
 
 FACT-9 keeps the message plane inside PostgreSQL. `messages` remains the event
-log from FACT-6. `message_consumer_runs` stores one fair per-run cursor,
-`message_enqueues` is the indexed set of pending message identifiers, and
+log from FACT-6. `message_consumer_runs` stores one durable per-run cursor,
+`message_enqueues` stores one pending row per message,
+`message_ready_runs` projects one row per run into an indexed ready set, and
 `message_consumptions` is the workflow engine's durable routing receipt, with
 one primary-key row per message.
 
@@ -24,22 +25,34 @@ the row; it is not a consumption cursor.
 
 `consumeNextMessage` routes at most one message in one PostgreSQL transaction:
 
-1. Read a bounded window from the pending-run index and try a
+1. Read a bounded window directly from the ready-run index and try a
    transaction-scoped PostgreSQL advisory lock for each candidate.
-2. Select that run's lowest unconsumed `sequence_number`.
+2. Revalidate the ready projection and atomically lock the cursor, exact head
+   message, and its pending enqueue.
 3. Call the database-routing handler with the same `PoolClient`.
 4. Insert the unique `message_consumptions` receipt.
 5. Advance the per-run cursor and move that run to the back of the fair queue.
 6. Commit the handler mutation, receipt, and cursor together.
 
 The workflow-run trigger initializes its consumer cursor. The message-insert
-trigger adds a separate pending-message row, so producers never write the cursor
-row used by consumers. After routing, the engine deletes that pending row and
-updates its per-run `last_consumed_at`. Idle polling joins against an empty
-pending table instead of rescanning history. Durable round-robin ordering moves
-a run behind every other pending run, including runs beyond one candidate
-window. The cursor is per run, never global, and the FACT-6 commit-order trigger
-makes it safe from late-commit gaps.
+trigger adds a per-message pending row. A deferred producer trigger reconciles
+the ready head at commit, when it can see any cursor advance that committed
+while the producer was open. Every run has one projection row, but a partial
+index contains only ready rows, so neither idle cursor history nor messages
+behind the head add discovery work. After routing, the engine reconciles that
+projection from the durable pending rows and moves it to the back of the fair
+index, or marks it idle. Producers do not lock the projection until their commit
+boundary, and the consumer locks it only after the handler, so a handler may
+insert a message without reversing the producer lock order. The cursor is per
+run, never global, and the FACT-6 commit-order trigger makes it safe from
+late-commit gaps.
+
+Candidate discovery happens before the advisory-lock attempt. A second engine
+may therefore hold a stale candidate after the winner commits. Its post-lock
+query compares the captured message identifier against the ready projection and
+atomically locks the cursor, captured head message, and its pending enqueue. A
+mismatch skips silently before the handler, so a stale contender cannot route
+the next message or surface a false worker failure.
 
 The handler must perform database routing mutations only and must not issue
 `BEGIN`, `COMMIT`, `ROLLBACK`, or release the supplied client. A failure rolls
@@ -75,10 +88,13 @@ introducing a second correctness path.
 
 ## Ownership and cleanup
 
-The workflow engine alone advances `message_consumer_runs`, removes
-`message_enqueues`, and writes `message_consumptions`; the insert trigger only
-creates pending rows. The fair cursor index and pending-message primary key own
-ready selection. The receipt primary key is the acknowledgement index, and
+The workflow engine alone advances `message_consumer_runs`, removes consumed
+`message_enqueues`, reconciles `message_ready_runs`, and writes
+`message_consumptions`; the immediate insert trigger creates pending rows and
+the deferred producer trigger repairs the projection at commit.
+`idx_message_ready_runs_fair` owns the full fair order over the
+materialized ready set before the bounded scan. The receipt primary key is the
+acknowledgement index, and
 `idx_message_consumptions_consumed_at` supports
 operator inspection and explicit age-based retention work. Receipt time uses
 `clock_timestamp()` at insertion, not the transaction-start time returned by
@@ -104,5 +120,7 @@ port, applies the full clean migration chain, and removes that exact container
 on exit. It covers validation and caller rollback, per-run commit ordering, two
 engine connections racing one message, concurrent routing across runs,
 handler failure and pool reuse, restart before and after commit, a fair window
-larger than 32 active runs, late commits, wall-clock receipt aging, exhausted
-pool cancellation, and clean idle and in-flight cancellation.
+larger than 32 active runs, a stale paused contender, an indexed plan over tens
+of thousands of idle cursors and backlog messages, late commits, wall-clock
+receipt aging, exhausted-pool cancellation, and clean idle and in-flight
+cancellation.
