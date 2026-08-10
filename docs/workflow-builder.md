@@ -58,3 +58,9 @@ npm run fact8:proof
 The PostgreSQL proof includes canonical save/reload identity for a rejection
 cycle and a stale-write conflict. Local production browser evidence is retained
 under `.fact20-proof/` during delivery and is intentionally not committed.
+
+The original-head visual scout observed one `npm run dev` failure resolving
+`@xyflow/react/dist/style.css`. It does not reproduce on the corrected head:
+the installed package export resolves locally and Next.js 16.3.0 development
+mode serves `/workflows` with HTTP 200. Production import behavior is unchanged;
+treat the earlier result as an environment-specific failure unless it recurs.

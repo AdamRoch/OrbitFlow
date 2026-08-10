@@ -8,6 +8,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  useStore,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -35,6 +36,9 @@ type NodeCardData = { label: string; agent: string; detail: string; entry: boole
 const inputClass = "w-full rounded-xl border border-[--border-strong] bg-[--background]/55 px-3 py-2 text-sm text-[--foreground] transition focus:border-[--accent] focus:outline-none";
 const labelClass = "grid gap-1.5 text-xs font-medium text-[--foreground-muted]";
 const buttonClass = "rounded-full border border-[--border-strong] px-3 py-2 text-sm text-[--foreground] transition hover:border-[color-mix(in_srgb,var(--accent)_45%,var(--border-strong))] hover:bg-[--surface-hover] disabled:cursor-not-allowed disabled:opacity-40";
+const readableFitViewOptions = { padding: 0.12, minZoom: 0.75, maxZoom: 1.2 };
+const retryableSaveFailure = "Save failed. Local edits remain in this editor, and retrying is safe.";
+const connectionTargetPixels = 46;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,19 +102,47 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
   const card = data as NodeCardData;
   return (
     <div className={`min-w-44 rounded-2xl border bg-[#0b111f]/95 px-4 py-3 shadow-2xl transition ${selected ? "border-[--accent] shadow-[0_0_26px_-10px_rgba(var(--glow),0.9)]" : "border-[--border-strong]"}`}>
-      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-[#0b111f] !bg-[#a78bfa]" />
+      <ConnectionHandle type="target" position={Position.Left} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-[--foreground]">{card.label}</p>
-          <p className="mt-0.5 truncate text-xs text-[--foreground-muted]">{card.agent}</p>
+          <p className="truncate text-base font-semibold text-[--foreground]">{card.label}</p>
+          <p className="mt-0.5 truncate text-sm text-[--foreground-muted]">{card.agent}</p>
         </div>
         {card.entry && <span className="rounded-full bg-[color-mix(in_srgb,var(--accent)_15%,transparent)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-[--accent]">Entry</span>}
       </div>
-      <p className="mt-3 border-t border-[--border] pt-2 text-[10px] uppercase tracking-[0.12em] text-[--foreground-subtle]">{card.detail}</p>
-      <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-2 !border-[#0b111f] !bg-[--accent]" />
-      <Handle id="loop-target" type="target" position={Position.Bottom} style={{ left: "35%" }} className="!h-3 !w-3 !border-2 !border-[#0b111f] !bg-[#a78bfa]" />
-      <Handle id="loop-source" type="source" position={Position.Bottom} style={{ left: "65%" }} className="!h-3 !w-3 !border-2 !border-[#0b111f] !bg-[--accent]" />
+      <p className="mt-3 border-t border-[--border] pt-2 text-xs uppercase tracking-[0.12em] text-[--foreground-subtle]">{card.detail}</p>
+      <ConnectionHandle type="source" position={Position.Right} />
+      <ConnectionHandle id="loop-target" type="target" position={Position.Bottom} left="25%" />
+      <ConnectionHandle id="loop-source" type="source" position={Position.Bottom} left="75%" />
     </div>
+  );
+}
+
+function ConnectionHandle({ type, position, id, left }: {
+  type: "source" | "target";
+  position: Position;
+  id?: string;
+  left?: string;
+}) {
+  const zoom = useStore((state) => state.transform[2]);
+  const safeZoom = Math.max(zoom, 0.01);
+  const hitSize = connectionTargetPixels / safeZoom;
+  const dotSize = 12 / safeZoom;
+  return (
+    <Handle
+      id={id}
+      type={type}
+      position={position}
+      aria-label={type === "source" ? "Start connection" : "Complete connection"}
+      className="!grid !place-items-center !border-0 !bg-transparent"
+      style={{ width: hitSize, height: hitSize, ...(left ? { left } : {}) }}
+    >
+      <span
+        aria-hidden="true"
+        className={type === "source" ? "rounded-full bg-[--accent]" : "rounded-full bg-[#a78bfa]"}
+        style={{ width: dotSize, height: dotSize, border: `${2 / safeZoom}px solid #0b111f` }}
+      />
+    </Handle>
   );
 }
 
@@ -226,7 +258,7 @@ export function WorkflowEditor() {
       type: "smoothstep",
       markerEnd: { type: MarkerType.ArrowClosed, color: "#a3e635" },
       style: { stroke: index === selectedEdgeIndex ? "#bef264" : isLoopRoute ? "#a78bfa" : "#8caadc", strokeWidth: index === selectedEdgeIndex ? 2.5 : 1.7 },
-      labelStyle: { fill: "#e8f0ff", fontSize: 11, fontFamily: "var(--font-geist-mono)" },
+      labelStyle: { fill: "#e8f0ff", fontSize: 13, fontFamily: "var(--font-geist-mono)" },
       labelBgStyle: { fill: "#0b111f", fillOpacity: 0.94 },
       labelBgPadding: [7, 4] as [number, number],
       labelBgBorderRadius: 5,
@@ -368,13 +400,16 @@ export function WorkflowEditor() {
       const response = await fetch(workflowId ? `/api/workflows/${workflowId}` : "/api/workflows", { method: workflowId ? "PATCH" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const responseBody = await readJson(response);
       if (response.status === 409) return setNotice({ tone: "error", text: "Save conflict: this workflow changed elsewhere. Reload its server copy before editing again." });
-      if (!response.ok || !isObject(responseBody)) return setNotice({ tone: "error", text: errorMessage(responseBody, "Workflow save failed.") });
+      if (!response.ok || !isObject(responseBody)) {
+        const detail = response.status < 500 ? errorMessage(responseBody, "") : "";
+        return setNotice({ tone: "error", text: detail ? `${retryableSaveFailure} ${detail}` : retryableSaveFailure });
+      }
       const saved = responseBody as unknown as WorkflowDTO;
       setWorkflows((current) => [...current.filter((workflow) => workflow.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
       selectWorkflow(saved);
       setNotice({ tone: "success", text: "Saved to PostgreSQL. Reload will read this exact graph." });
     } catch {
-      setNotice({ tone: "error", text: "Workflow save failed because the server could not be reached." });
+      setNotice({ tone: "error", text: retryableSaveFailure });
     } finally {
       setSaving(false);
     }
@@ -439,6 +474,7 @@ export function WorkflowEditor() {
               }}
               onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeIndex(null); setFieldError(null); }}
               fitView
+              fitViewOptions={readableFitViewOptions}
               minZoom={0.25}
               maxZoom={1.8}
               deleteKeyCode={["Backspace", "Delete"]}
@@ -446,7 +482,7 @@ export function WorkflowEditor() {
               proOptions={{ hideAttribution: true }}
             >
               <Background color="rgba(140,170,220,0.18)" gap={22} size={1} />
-              <Controls position="bottom-left" showInteractive={false} />
+              <Controls position="bottom-left" showInteractive={false} fitViewOptions={readableFitViewOptions} />
               <MiniMap pannable zoomable position="bottom-right" nodeColor={(node) => node.data.entry ? "#a3e635" : "#8caadc"} maskColor="rgba(4,6,12,0.78)" />
             </ReactFlow>
           </div>

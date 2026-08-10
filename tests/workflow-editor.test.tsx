@@ -15,15 +15,17 @@ vi.mock("@xyflow/react", async () => {
     MiniMap: () => null,
     MarkerType: { ArrowClosed: "arrowclosed" },
     Position: { Left: "left", Right: "right" },
-    ReactFlow: ({ nodes, edges, onNodeClick, onEdgeClick, children }: {
+    useStore: (selector: (state: { transform: [number, number, number] }) => unknown) => selector({ transform: [0, 0, 0.5] }),
+    ReactFlow: ({ nodes, edges, onNodeClick, onEdgeClick, fitViewOptions, children }: {
       nodes: Array<{ id: string }>;
       edges: Array<{ id: string; source: string; target: string; sourceHandle?: string; targetHandle?: string }>;
       onNodeClick: (event: unknown, node: { id: string }) => void;
       onEdgeClick: (event: unknown, edge: { id: string }) => void;
+      fitViewOptions?: { minZoom?: number };
       children: React.ReactNode;
     }) => React.createElement(
       "div",
-      { "aria-label": "Mock workflow canvas" },
+      { "aria-label": "Mock workflow canvas", "data-fit-min-zoom": fitViewOptions?.minZoom },
       ...nodes.map((node) => React.createElement("button", { key: node.id, type: "button", onClick: (event) => onNodeClick(event, node) }, `Node ${node.id}`)),
       ...edges.map((edge) => React.createElement("button", {
         key: edge.id,
@@ -204,6 +206,39 @@ describe("WorkflowEditor", () => {
     expect(container.textContent).not.toContain("Saved to PostgreSQL");
   });
 
+  it("retains local edits after a database failure and safely retries them", async () => {
+    const patchBodies: Array<Record<string, unknown>> = [];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Implementer"), agent("2", "Tester")]));
+      if (url === "/api/workflows") return Promise.resolve(json([workflow]));
+      if (url === "/api/workflows/7" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (patchBodies.length === 1) return Promise.resolve(json({ error: { code: "internal_error", message: "internal server error" } }, 500));
+        return Promise.resolve(json({ ...workflow, ...body, updatedAt: "2026-08-10T00:01:00.000Z" }));
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await renderAndLoad();
+
+    await act(async () => change(findControl<HTMLSelectElement>(container, "Plan mode"), "required"));
+    await act(async () => {
+      click(findButton(container, "Save workflow"));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain("Save failed. Local edits remain in this editor, and retrying is safe.");
+    expect(container.textContent).not.toContain("internal server error");
+    expect(findControl<HTMLSelectElement>(container, "Plan mode").value).toBe("required");
+
+    await act(async () => {
+      click(findButton(container, "Save workflow"));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(patchBodies).toHaveLength(2);
+    expect((patchBodies[1]!.graph as WorkflowGraph).nodes[0]!.config.planMode).toBe("required");
+    expect(container.textContent).toContain("Saved to PostgreSQL");
+  });
+
   it("renders the closing edge of a three-node cycle on the return path", async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === "/api/agents") return Promise.resolve(json([agent("1", "Implementer"), agent("2", "Reviewer")]));
@@ -212,6 +247,7 @@ describe("WorkflowEditor", () => {
     });
     await renderAndLoad();
 
+    expect(container.querySelector<HTMLElement>('[aria-label="Mock workflow canvas"]')?.dataset.fitMinZoom).toBe("0.75");
     expect(findButton(container, "Edge A to B").dataset.sourceHandle).toBeUndefined();
     expect(findButton(container, "Edge C to A").dataset.sourceHandle).toBe("loop-source");
     expect(findButton(container, "Edge C to A").dataset.targetHandle).toBe("loop-target");
