@@ -58,7 +58,13 @@ key over IPC only after the identity is established. All credential-bearing
 work and all Git, scan, and diff operations use that current directory through
 relative paths. Replacement or deletion fails closed. Credential contamination
 is retained under `.orbitflow/quarantine` instead of deleting a live workspace.
-There is intentionally no cleanup command in FACT-12.
+The workspace service refuses cleanup while the owning `workflow_runs` row
+exists. After the platform deletes that row, `deleteRunWorkspace(runId)` moves
+only the identity-matched retained directory into the control area. A
+credential-free cleanup boundary enters that directory and verifies its device
+and inode from the established working directory before removing contents. The
+ownership record is removed last. Renamed, symlinked, or substituted cleanup
+targets fail closed and are retained.
 
 OpenCode receives an explicit environment allowlist: the selected key, tool
 `PATH`, isolated home/state paths, and fixed safety switches. The adapter parses

@@ -468,10 +468,6 @@ function runProcess(
       return;
     }
 
-    if (Number.isInteger(child.pid) && typeof onCliStart === "function") {
-      onCliStart(child.pid);
-    }
-
     let stdoutLog = "";
     let stderrTail = "";
     let settled = false;
@@ -499,20 +495,28 @@ function runProcess(
       });
     };
 
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
-        .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL"))
-        .catch((error) =>
-          finish(
-            closeState.exitCode,
-            closeState.signal,
-            new CliFailureError(
-              `failed to terminate coding CLI process group: ${redact(errorMessage(error), secrets)}`,
+    let timeoutTimer;
+    const beginTimeout = () => {
+      if (Number.isInteger(child.pid) && typeof onCliStart === "function") {
+        onCliStart(child.pid);
+      }
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
+          .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL"))
+          .catch((error) =>
+            finish(
+              closeState.exitCode,
+              closeState.signal,
+              new CliFailureError(
+                `failed to terminate coding CLI process group: ${redact(errorMessage(error), secrets)}`,
+              ),
             ),
-          ),
-        );
-    }, timeoutMs);
+          );
+      }, timeoutMs);
+    };
+
+    child.once("spawn", beginTimeout);
 
     child.stdout?.on("data", (chunk) => {
       const text = chunk.toString();

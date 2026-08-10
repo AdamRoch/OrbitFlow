@@ -12,6 +12,9 @@ const descendant = spawn(
   ["-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"],
   { stdio: "ignore" },
 );
-writeFileSync(pidFile, String(descendant.pid));
+writeFileSync(
+  pidFile,
+  JSON.stringify({ processGroupId: process.pid, descendantPid: descendant.pid }),
+);
 process.on("SIGTERM", () => {});
 setInterval(() => {}, 1_000);

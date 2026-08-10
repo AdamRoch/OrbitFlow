@@ -94,6 +94,13 @@ an ownership marker before the CLI can receive the provider credential.
   or URL encoding appeared in CLI output or workspace state. No affected
   output is returned. Temporary proof workspaces are removed; durable run
   workspaces are retained in quarantine.
+- `WorkspaceError` (`workspace_invalid`) -- the requested run workspace is missing, escaped,
+  replaced, still live during cleanup, or no longer matches its durable
+  ownership record.
+- `PersistenceError` (`persistence_failure`) -- usage attribution could not be verified or written;
+  the delegation is not reported as a success.
+- `InvalidRequestError` (`invalid_request`) -- the executable tool request, calling context, or
+  configuration does not satisfy the public command contract.
 
 The credential-free execution boundary changes into the validated workspace,
 checks the resulting current directory's device and inode, and only then asks
@@ -116,8 +123,13 @@ hooks, external diffs, text conversion, pagers, lazy fetching, replacement
 objects, and fsmonitor disabled.
 
 Every recursive cleanup revalidates the temporary root and ownership marker by
-their original filesystem device and inode immediately before removal. A
-renamed or substituted path produces a structured failure and is left intact.
+their original filesystem device and inode immediately before removal. Durable
+run cleanup first requires the `workflow_runs` row to be absent, moves the
+validated directory into the identity-tracked control area, and starts a
+credential-free cleanup boundary inside it. The boundary verifies the directory
+identity from its established working directory before removing contents. The
+ownership record is removed last. A renamed or substituted path produces a
+structured failure and is retained.
 
 ## Trust boundary
 

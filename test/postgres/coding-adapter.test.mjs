@@ -5,11 +5,13 @@ import {
   cp,
   lstat,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
   rm,
   symlink,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +25,7 @@ import {
   createCostEventStore,
   createRunWorkspaceService,
 } from "../../coding-adapter/src/index.js";
+import { inspectProcessGroup } from "../../coding-adapter/src/processGroup.js";
 
 const { Pool } = pg;
 const FAKE_OPENCODE = fileURLToPath(
@@ -45,7 +48,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT12_PROOF_DATABASE);
     await migratePostgres({ databaseUrl, log: () => {} });
     const root = await realpath(configuredRoot);
-    const fixtures = await seedFixtures(pool, 13);
+    const fixtures = await seedFixtures(pool, 15);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
     const costEventStore = createCostEventStore({ pool });
     const adapterOptions = {
@@ -242,6 +245,9 @@ test("FACT-12 production coding-tool contract", async (t) => {
       await assert.rejects(access(crashWorkspace), { code: "ENOENT" });
       const quarantine = await lstat(path.join(root, ".orbitflow", "quarantine"));
       assert.equal(quarantine.isDirectory(), true);
+      await pool.query("DELETE FROM workflow_runs WHERE id = $1", [crashRun]);
+      assert.equal(await workspaceService.deleteRunWorkspace(crashRun), true);
+      assert.deepEqual(await readdir(path.join(root, ".orbitflow", "quarantine")), []);
 
       const malformedRun = fixtures.runIds[4];
       const malformedWorkspace = await workspaceService.startRunWorkspace(malformedRun);
@@ -252,37 +258,91 @@ test("FACT-12 production coding-tool contract", async (t) => {
       await access(malformedWorkspace);
     });
 
-    await t.test("times out and removes the complete CLI process group", async () => {
+    await t.test("times out and removes the complete CLI process group on first and repeated runs", async () => {
       if (process.platform === "win32") return;
       const runId = fixtures.runIds[9];
       const workspace = await workspaceService.startRunWorkspace(runId);
-      const pidFile = path.join(workspace, "descendant.pid");
-      const timeoutTool = createCodingTool({
-        runId,
-        agentId: fixtures.agentId,
-        workspaceService,
-        costEventStore,
-        adapterOptions: {
-          binary: HANGING_OPENCODE,
-          env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
-          timeoutMs: 80,
-          killGraceMs: 40,
-          killWaitMs: 1_000,
-        },
-      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const pidFile = path.join(workspace, `descendant-${attempt}.json`);
+        const timeoutTool = createCodingTool({
+          runId,
+          agentId: fixtures.agentId,
+          workspaceService,
+          costEventStore,
+          adapterOptions: {
+            binary: HANGING_OPENCODE,
+            env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
+            timeoutMs: 500,
+            killGraceMs: 100,
+            killWaitMs: 2_000,
+          },
+        });
 
-      await assert.rejects(
-        () => timeoutTool.delegate_coding_task(pidFile, workspace),
-        (error) => error.code === "timeout" && error.timeoutMs === 80,
-      );
-      const descendantPid = Number(await readFile(pidFile, "utf8"));
-      assert.equal(processExists(descendantPid), false);
+        await assert.rejects(
+          () => timeoutTool.delegate_coding_task(pidFile, workspace),
+          (error) => error.code === "timeout" && error.timeoutMs === 500,
+        );
+        const { processGroupId, descendantPid } = JSON.parse(await readFile(pidFile, "utf8"));
+        assert.equal(inspectProcessGroup(processGroupId).state, "absent");
+        assert.equal(processExists(descendantPid), false);
+      }
       await access(workspace);
       const persisted = await pool.query(
         "SELECT count(*)::int AS count FROM cost_events WHERE run_id = $1",
         [runId],
       );
       assert.equal(persisted.rows[0].count, 0);
+    });
+
+    await t.test("cleans only the identity-owned workspace after run deletion", async () => {
+      const runId = fixtures.runIds[13];
+      const workspace = await workspaceService.startRunWorkspace(runId);
+      await assert.rejects(
+        () => workspaceService.deleteRunWorkspace(runId),
+        (error) => error.code === "workspace_invalid" && /still exists/.test(error.message),
+      );
+      await access(workspace);
+
+      await pool.query("DELETE FROM workflow_runs WHERE id = $1", [runId]);
+      assert.equal(await workspaceService.deleteRunWorkspace(runId), true);
+      assert.equal(await workspaceService.deleteRunWorkspace(runId), false);
+      await assert.rejects(access(workspace), { code: "ENOENT" });
+      await assert.rejects(
+        access(path.join(root, ".orbitflow", `run-${runId}.json`)),
+        { code: "ENOENT" },
+      );
+    });
+
+    await t.test("retains renamed and substituted paths during run-deletion cleanup", async () => {
+      const runId = fixtures.runIds[14];
+      const workspace = await workspaceService.startRunWorkspace(runId);
+      const replacement = await mkdtemp(path.join(tmpdir(), "orbitfactory-fact12-cleanup-attack-"));
+      const sentinel = path.join(replacement, "must-survive.txt");
+      let retainedDisposalPath;
+      await writeFile(sentinel, "replacement target must survive\n");
+      const adversarialService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: configuredRoot,
+        async beforeCleanupBoundary({ path: disposalPath }) {
+          retainedDisposalPath = `${disposalPath}-retained`;
+          await rename(disposalPath, retainedDisposalPath);
+          await symlink(replacement, disposalPath, "dir");
+        },
+      });
+      try {
+        await pool.query("DELETE FROM workflow_runs WHERE id = $1", [runId]);
+        await assert.rejects(
+          () => adversarialService.deleteRunWorkspace(runId),
+          (error) =>
+            error.code === "workspace_invalid" && /anchored boundary/.test(error.message),
+        );
+        await assert.rejects(access(workspace), { code: "ENOENT" });
+        await access(path.join(retainedDisposalPath, ".git", "orbitflow-workspace.json"));
+        assert.equal(await readFile(sentinel, "utf8"), "replacement target must survive\n");
+        await access(path.join(root, ".orbitflow", `run-${runId}.json`));
+      } finally {
+        await rm(replacement, { recursive: true, force: true });
+      }
     });
 
     await t.test("rejects containment, symlink, deletion, and replacement attacks", async () => {

@@ -11,7 +11,7 @@ import {
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
 import { HANGING_OPENCODE, TEST_CREDENTIAL } from "./testAdapter.js";
 
-test("timeout repeatedly kills the executable CLI complete process group", async () => {
+test("timeout kills the complete CLI process group on the first and repeated launches", async () => {
   if (process.platform === "win32") return;
   const workspace = await createIsolatedGitWorkspace();
   const control = await mkdtemp(path.join(tmpdir(), "coding-adapter-timeout-proof-"));
@@ -21,16 +21,21 @@ test("timeout repeatedly kills the executable CLI complete process group", async
       const adapter = createOpenCodeAdapter({
         binary: HANGING_OPENCODE,
         env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
-        timeoutMs: 300,
+        timeoutMs: 500,
         killGraceMs: 100,
         killWaitMs: 2_000,
       });
       await assert.rejects(
         () => adapter.delegate_coding_task(pidFile, workspace),
-        (error) => error.code === "timeout" && error.timeoutMs === 300,
+        (error) => error.code === "timeout" && error.timeoutMs === 500,
       );
       await access(pidFile);
-      const descendantPid = Number(await readFile(pidFile, "utf8"));
+      const { processGroupId, descendantPid } = JSON.parse(await readFile(pidFile, "utf8"));
+      assert.equal(
+        inspectProcessGroup(processGroupId).state,
+        "absent",
+        `attempt ${attempt} left its process group present or uninspectable`,
+      );
       assert.equal(processExists(descendantPid), false, `attempt ${attempt} left a descendant`);
     }
   } finally {

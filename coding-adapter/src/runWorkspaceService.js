@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   lstat,
   mkdir,
@@ -6,18 +7,22 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runSafeGit } from "./git.js";
 import { WorkspaceError } from "./errors.js";
 
 const CONTROL_DIRECTORY = ".orbitflow";
 const QUARANTINE_DIRECTORY = "quarantine";
+const DISPOSAL_DIRECTORY = "disposal";
 const WORKSPACE_MARKER = "orbitflow-workspace.json";
 const RECORD_VERSION = 1;
+const CLEANUP_BOUNDARY = fileURLToPath(new URL("./workspaceCleanupBoundary.js", import.meta.url));
 
-export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
+export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBoundary } = {}) {
   if (!pool || typeof pool.query !== "function") {
     throw new WorkspaceError("a PostgreSQL pool is required for run workspaces");
   }
@@ -92,6 +97,56 @@ export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
     }
   }
 
+  async function deleteRunWorkspace(runIdValue) {
+    let client;
+    let inTransaction = false;
+    try {
+      const runId = normalizeId(runIdValue, "runId");
+      const root = await initialize();
+      client = await pool.connect();
+      await client.query("BEGIN");
+      inTransaction = true;
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('orbitfactory:workspace:' || $1, 0))",
+        [runId],
+      );
+      await requireDeletedRun(client, runId);
+      await assertRootCurrent(root);
+      const entry = await readRecordEntryIfPresent(root, runId);
+      if (!entry) {
+        await client.query("COMMIT");
+        inTransaction = false;
+        return false;
+      }
+
+      const owned = await validateCleanupRecord(root, runId, entry.record);
+      const disposalPath = path.join(
+        root.disposal,
+        `run-${runId}-${entry.record.workspaceId}-${randomUUID()}`,
+      );
+      assertDirectChild(root.disposal, disposalPath);
+      await rename(owned.path, disposalPath);
+      if (typeof beforeCleanupBoundary === "function") {
+        await beforeCleanupBoundary({ path: disposalPath, identity: owned.identity });
+      }
+      await removeOwnedDirectory(disposalPath, owned.identity);
+      await removeOwnedRecord(root, runId, entry);
+
+      await client.query("COMMIT");
+      inTransaction = false;
+      return true;
+    } catch (error) {
+      if (inTransaction) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {}
+      }
+      throw asWorkspaceError(error);
+    } finally {
+      client?.release();
+    }
+  }
+
   async function assertHandleCurrent(handle) {
     try {
       const root = await initialize();
@@ -139,6 +194,7 @@ export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
   return {
     startRunWorkspace,
     resolveWorkspace,
+    deleteRunWorkspace,
     assertHandleCurrent,
     authorityForRun,
     configuredRoot: () => initialize().then((root) => root.path),
@@ -155,13 +211,16 @@ async function initializeRoot(configuredRoot) {
   const rootStat = await lstat(canonicalRoot);
   const control = path.join(canonicalRoot, CONTROL_DIRECTORY);
   const quarantine = path.join(control, QUARANTINE_DIRECTORY);
+  const disposal = path.join(control, DISPOSAL_DIRECTORY);
   await mkdir(control, { recursive: true, mode: 0o700 });
   await mkdir(quarantine, { recursive: true, mode: 0o700 });
+  await mkdir(disposal, { recursive: true, mode: 0o700 });
   const controlStat = await requireRealDirectory(control, "workspace control directory");
   const quarantineStat = await requireRealDirectory(
     quarantine,
     "workspace quarantine directory",
   );
+  const disposalStat = await requireRealDirectory(disposal, "workspace disposal directory");
   return Object.freeze({
     path: canonicalRoot,
     device: rootStat.dev,
@@ -172,6 +231,9 @@ async function initializeRoot(configuredRoot) {
     quarantine,
     quarantineDevice: quarantineStat.dev,
     quarantineInode: quarantineStat.ino,
+    disposal,
+    disposalDevice: disposalStat.dev,
+    disposalInode: disposalStat.ino,
   });
 }
 
@@ -182,13 +244,19 @@ async function assertRootCurrent(root) {
     root.quarantine,
     "workspace quarantine directory",
   );
+  const disposalStat = await requireRealDirectory(
+    root.disposal,
+    "workspace disposal directory",
+  );
   if (
     rootStat.dev !== root.device ||
     rootStat.ino !== root.inode ||
     controlStat.dev !== root.controlDevice ||
     controlStat.ino !== root.controlInode ||
     quarantineStat.dev !== root.quarantineDevice ||
-    quarantineStat.ino !== root.quarantineInode
+    quarantineStat.ino !== root.quarantineInode ||
+    disposalStat.dev !== root.disposalDevice ||
+    disposalStat.ino !== root.disposalInode
   ) {
     throw new WorkspaceError("configured workspace root identity changed");
   }
@@ -211,6 +279,16 @@ async function requireRun(queryable, runId) {
     [runId],
   );
   if (result.rowCount !== 1) throw new WorkspaceError("workflow run does not exist");
+}
+
+async function requireDeletedRun(queryable, runId) {
+  const result = await queryable.query(
+    "SELECT id::text AS id FROM workflow_runs WHERE id = $1",
+    [runId],
+  );
+  if (result.rowCount !== 0) {
+    throw new WorkspaceError("workflow run still exists; cleanup refused");
+  }
 }
 
 async function createWorkspace(root, runId, workspace) {
@@ -327,6 +405,50 @@ async function validateRecord(root, runId, workspace, record) {
   });
 }
 
+async function validateCleanupRecord(root, runId, record) {
+  const workspace = expectedWorkspace(root, runId);
+  validateRecordShape(record, runId, workspace);
+  const target =
+    record.state === "active"
+      ? workspace
+      : expectedQuarantinePath(root, runId, record.workspaceId);
+  if (record.state === "quarantined" && record.quarantinePath !== target) {
+    throw new WorkspaceError("run workspace ownership record is malformed");
+  }
+
+  const workspaceStat = await requireRealDirectory(target, "retained run workspace");
+  const git = path.join(target, ".git");
+  const gitStat = await requireRealDirectory(git, "retained run workspace Git directory");
+  const marker = path.join(git, WORKSPACE_MARKER);
+  const markerStat = await lstat(marker);
+  if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+    throw new WorkspaceError("retained run workspace marker is invalid");
+  }
+  const markerValue = parseJson(await readFile(marker, "utf8"), "retained run workspace marker");
+  if (
+    markerValue.schemaVersion !== RECORD_VERSION ||
+    markerValue.runId !== runId ||
+    markerValue.workspaceId !== record.workspaceId ||
+    String(workspaceStat.dev) !== record.workspaceDevice ||
+    String(workspaceStat.ino) !== record.workspaceInode ||
+    String(gitStat.dev) !== record.gitDevice ||
+    String(gitStat.ino) !== record.gitInode ||
+    String(markerStat.dev) !== record.markerDevice ||
+    String(markerStat.ino) !== record.markerInode
+  ) {
+    throw new WorkspaceError("run workspace was deleted or replaced; cleanup refused");
+  }
+  const canonical = await realpath(target);
+  const expectedParent = record.state === "active" ? root.path : root.quarantine;
+  if (canonical !== target || path.dirname(canonical) !== expectedParent) {
+    throw new WorkspaceError("run workspace escaped its retained parent; cleanup refused");
+  }
+  return Object.freeze({
+    path: target,
+    identity: Object.freeze({ dev: workspaceStat.dev, ino: workspaceStat.ino }),
+  });
+}
+
 function validateRecordShape(record, runId, workspace) {
   if (
     !record ||
@@ -353,6 +475,10 @@ function validateRecordShape(record, runId, workspace) {
 }
 
 async function readRecordIfPresent(root, runId) {
+  return (await readRecordEntryIfPresent(root, runId))?.record ?? null;
+}
+
+async function readRecordEntryIfPresent(root, runId) {
   const recordPath = path.join(root.control, `run-${runId}.json`);
   assertDirectChild(root.control, recordPath);
   const stat = await lstatOrNull(recordPath);
@@ -360,7 +486,11 @@ async function readRecordIfPresent(root, runId) {
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new WorkspaceError("run workspace ownership record is invalid");
   }
-  return parseJson(await readFile(recordPath, "utf8"), "run workspace ownership record");
+  return Object.freeze({
+    path: recordPath,
+    identity: Object.freeze({ dev: stat.dev, ino: stat.ino }),
+    record: parseJson(await readFile(recordPath, "utf8"), "run workspace ownership record"),
+  });
 }
 
 async function writeRecordAtomic(root, runId, record, { replace = false } = {}) {
@@ -392,23 +522,68 @@ async function writeRecordAtomic(root, runId, record, { replace = false } = {}) 
 }
 
 async function removeOwnedStaging(staging, identity) {
-  const current = await lstatOrNull(staging);
+  await removeOwnedDirectory(staging, identity, "workspace staging cleanup");
+}
+
+async function removeOwnedDirectory(target, identity, label = "workspace cleanup") {
+  await new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(
+        process.execPath,
+        [CLEANUP_BOUNDARY, String(identity.dev), String(identity.ino)],
+        {
+          cwd: target,
+          env: { PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin" },
+          stdio: ["ignore", "ignore", "ignore"],
+        },
+      );
+    } catch {
+      reject(new WorkspaceError(`${label} refused at anchored boundary`));
+      return;
+    }
+    child.once("error", () => {
+      reject(new WorkspaceError(`${label} refused at anchored boundary`));
+    });
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new WorkspaceError(`${label} refused at anchored boundary`));
+    });
+  });
+  try {
+    await rmdir(target);
+  } catch {
+    throw new WorkspaceError(`${label} could not remove the emptied owned directory`);
+  }
+}
+
+async function removeOwnedRecord(root, runId, entry) {
+  const disposalPath = path.join(root.disposal, `run-${runId}-${randomUUID()}.record`);
+  assertDirectChild(root.disposal, disposalPath);
+  await rename(entry.path, disposalPath);
+  const current = await lstatOrNull(disposalPath);
   if (
     !current ||
-    !current.isDirectory() ||
+    !current.isFile() ||
     current.isSymbolicLink() ||
-    current.dev !== identity.dev ||
-    current.ino !== identity.ino
+    current.dev !== entry.identity.dev ||
+    current.ino !== entry.identity.ino
   ) {
-    throw new WorkspaceError("workspace staging cleanup refused after identity change");
+    throw new WorkspaceError("workspace ownership record cleanup refused after identity change");
   }
-  await rm(staging, { recursive: true, force: false });
+  await rm(disposalPath, { force: false });
 }
 
 function expectedWorkspace(root, runId) {
   const workspace = path.join(root.path, `run-${runId}`);
   assertDirectChild(root.path, workspace);
   return workspace;
+}
+
+function expectedQuarantinePath(root, runId, workspaceId) {
+  const target = path.join(root.quarantine, `run-${runId}-${workspaceId}`);
+  assertDirectChild(root.quarantine, target);
+  return target;
 }
 
 function assertDirectChild(parent, target) {
