@@ -13,8 +13,8 @@ Productionize the P0-1 spike into the `RuntimeAdapter` (PRD §5): create/update 
 
 ## Acceptance criteria
 
-- [ ] Agent row → live OpenClaw agent, updated on edit.
-- [ ] Wake → structured output captured, token usage lands in `cost_events`.
-- [ ] Malformed output: one retry, then `system` error message on the bus.
-- [ ] Hung wake: timeout fires, session terminated, run surfaces the error instead of stalling.
-- [ ] A fact stored in run 1 is present in the composed prompt of run 2.
+- [x] Agent row → live OpenClaw agent, updated on edit.
+- [x] Wake → structured output captured, token usage lands in `cost_events`.
+- [x] Malformed output: one retry, then `system` error message on the bus.
+- [x] Hung wake: timeout fires, session terminated, run surfaces the error instead of stalling.
+- [x] A fact stored in run 1 is present in the composed prompt of run 2.
