@@ -136,19 +136,32 @@ describe("MonitoringDashboard", () => {
     await act(async () => requests[1]!.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
   });
 
-  it("keeps EventSource degradation visible until its recovery snapshot succeeds", async () => {
+  it("keeps transport and snapshot status honest across EventSource disconnect and recovery", async () => {
     const recovery = deferred<Response>();
     vi.stubGlobal("fetch", vi.fn(() => recovery.promise));
     const stream = FakeEventSource.instances[0]!;
+
+    // Disconnected transport: the listener is reconnecting and the last
+    // authoritative snapshot is retained. It must never claim to be connected.
     await act(async () => stream.emit("error"));
     expect(container.textContent).toContain("Degraded snapshot");
+    expect(container.textContent).toContain("Live listener reconnecting");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Live listener is reconnecting. Showing the last authoritative snapshot.");
+    expect(container.textContent).not.toContain("Live listener is connected. Waiting for an authoritative snapshot.");
+
+    // Transport back, recovery fetch still pending: connected and awaiting the
+    // authoritative snapshot, and no longer claiming to reconnect.
     await act(async () => stream.emit("open"));
-    expect(container.textContent).toContain("Waiting for an authoritative snapshot");
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Waiting for an authoritative snapshot");
+    expect(container.textContent).toContain("Live listener connected");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Live listener is connected. Waiting for an authoritative snapshot.");
+    expect(container.textContent).not.toContain("Live listener reconnecting");
     expect(container.textContent).not.toContain("Snapshot current");
+
+    // Recovery succeeded: both degraded branches clear.
     await act(async () => recovery.resolve(new Response(JSON.stringify(snapshot), { status: 200 })));
     expect(container.textContent).toContain("Snapshot current");
     expect(container.textContent).not.toContain("Waiting for an authoritative snapshot");
+    expect(container.querySelector('[role="status"]')).toBeNull();
   });
 
   it("uses roving tab focus and keeps all selected-run agent choices after filtering", async () => {

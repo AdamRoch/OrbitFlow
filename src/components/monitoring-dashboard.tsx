@@ -65,9 +65,14 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
   const refreshSnapshotRef = useRef<(nextFilters: MonitoringFilters, supersede?: boolean, recoveryEpoch?: number) => void>(() => {});
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [streamRecoveryPending, setStreamRecoveryPending] = useState(false);
-  const degraded = refreshFailure ?? (streamRecoveryPending
-    ? "Live listener is connected. Waiting for an authoritative snapshot."
-    : streamConnected ? null : "Live listener is reconnecting. Showing the last authoritative snapshot.");
+  // Transport state and authoritative snapshot state are separate facts. The
+  // connected-waiting sentence is only honest after onOpen has set
+  // streamConnected=true and while the recovery fetch is still pending.
+  const degraded = refreshFailure ?? (!streamConnected
+    ? "Live listener is reconnecting. Showing the last authoritative snapshot."
+    : streamRecoveryPending
+      ? "Live listener is connected. Waiting for an authoritative snapshot."
+      : null);
 
   useEffect(() => {
     refreshSnapshotRef.current = async (nextFilters: MonitoringFilters, supersede = false, recoveryEpoch?: number) => {
