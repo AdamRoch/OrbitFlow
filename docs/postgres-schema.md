@@ -23,8 +23,9 @@ FACT-18 reserves `0009-state-stream-notify.sql`. It adds no state table: AFTER
 triggers call `pg_notify` only after a committed change to agents, runs,
 tickets, messages, or cost events. SSE clients use that notification only as a
 wake-up and re-fetch their bounded authoritative snapshot after connecting or
-reconnecting. There is no stream replay log and a missed notification never
-authorizes a write.
+reconnecting; a successful PostgreSQL LISTEN installation also emits a
+`state.resync` wake-up after listener loss. There is no stream replay log and
+a missed notification never authorizes a write.
 
 ## Run the FACT-6 proof
 

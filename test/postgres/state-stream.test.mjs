@@ -20,7 +20,7 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
   assert.ok(databaseUrl, "DATABASE_URL must point to the disposable proof database");
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
-  const hub = new StateEventHub({ connectionString: databaseUrl, reconnectDelayMs: 10 });
+  const hub = new StateEventHub({ connectionString: databaseUrl, reconnectDelayMs: 250 });
   const first = [];
   const second = [];
   const stopFirst = hub.subscribe((event) => first.push(event));
@@ -38,6 +38,10 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
       "0009-state-stream-notify.sql",
     ]);
     await hub.ready();
+    assert.equal(first.filter((event) => event.type === "state.resync").length, 1);
+    assert.deepEqual(second, first, "initial listeners share the snapshot boundary");
+    first.length = 0;
+    second.length = 0;
 
     await client.query("SELECT pg_notify('orbitflow_state_changed', 'not json')");
     await delay(25);
@@ -99,6 +103,40 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
     assert.equal(byType.get("message.created").ticketId, String(ticket.rows[0].id));
     assert.equal(byType.get("cost.created").runId, String(run.rows[0].id));
     assert.equal(byType.get("cost.created").agentId, String(agent.rows[0].id));
+
+    first.length = 0;
+    second.length = 0;
+    const listener = await client.query(
+      `SELECT pid FROM pg_stat_activity
+       WHERE datname = current_database() AND application_name = 'orbitfactory-state-stream'`,
+    );
+    assert.equal(listener.rowCount, 1, "proof must find the dedicated LISTEN connection");
+    await client.query("SELECT pg_terminate_backend($1)", [listener.rows[0].pid]);
+    await waitUntil(() => !hub.listening, "listener loss");
+
+    const missedTicket = await client.query(
+      `INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id)
+       VALUES (2, 'FACT-2', $1, $2, 'Committed while LISTEN was down', 'todo', $3) RETURNING id`,
+      [project.rows[0].id, run.rows[0].id, agent.rows[0].id],
+    );
+    assert.equal(first.length, 0, "a committed row during listener loss has no durable stream delivery");
+    assert.equal(second.length, 0, "both clients wait for recovery rather than receiving a replay");
+
+    await waitUntil(
+      () => first.some((event) => event.type === "state.resync"),
+      "resync wake-up after LISTEN recovery",
+    );
+    assert.deepEqual(second, first, "both clients receive the recovery snapshot boundary");
+    const recovery = first.find((event) => event.type === "state.resync");
+    assert.deepEqual(recovery, {
+      schemaVersion: 1,
+      type: "state.resync",
+      runId: null,
+      agentId: null,
+      ticketId: null,
+      occurredAt: recovery.occurredAt,
+    });
+    assert.ok(missedTicket.rows[0].id, "the recovery snapshot has a committed authority row to fetch");
   } finally {
     stopFirst();
     stopSecond();

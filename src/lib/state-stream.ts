@@ -1,5 +1,6 @@
 import { Client } from "pg";
 import {
+  createStateEvent,
   parseStateEvent,
   subscribeLocalStateEvents,
   type StateEvent,
@@ -16,7 +17,8 @@ interface StateEventHubOptions {
 /**
  * One PostgreSQL LISTEN connection fans committed database wake-ups out to the
  * SSE clients held by this Next process. It has no cursor and keeps no replay
- * log: reconnecting consumers must re-fetch their authoritative snapshots.
+ * log. Every successful LISTEN installation emits a resync wake-up, so clients
+ * re-fetch their authoritative snapshots after a missed-notification window.
  */
 export class StateEventHub {
   private readonly listeners = new Set<StateEventListener>();
@@ -95,6 +97,15 @@ export class StateEventHub {
           return;
         }
         this.client = client;
+        // PostgreSQL does not replay notifications that committed before this
+        // LISTEN completed. This is deliberately only a wake-up: connected
+        // browsers must re-fetch their bounded, authoritative snapshot.
+        this.broadcast(createStateEvent({
+          type: "state.resync",
+          runId: null,
+          agentId: null,
+          ticketId: null,
+        }));
       } catch {
         await client.end().catch(() => undefined);
         this.reconnect(client);

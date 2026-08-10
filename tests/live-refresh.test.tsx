@@ -55,7 +55,7 @@ describe("LiveRefresh", () => {
     vi.unstubAllGlobals();
   });
 
-  it("re-fetches on connection, valid wake-ups, and reconnects", () => {
+  it("re-fetches on connection, valid wake-ups, recovery boundaries, and reconnects", () => {
     const stream = FakeEventSource.instances[0];
     expect(stream.url).toBe("/api/state-stream");
 
@@ -72,8 +72,18 @@ describe("LiveRefresh", () => {
     })));
     expect(refreshMock).toHaveBeenCalledTimes(2);
 
-    act(() => stream.emit("open"));
+    act(() => stream.emit("state", JSON.stringify({
+      schemaVersion: 1,
+      type: "state.resync",
+      runId: null,
+      agentId: null,
+      ticketId: null,
+      occurredAt: "2026-08-10T12:00:01.000Z",
+    })));
     expect(refreshMock).toHaveBeenCalledTimes(3);
+
+    act(() => stream.emit("open"));
+    expect(refreshMock).toHaveBeenCalledTimes(4);
   });
 
   it("ignores malformed data and closes the connection on unmount", async () => {

@@ -1,4 +1,5 @@
 export const STATE_EVENT_TYPES = [
+  "state.resync",
   "ticket.created",
   "ticket.updated",
   "ticket.deleted",

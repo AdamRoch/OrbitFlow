@@ -14,9 +14,11 @@ implements `GET /api/state-stream` with a versioned SSE wake-up envelope
 with nullable `runId`, `agentId`, and `ticketId` fields plus a stable event type.
 PostgreSQL `AFTER` triggers emit committed control-plane wake-ups; inherited
 SQLite board mutations emit only after their transaction returns. Clients
-re-fetch on open and reconnect, so the database remains authoritative and no
-stream delivery is claimed durable. Slow/disconnected clients are closed rather
-than retaining an unbounded queue.
+re-fetch on open, reconnect, and PostgreSQL LISTEN recovery, so the database
+remains authoritative and no stream delivery is claimed durable. The stable
+`state.resync` envelope marks the bounded snapshot boundary after a listener
+loss, rather than pretending missed notifications were replayed. Slow/
+disconnected clients are closed rather than retaining an unbounded queue.
 
 ## Acceptance criteria
 
