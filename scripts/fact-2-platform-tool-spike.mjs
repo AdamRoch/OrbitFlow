@@ -21,7 +21,7 @@ try {
         ok: true,
         ticket: evidence.ticket,
         evidenceDir,
-        invocationValidation: evidence.invocationValidation,
+        acceptanceCriteria: evidence.acceptanceCriteria,
       },
       null,
       2,

@@ -4,7 +4,7 @@
 
 OpenClaw can call a platform-owned CLI without a human during a real embedded agent turn. The proof registers `orbit-tool` in the agent workspace's `TOOLS.md`, exposes only OpenClaw's supported `exec` tool, and prompts one isolated agent to run exactly `node ./orbit-tool.mjs echo fact-2-platform-tool-payload`.
 
-The CLI writes one JSONL audit record containing its command, subcommand, payload, and exact argument array. The platform validates that record directly. It does not infer the call from rendered terminal output. The run also validates OpenClaw's structured completion envelope and nonzero token usage, then writes checksums for retained evidence.
+The CLI writes one JSONL audit record containing its command, subcommand, payload, and exact argument array. The platform validates that record directly. It does not infer the call from rendered terminal output. The run also requires OpenClaw's structured metadata to show that `TOOLS.md` was injected completely, validates the structured completion envelope and nonzero token usage, then writes checksums for retained evidence.
 
 ## Hands-on runbook
 
@@ -13,7 +13,7 @@ The CLI writes one JSONL audit record containing its command, subcommand, payloa
 3. Run `npm run fact2:spike -- --runtime-dir /tmp/orbitflow-fact2-runtime --evidence-dir /tmp/orbitflow-fact2-evidence` with paths that do not already exist.
 4. Inspect `/tmp/orbitflow-fact2-evidence/evidence.json`, `turn-normalized.json`, and `platform-tool-invocations.jsonl`. All acceptance criteria must be `true`; then run `cd /tmp/orbitflow-fact2-evidence && shasum -a 256 -c sha256sums.txt`.
 
-The runtime directory is removed automatically, including OpenClaw's credential-bearing state. The retained evidence contains only the sanitized agent result, deterministic invocation record, workspace instructions, and checksums. Credential values are neither printed nor retained.
+The runtime directory is removed automatically, including OpenClaw's credential-bearing state. The retained evidence contains only the normalized completion proof, deterministic invocation record, bounded registration and acceptance facts, and checksums. It retains the `TOOLS.md` injection result as a boolean, not the file contents or raw OpenClaw metadata. Credential values are neither printed nor retained.
 
 ## Registration and boundary findings
 

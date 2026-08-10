@@ -65,6 +65,24 @@ export function validatePlatformToolInvocation(entries, { payload = PLATFORM_TOO
   return validation;
 }
 
+export function validatePlatformToolWorkspaceInjection(injectedWorkspaceFiles) {
+  const toolsFile = Array.isArray(injectedWorkspaceFiles)
+    ? injectedWorkspaceFiles.find((candidate) => candidate.name === "TOOLS.md")
+    : null;
+  const validation = {
+    toolsMdInjectedCompletely:
+      toolsFile?.missing === false &&
+      toolsFile.truncated === false &&
+      Number.isInteger(toolsFile.rawChars) &&
+      toolsFile.rawChars > 0 &&
+      toolsFile.injectedChars === toolsFile.rawChars,
+  };
+  if (!validation.toolsMdInjectedCompletely) {
+    throw new OpenClawContractError("Platform tool proof requires complete TOOLS.md workspace injection");
+  }
+  return validation;
+}
+
 export function parsePlatformToolAgentOutput(text, { payload = PLATFORM_TOOL_PAYLOAD } = {}) {
   const credential = process.env.OPENROUTER_API_KEY;
   const safeText = credential ? String(text).replaceAll(credential, "[redacted]") : String(text);
@@ -174,7 +192,6 @@ async function writePlatformToolWorkspace(workspaceDir, toolCliPath) {
   await Promise.all(
     Object.entries(files).map(([name, contents]) => writeFile(path.join(workspaceDir, name), contents)),
   );
-  return files;
 }
 
 function redactEvidence(value) {
@@ -183,6 +200,51 @@ function redactEvidence(value) {
     throw new OpenClawContractError("Platform tool evidence retained the credential value");
   }
   return value;
+}
+
+export function buildPlatformToolEvidence({ normalizedTurn, invocationValidation, workspaceInjection }) {
+  const invocationPassed = Object.values(invocationValidation).every(Boolean);
+  const evidence = redactEvidence({
+    schemaVersion: 1,
+    ticket: "FACT-2",
+    registration: {
+      agent: PLATFORM_TOOL_AGENT_ID,
+      workspaceInstruction: {
+        name: "TOOLS.md",
+        injectedCompletely: workspaceInjection.toolsMdInjectedCompletely,
+      },
+      allowedTools: ["exec"],
+      exec: {
+        host: "gateway",
+        security: "full",
+        ask: "off",
+      },
+      command: "node ./orbit-tool.mjs echo <payload>",
+    },
+    acceptanceCriteria: {
+      toolsMdInjectedThroughOpenClaw: {
+        passed: workspaceInjection.toolsMdInjectedCompletely,
+        evidence: "boolean derived from OpenClaw structured injectedWorkspaceFiles metadata",
+      },
+      agentCallsCustomCliWithoutHumanHelp: {
+        passed: workspaceInjection.toolsMdInjectedCompletely && invocationPassed,
+        evidence: "platform-tool-invocations.jsonl",
+      },
+      platformCapturesCallAndArguments: {
+        passed: invocationPassed,
+        evidence: "platform-tool-invocations.jsonl",
+      },
+      structuredCompletionAndUsage: {
+        passed: normalizedTurn.completion.exitCode === 0 && normalizedTurn.usage.total > 0,
+        evidence: "turn-normalized.json",
+      },
+    },
+  });
+  const failed = Object.entries(evidence.acceptanceCriteria).filter(([, criterion]) => !criterion.passed);
+  if (failed.length > 0) {
+    throw new OpenClawContractError(`FACT-2 acceptance failed: ${failed.map(([name]) => name).join(", ")}`);
+  }
+  return evidence;
 }
 
 export async function runPlatformToolSpike({ runtimeDir, evidenceDir, toolBinDir }) {
@@ -198,7 +260,7 @@ export async function runPlatformToolSpike({ runtimeDir, evidenceDir, toolBinDir
     const { stateDir } = await initializeOpenClaw(absoluteRuntimeDir);
     const workspaceDir = path.join(absoluteRuntimeDir, "workspace");
     const auditFile = path.join(absoluteEvidenceDir, "platform-tool-invocations.jsonl");
-    const workspaceFiles = await writePlatformToolWorkspace(workspaceDir, toolCliPath);
+    await writePlatformToolWorkspace(workspaceDir, toolCliPath);
 
     // FACT-1 proved this installed OpenClaw release generates a broken OpenRouter URL.
     // Apply its verified override before this spike makes its one real agent call.
@@ -249,7 +311,12 @@ export async function runPlatformToolSpike({ runtimeDir, evidenceDir, toolBinDir
       },
     );
     const turn = parsePlatformToolTurn(commandResult);
-    const invocation = validatePlatformToolInvocation(await parsePlatformToolAudit(await readFile(auditFile, "utf8")));
+    const workspaceInjection = validatePlatformToolWorkspaceInjection(
+      turn.envelope.meta?.systemPromptReport?.injectedWorkspaceFiles,
+    );
+    const invocationValidation = validatePlatformToolInvocation(
+      await parsePlatformToolAudit(await readFile(auditFile, "utf8")),
+    );
     const normalizedTurn = {
       agentId: PLATFORM_TOOL_AGENT_ID,
       output: turn.output,
@@ -257,66 +324,15 @@ export async function runPlatformToolSpike({ runtimeDir, evidenceDir, toolBinDir
       completion: turn.completion,
       runtime: turn.runtime,
     };
-    const evidence = redactEvidence({
-      schemaVersion: 1,
-      ticket: "FACT-2",
-      environment: {
-        openclawVersion: (await runOpenClaw(["--version"], { stateDir, timeoutMs: 10_000 })).stdout.trim(),
-        nodeVersion: process.version,
-        model: OPENCLAW_MODEL,
-        credentialSource: "OPENROUTER_API_KEY",
-        credentialValueRetained: false,
-      },
-      registration: {
-        agent: PLATFORM_TOOL_AGENT_ID,
-        mechanism: "workspace TOOLS.md plus OpenClaw built-in exec tool",
-        allow: ["exec"],
-        exec: {
-          host: "gateway",
-          security: "full",
-          ask: "off",
-          platformCli: "node ./orbit-tool.mjs echo <payload>",
-        },
-      },
-      acceptanceCriteria: {
-        agentCallsCustomCliWithoutHumanHelp: {
-          passed: Object.values(invocation).every(Boolean),
-          evidence: "platform-tool-invocations.jsonl",
-        },
-        platformCapturesCallAndArguments: {
-          passed: Object.values(invocation).every(Boolean),
-          evidence: "platform-tool-invocations.jsonl",
-        },
-        structuredCompletionAndUsage: {
-          passed: normalizedTurn.completion.exitCode === 0 && normalizedTurn.usage.total > 0,
-          evidence: "turn-normalized.json",
-        },
-        credentialRedaction: {
-          passed: true,
-          evidence: "evidence.json",
-        },
-      },
-      turn: normalizedTurn,
-      invocationValidation: invocation,
-      workspace: Object.fromEntries(
-        ["AGENTS.md", "SOUL.md", "IDENTITY.md", "MEMORY.md", "TOOLS.md"].map((name) => [name, workspaceFiles[name]]),
-      ),
-      findings: {
-        registration:
-          "TOOLS.md documents the platform CLI, while tools.allow=[exec] exposes only OpenClaw's supported exec tool.",
-        path:
-          "Installed OpenClaw 2026.4.15 embedded mode did not preserve either tools.exec.pathPrepend or the launcher's PATH override for the exec child. This proof therefore supplies the CLI in the isolated workspace and invokes it through the available Node runtime.",
-        sandbox:
-          "This embedded --local proof uses host=gateway with security=full inside a fresh disposable runtime. It is not a production sandbox claim. A future containerized gateway must mount the platform CLI into the sandbox image, configure its in-container PATH, and replace this broad execution policy with a tool-specific boundary.",
-        futureTools:
-          "create_ticket and post_message should use the same narrow executable registration, explicit argument schema, and structured platform-side audit capture rather than terminal text.",
-      },
+    const evidence = buildPlatformToolEvidence({
+      normalizedTurn,
+      invocationValidation,
+      workspaceInjection,
     });
-    const failed = Object.entries(evidence.acceptanceCriteria).filter(([, criterion]) => !criterion.passed);
-    if (failed.length > 0) {
-      throw new OpenClawContractError(`FACT-2 acceptance failed: ${failed.map(([name]) => name).join(", ")}`);
-    }
-    await writeFile(path.join(absoluteEvidenceDir, "turn-normalized.json"), `${JSON.stringify(normalizedTurn, null, 2)}\n`);
+    await writeFile(
+      path.join(absoluteEvidenceDir, "turn-normalized.json"),
+      `${JSON.stringify(redactEvidence(normalizedTurn), null, 2)}\n`,
+    );
     await writeFile(path.join(absoluteEvidenceDir, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
     await writeChecksums(absoluteEvidenceDir);
     return evidence;

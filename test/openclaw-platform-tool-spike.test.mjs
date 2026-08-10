@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   PLATFORM_TOOL_PAYLOAD,
+  buildPlatformToolEvidence,
   composePlatformToolPrompt,
   parsePlatformToolAgentOutput,
   parsePlatformToolAudit,
   parsePlatformToolTurn,
   validatePlatformToolInvocation,
+  validatePlatformToolWorkspaceInjection,
 } from "../src/runtime/openclaw-platform-tool-spike.mjs";
 
 const agentOutput = JSON.stringify({
@@ -45,6 +47,29 @@ test("platform tool audit rejects a mismatched payload and terminal-text substit
   assert.throws(() => parsePlatformToolAudit("orbit-tool echo fact-2-platform-tool-payload\n"), /invalid JSON/);
 });
 
+test("platform tool proof requires complete TOOLS.md injection metadata", () => {
+  const injectedWorkspaceFiles = [
+    {
+      name: "TOOLS.md",
+      missing: false,
+      truncated: false,
+      rawChars: 120,
+      injectedChars: 120,
+    },
+  ];
+  assert.deepEqual(validatePlatformToolWorkspaceInjection(injectedWorkspaceFiles), {
+    toolsMdInjectedCompletely: true,
+  });
+  assert.throws(
+    () =>
+      validatePlatformToolWorkspaceInjection(
+        injectedWorkspaceFiles.map((file) => ({ ...file, truncated: true, injectedChars: 80 })),
+      ),
+    /complete TOOLS\.md workspace injection/,
+  );
+  assert.throws(() => validatePlatformToolWorkspaceInjection([]), /complete TOOLS\.md workspace injection/);
+});
+
 test("platform tool turn requires a successful structured envelope and strict agent acknowledgement", () => {
   const parsed = parsePlatformToolTurn({
     exitCode: 0,
@@ -70,4 +95,25 @@ test("platform tool prompt mandates one exact CLI command", () => {
   const prompt = composePlatformToolPrompt();
   assert.match(prompt, /node \.\/orbit-tool\.mjs echo fact-2-platform-tool-payload/);
   assert.match(prompt, /Do not simulate the call/);
+});
+
+test("platform tool evidence retains only bounded registration and acceptance facts", () => {
+  const evidence = buildPlatformToolEvidence({
+    normalizedTurn: {
+      completion: { status: "ok", exitCode: 0 },
+      usage: { input: 10, output: 8, total: 18 },
+    },
+    invocationValidation: validatePlatformToolInvocation([auditEntry]),
+    workspaceInjection: { toolsMdInjectedCompletely: true },
+  });
+  assert.deepEqual(Object.keys(evidence), ["schemaVersion", "ticket", "registration", "acceptanceCriteria"]);
+  assert.deepEqual(evidence.registration.workspaceInstruction, {
+    name: "TOOLS.md",
+    injectedCompletely: true,
+  });
+  assert.equal(evidence.acceptanceCriteria.toolsMdInjectedThroughOpenClaw.passed, true);
+  assert.equal(Object.hasOwn(evidence, "workspace"), false);
+  assert.equal(Object.hasOwn(evidence, "turn"), false);
+  assert.equal(Object.hasOwn(evidence, "findings"), false);
+  assert.equal(Object.hasOwn(evidence, "environment"), false);
 });
