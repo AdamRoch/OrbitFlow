@@ -12,7 +12,8 @@ import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 const { Client } = pg;
 const REPOSITORY_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const MIGRATION_DIRECTORY = path.join(REPOSITORY_ROOT, "db", "migrations");
-const CURRENT_MAIN_SHA = "117a490e1e458b53afdd969c2b27f9ea50543f96";
+const CURRENT_MAIN_SHA = "0e301f1ab21f16bb52809b10c8be73d79f1022f9";
+const CURRENT_MAIN_FIXTURE_LABEL = "fact12-live-main-0e301f1-migrations-";
 const CURRENT_MAIN_MIGRATIONS = Object.freeze({
   "0001-control-plane.sql": "ffbcb9ffc69835000796f53774eea9d6f7975e3f92e5291e053811b1c5b8bc4b",
   "0002-tickets.sql": "87b4dafd060bbfeb77339d10e22d7f5afa1e403c280e6a7918a8e5c0c26fc948",
@@ -24,7 +25,7 @@ const CURRENT_MAIN_MIGRATIONS = Object.freeze({
 test(`FACT-12 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`, async () => {
   const databaseUrl = process.env.ORBITFACTORY_FACT12_UPGRADE_DATABASE_URL;
   assert.ok(databaseUrl, "upgrade proof database URL must be configured");
-  const snapshotDirectory = await mkdtemp(path.join(tmpdir(), "fact12-main-migrations-"));
+  const snapshotDirectory = await mkdtemp(path.join(tmpdir(), CURRENT_MAIN_FIXTURE_LABEL));
   const client = new Client({ connectionString: databaseUrl });
 
   try {
