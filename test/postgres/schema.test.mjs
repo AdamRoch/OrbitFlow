@@ -121,6 +121,7 @@ const expectedColumns = {
   message_enqueues: ["message_id", "enqueued_at"],
   message_ready_runs: ["run_id", "message_id", "ready_at"],
   message_consumptions: ["message_id", "consumer_id", "consumed_at"],
+  agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
   schedules: [
     "id",
     "cron_expression",
@@ -174,6 +175,9 @@ const requiredConstraints = [
   "agents_interaction_rules_object",
   "agents_memory_object",
   "agents_openclaw_ref_unique",
+  "agent_tool_invocations_hash_format",
+  "agent_tool_invocations_key_not_blank",
+  "agent_tool_invocations_response_object",
   "cost_events_computed_cost_nonnegative",
   "cost_events_tokens_in_nonnegative",
   "cost_events_tokens_out_nonnegative",
@@ -283,13 +287,14 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         "0002-tickets.sql",
         "0003-message-plane.sql",
         "0004-message-consumption.sql",
+        "0008-platform-tool-idempotency.sql",
       ]);
-      assert.equal(firstLog.length, 4);
+      assert.equal(firstLog.length, 5);
 
       const journalBefore = await client.query(
         "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
       );
-      assert.equal(journalBefore.rowCount, 4);
+      assert.equal(journalBefore.rowCount, 5);
       for (const row of journalBefore.rows) {
         assert.match(row.checksum, /^[a-f0-9]{64}$/);
       }
@@ -499,6 +504,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       const expectedForeignKeys = {
         agent_skills_agent_id_fkey: "REFERENCES agents(id) ON DELETE CASCADE",
         agent_skills_skill_id_fkey: "REFERENCES skills(id) ON DELETE CASCADE",
+        agent_tool_invocations_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
+        agent_tool_invocations_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         cost_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         cost_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         dependencies_blocked_ticket_fk:

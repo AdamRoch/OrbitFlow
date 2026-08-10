@@ -1,0 +1,180 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import pg from "pg";
+import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
+
+const { Client } = pg;
+pg.types.setTypeParser(1184, (value) => value);
+const databaseUrl = process.env.DATABASE_URL;
+const proofDatabase = process.env.ORBITFACTORY_FACT13_PROOF_DATABASE;
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function callAgentTool(command, input, environment = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["bin/orbit-agent-tools.mjs", command, JSON.stringify(input)], {
+      cwd: repoRoot,
+      env: { ...process.env, DATABASE_URL: databaseUrl, ...environment },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (exitCode) => {
+      try {
+        resolve({ exitCode, stdout: JSON.parse(stdout), stderr });
+      } catch (error) {
+        reject(new Error(`agent tool did not return strict JSON: ${error.message}; stderr=${stderr}`));
+      }
+    });
+  });
+}
+
+test("FACT-13 production agent CLI persists attributed ticket and message mutations", { skip: !databaseUrl }, async (t) => {
+  assert.equal(proofDatabase, new URL(databaseUrl).pathname.slice(1), "proof database identity must match ORBITFACTORY_FACT13_PROOF_DATABASE");
+  const migration = await migratePostgres({ databaseUrl, log: () => {} });
+  assert.deepEqual(migration.applied, [
+    "0001-control-plane.sql",
+    "0002-tickets.sql",
+    "0003-message-plane.sql",
+    "0004-message-consumption.sql",
+    "0008-platform-tool-idempotency.sql",
+  ]);
+
+  const client = new Client({ connectionString: databaseUrl, application_name: "orbitfactory-fact13-proof" });
+  await client.connect();
+  try {
+    const project = await client.query(
+      "INSERT INTO projects (key, name) VALUES ('FACT', 'FACT-13 proof') RETURNING id",
+    );
+    const agent = await client.query(
+      `INSERT INTO agents (name, role, system_prompt, model, coding_tool_enabled)
+       VALUES ('FACT-13 tool agent', 'worker', 'Use the platform tool.', 'local-proof', true) RETURNING id`,
+    );
+    const workflow = await client.query(
+      "INSERT INTO workflows (name, description, graph) VALUES ('FACT-13 proof', 'CLI proof workflow', '{}'::jsonb) RETURNING id",
+    );
+    const run = await client.query(
+      `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
+       VALUES ($1, 'running', 'ui', '{"proof":"fact-13"}'::jsonb) RETURNING id`,
+      [workflow.rows[0].id],
+    );
+    const attribution = { agentId: String(agent.rows[0].id), runId: String(run.rows[0].id) };
+
+    await t.test("create_ticket is an agent-turn subprocess and a retry replays one ticket and event", async () => {
+      const input = {
+        ...attribution,
+        projectId: String(project.rows[0].id),
+        title: "Prove agent CLI dispatch",
+        description: "The proof creates this ticket through the CLI.",
+        acceptanceCriteria: "One durable ticket and one durable system message.",
+        priority: 3,
+        idempotencyKey: "agent-turn-1-create",
+      };
+      const first = await callAgentTool("create_ticket", input);
+      assert.equal(first.exitCode, 0);
+      assert.deepEqual(Object.keys(first.stdout).sort(), ["command", "ok", "result"]);
+      assert.equal(first.stdout.command, "create_ticket");
+      assert.equal(first.stdout.result.replayed, false);
+      const ticketId = first.stdout.result.ticket.id;
+      assert.equal(first.stdout.result.ticket.runId, attribution.runId);
+      assert.equal(first.stdout.result.ticket.assigneeAgentId, attribution.agentId);
+      assert.equal(first.stdout.result.message.ticketId, ticketId);
+      assert.equal(first.stdout.result.message.type, "system");
+
+      const retry = await callAgentTool("create_ticket", input);
+      assert.equal(retry.exitCode, 0);
+      assert.equal(retry.stdout.result.replayed, true);
+      assert.equal(retry.stdout.result.ticket.id, ticketId);
+      const rows = await client.query(
+        `SELECT (SELECT count(*)::int FROM tickets) AS tickets,
+                (SELECT count(*)::int FROM messages) AS messages,
+                (SELECT count(*)::int FROM message_enqueues) AS enqueues,
+                (SELECT count(*)::int FROM agent_tool_invocations) AS invocations`,
+      );
+      assert.deepEqual(rows.rows[0], { tickets: 1, messages: 1, enqueues: 1, invocations: 1 });
+      const message = await client.query("SELECT run_id, ticket_id, sender, type, payload FROM messages WHERE ticket_id = $1", [ticketId]);
+      assert.deepEqual(message.rows[0], {
+        run_id: attribution.runId,
+        ticket_id: ticketId,
+        sender: `agent:${attribution.agentId}`,
+        type: "system",
+        payload: { action: "create_ticket", agentId: attribution.agentId, runId: attribution.runId, ticketId, idempotencyKey: "agent-turn-1-create" },
+      });
+    });
+
+    await t.test("update_ticket preserves optimistic concurrency and records its event atomically", async () => {
+      const original = await client.query("SELECT * FROM tickets LIMIT 1");
+      const input = {
+        ...attribution,
+        ticketId: String(original.rows[0].id),
+        expectedUpdatedAt: String(original.rows[0].updated_at).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"),
+        status: "todo",
+        idempotencyKey: "agent-turn-1-update",
+      };
+      const updated = await callAgentTool("update_ticket", input);
+      assert.equal(updated.exitCode, 0);
+      assert.equal(updated.stdout.result.ticket.status, "todo");
+      assert.equal(updated.stdout.result.message.type, "system");
+      const stale = await callAgentTool("update_ticket", { ...input, idempotencyKey: "agent-turn-1-stale", status: "done" });
+      assert.equal(stale.exitCode, 1);
+      assert.deepEqual(stale.stdout, { ok: false, error: { code: "stale_update", message: "ticket changed since expectedUpdatedAt" } });
+      const audit = await client.query(
+        "SELECT status, (SELECT count(*)::int FROM messages) AS messages FROM tickets WHERE id = $1",
+        [input.ticketId],
+      );
+      assert.equal(audit.rows[0].status, "todo");
+      assert.equal(audit.rows[0].messages, 2);
+    });
+
+    await t.test("post_message accepts question and list_tickets returns the run-scoped record", async () => {
+      const ticket = await client.query("SELECT id FROM tickets LIMIT 1");
+      const question = await callAgentTool("post_message", {
+        ...attribution,
+        ticketId: String(ticket.rows[0].id),
+        recipient: "agent:reviewer",
+        type: "question",
+        payload: { question: "Should the worker retry this action?" },
+        handoffBrief: "Need a reviewer decision before proceeding.",
+        idempotencyKey: "agent-turn-1-question",
+      });
+      assert.equal(question.exitCode, 0);
+      assert.equal(question.stdout.result.message.type, "question");
+      assert.deepEqual(question.stdout.result.message.payload, {
+        question: "Should the worker retry this action?",
+        agentId: attribution.agentId,
+        runId: attribution.runId,
+        ticketId: String(ticket.rows[0].id),
+      });
+      const listed = await callAgentTool("list_tickets", attribution);
+      assert.equal(listed.exitCode, 0);
+      assert.deepEqual(listed.stdout.result.tickets.map((item) => item.id), [String(ticket.rows[0].id)]);
+      assert.equal(listed.stdout.result.nextCursor, null);
+    });
+
+    await t.test("invalid attribution, malformed ids, conflicting retry keys, and failed mutations leave no partial rows", async () => {
+      const before = await client.query("SELECT count(*)::int AS tickets, (SELECT count(*)::int FROM messages) AS messages FROM tickets");
+      const missingAgent = await callAgentTool("list_tickets", { runId: attribution.runId });
+      assert.equal(missingAgent.exitCode, 1);
+      assert.equal(missingAgent.stdout.error.code, "invalid_id");
+      const invalidTicket = await callAgentTool("post_message", {
+        ...attribution, ticketId: "999999", recipient: "agent:reviewer", type: "question", payload: {}, idempotencyKey: "agent-turn-invalid-ticket",
+      });
+      assert.equal(invalidTicket.exitCode, 1);
+      assert.equal(invalidTicket.stdout.error.code, "ticket_not_found");
+      const changedRetry = await callAgentTool("create_ticket", {
+        ...attribution, projectId: String(project.rows[0].id), title: "Different retry", idempotencyKey: "agent-turn-1-create",
+      });
+      assert.equal(changedRetry.exitCode, 1);
+      assert.equal(changedRetry.stdout.error.code, "idempotency_key_reused");
+      const after = await client.query("SELECT count(*)::int AS tickets, (SELECT count(*)::int FROM messages) AS messages FROM tickets");
+      assert.deepEqual(after.rows[0], before.rows[0]);
+    });
+  } finally {
+    await client.end();
+  }
+});

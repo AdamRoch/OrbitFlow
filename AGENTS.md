@@ -6,6 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The OrbitFactory ticket foundation is adapted from OrbitTrack commit `589e04165a0744be10b7fc1b05984c6a3bff234c`; `docs/fact-5-orbittrack-inventory.md` owns its keep/delete boundary and provenance.
 - The durable PostgreSQL contract and disposable clean-database proof live in `docs/postgres-schema.md`; apply it with `DATABASE_URL=... npm run db:migrate`.
 - FACT-9's producer, routing transaction, polling, and cleanup contracts live in `docs/message-bus.md`; prove them with `npm run fact9:proof`.
+- FACT-13's agent CLI, dispatch seam, idempotency, and PostgreSQL proof live in `docs/fact-13-platform-tool-surface.md`; prove them with `npm run fact13:proof`.
 
 ## CodingToolAdapter (PRD §5)
 

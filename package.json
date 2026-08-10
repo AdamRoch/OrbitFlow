@@ -21,6 +21,7 @@
     "db:migrate": "node scripts/migrate-postgres.mjs",
     "fact6:proof": "bash scripts/fact-6-postgres-proof.sh",
     "fact9:proof": "bash scripts/fact-9-message-bus-proof.sh",
+    "fact13:proof": "bash scripts/fact-13-platform-tool-proof.sh",
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
     "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs"
   },
