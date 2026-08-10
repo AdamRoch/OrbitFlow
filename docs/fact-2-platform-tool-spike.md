@@ -1,0 +1,24 @@
+# FACT-2 OpenClaw platform CLI spike
+
+## Result
+
+OpenClaw can call a platform-owned CLI without a human during a real embedded agent turn. The proof registers `orbit-tool` in the agent workspace's `TOOLS.md`, exposes only OpenClaw's supported `exec` tool, and prompts one isolated agent to run exactly `node ./orbit-tool.mjs echo fact-2-platform-tool-payload`.
+
+The CLI writes one JSONL audit record containing its command, subcommand, payload, and exact argument array. The platform validates that record directly. It does not infer the call from rendered terminal output. The run also requires OpenClaw's structured metadata to show that `TOOLS.md` was injected completely, validates the structured completion envelope and nonzero token usage, then writes checksums for retained evidence.
+
+## Hands-on runbook
+
+1. Confirm `openclaw --version` works and `OPENROUTER_API_KEY` is present. Do not print the key.
+2. From the repository root, run `npm test`.
+3. Run `npm run fact2:spike -- --runtime-dir /tmp/orbitflow-fact2-runtime --evidence-dir /tmp/orbitflow-fact2-evidence` with paths that do not already exist.
+4. Inspect `/tmp/orbitflow-fact2-evidence/evidence.json`, `turn-normalized.json`, and `platform-tool-invocations.jsonl`. All acceptance criteria must be `true`; then run `cd /tmp/orbitflow-fact2-evidence && shasum -a 256 -c sha256sums.txt`.
+
+The runtime directory is removed automatically, including OpenClaw's credential-bearing state. The retained evidence contains only the normalized completion proof, deterministic invocation record, bounded registration and acceptance facts, and checksums. It retains the `TOOLS.md` injection result as a boolean, not the file contents or raw OpenClaw metadata. Credential values are neither printed nor retained.
+
+## Registration and boundary findings
+
+This proof uses OpenClaw's supported `exec` tool rather than a custom OpenClaw plugin. `TOOLS.md` provides the agent-visible CLI contract. The config sets `tools.allow=["exec"]`, so `exec` is the only OpenClaw tool visible to this proof agent. The platform copies its CLI script into the fresh agent workspace and invokes it through Node. In the installed embedded release, the exec child kept its existing PATH: neither `tools.exec.pathPrepend` nor a PATH override on the OpenClaw launcher changed it. A host-installed `orbit-tool` therefore cannot be assumed resolvable.
+
+The proof runs with embedded `agent --local`, so `tools.exec.host=gateway` with `security=full` executes through the local gateway process with broad host access. It is deliberately isolated and not a production sandbox claim. In the planned containerized topology, `gateway` means the gateway container, not the developer host: the image must contain the CLI and selected runtime, and production must replace this broad execution policy with a tool-specific boundary.
+
+Later `create_ticket` and `post_message` tools should follow the same shape: one explicit executable, a narrow argument contract, least-privilege allowlisting, structured platform-side audit records, and a parser that rejects missing, extra, or malformed calls. They should not rely on the agent's prose or terminal display as evidence.

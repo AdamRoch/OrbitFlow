@@ -62,7 +62,7 @@ The adapter composes every wake-up prompt from: node system prompt + workflow/ru
 Every agent turn must emit structured output: `{artifact, handoff_brief, events[]}`. The handoff brief (intent, decisions made, constraints discovered, warnings for the next agent) is required — this is what keeps deterministic routing from being lossy. Enforced by prompt contract + output validation; malformed output triggers one retry then a `system` error message.
 
 ### Platform tool surface (agent-callable)
-Small CLI (or local HTTP) the OpenClaw agents call: `create_ticket`, `update_ticket`, `post_message` (incl. type=question), `list_tickets`. All calls write DB rows → WebSocket events → UI updates. One-directional data flow; no scraping.
+Platform-owned CLI that OpenClaw agents invoke through its supported `exec` tool: `create_ticket`, `update_ticket`, `post_message` (incl. type=question), `list_tickets`. Each command has a narrow argument contract and writes DB rows → WebSocket events → UI updates. The platform validates structured invocation records; it never scrapes terminal output or trusts the agent's prose as evidence. The Phase 0 proof, registration method, and execution-boundary constraints live in `docs/fact-2-platform-tool-spike.md`.
 
 ### CodingToolAdapter [CORE]
 - One headless coding CLI wrapped as an agent tool `delegate_coding_task(task, workspace) -> {diff, log, usage}`.
