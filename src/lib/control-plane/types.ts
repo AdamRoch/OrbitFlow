@@ -51,7 +51,8 @@ export interface CreateAgentInput {
 }
 
 export interface UpdateAgentInput extends Partial<CreateAgentInput> {
-  expectedUpdatedAt?: string;
+  /** Required optimistic-lock version read from the resource's updatedAt. */
+  expectedUpdatedAt: string;
 }
 
 export interface CreateSkillInput {
@@ -61,7 +62,8 @@ export interface CreateSkillInput {
 }
 
 export interface UpdateSkillInput extends Partial<CreateSkillInput> {
-  expectedUpdatedAt?: string;
+  /** Required optimistic-lock version read from the resource's updatedAt. */
+  expectedUpdatedAt: string;
 }
 
 export interface CreateWorkflowInput {
@@ -72,7 +74,8 @@ export interface CreateWorkflowInput {
 }
 
 export interface UpdateWorkflowInput extends Partial<CreateWorkflowInput> {
-  expectedUpdatedAt?: string;
+  /** Required optimistic-lock version read from the resource's updatedAt. */
+  expectedUpdatedAt: string;
 }
 
 export type UpdateResult<T> =

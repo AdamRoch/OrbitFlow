@@ -43,8 +43,10 @@ const AGENT_SELECT = `
 function iso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   // `pg` preserves timestamptz precision as text for optimistic concurrency.
-  // PostgreSQL emits `YYYY-MM-DD HH:MM:SS.ffffff+00`; ISO-8601 uses `T`.
-  return String(value).replace(" ", "T");
+  // PostgreSQL emits `YYYY-MM-DD HH:MM:SS.ffffff+00`; ISO-8601 uses `T`
+  // and a colon in the UTC offset. Return a value clients can send back as
+  // the mandatory PATCH precondition without losing microsecond precision.
+  return String(value).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
 }
 
 function object(value: unknown): JsonObject {
@@ -174,10 +176,8 @@ export class ControlPlaneRepository {
     if (input.openclawRef !== undefined) add("openclaw_ref", input.openclawRef);
     values.push(id);
     let where = `id = $${values.length}`;
-    if (input.expectedUpdatedAt) {
-      values.push(input.expectedUpdatedAt);
-      where += ` AND updated_at = $${values.length}::timestamptz`;
-    }
+    values.push(input.expectedUpdatedAt);
+    where += ` AND updated_at = $${values.length}::timestamptz`;
     const updated = await one<Row>(
       this.pool,
       `UPDATE agents SET ${assignments.join(", ")}, updated_at = now()
@@ -224,10 +224,8 @@ export class ControlPlaneRepository {
     if (input.procedure !== undefined) add("procedure", input.procedure);
     values.push(id);
     let where = `id = $${values.length}`;
-    if (input.expectedUpdatedAt) {
-      values.push(input.expectedUpdatedAt);
-      where += ` AND updated_at = $${values.length}::timestamptz`;
-    }
+    values.push(input.expectedUpdatedAt);
+    where += ` AND updated_at = $${values.length}::timestamptz`;
     const row = await one<Row>(
       this.pool,
       `UPDATE skills SET ${assignments.join(", ")}, updated_at = now() WHERE ${where} RETURNING *`,
@@ -296,10 +294,8 @@ export class ControlPlaneRepository {
     if (input.isTemplate !== undefined) add("is_template", input.isTemplate);
     values.push(id);
     let where = `id = $${values.length}`;
-    if (input.expectedUpdatedAt) {
-      values.push(input.expectedUpdatedAt);
-      where += ` AND updated_at = $${values.length}::timestamptz`;
-    }
+    values.push(input.expectedUpdatedAt);
+    where += ` AND updated_at = $${values.length}::timestamptz`;
     const row = await one<Row>(
       this.pool,
       `UPDATE workflows SET ${assignments.join(", ")}, updated_at = now() WHERE ${where} RETURNING *`,

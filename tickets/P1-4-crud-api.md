@@ -13,6 +13,9 @@ REST CRUD on the control plane for `agents` (all §4 fields incl. guardrails, in
 
 ## Implementation status
 
-**in_progress** — PostgreSQL repository, REST adapters, and disposable
-database proof are complete. Direct PR #7 is open; Firstmate owns independent
-exact-head review, merge, and tracker completion.
+**in_progress** — Review corrections are complete: every PATCH requires an
+`expectedUpdatedAt` compare-and-set precondition, and duplicate workflow
+transitions are rejected using stable condition identity without rewriting the
+submitted graph. Disposable PostgreSQL route proof and local gates passed.
+Direct PR #7 remains open; Firstmate owns independent exact-head review, merge,
+and tracker completion.

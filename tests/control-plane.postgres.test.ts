@@ -4,7 +4,7 @@ import { GET as listAgents, POST as createAgent } from "@/app/api/agents/route";
 import { DELETE as deleteAgent, GET as getAgent, PATCH as patchAgent } from "@/app/api/agents/[id]/route";
 import { DELETE as detachSkill, PUT as attachSkill } from "@/app/api/agents/[id]/skills/[skillId]/route";
 import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
-import { DELETE as deleteSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
+import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
 import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
 import { DELETE as deleteWorkflow, GET as getWorkflow, PATCH as patchWorkflow } from "@/app/api/workflows/[id]/route";
 import {
@@ -90,6 +90,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     const updated = await response(await patchAgent(jsonRequest({
       channelBinding: {},
       guardrails: { costLimit: 0, blockedActions: [] },
+      expectedUpdatedAt: created.body.updatedAt,
     }), context(created.body.id)));
     expect(updated.status).toBe(200);
     expect(updated.body.channelBinding).toEqual({});
@@ -100,6 +101,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     const cleared = await response(await patchAgent(jsonRequest({
       channelBinding: null,
       openclawRef: null,
+      expectedUpdatedAt: updated.body.updatedAt,
     }), context(created.body.id)));
     expect(cleared.status).toBe(200);
     expect(cleared.body.channelBinding).toBeNull();
@@ -124,7 +126,10 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     })));
     expect(created.status).toBe(201);
     expect((await response(await listSkills())).body.map((skill: { id: string }) => skill.id)).toEqual([created.body.id]);
-    const updated = await response(await patchSkill(jsonRequest({ procedure: "Run the clean database proof." }), context(created.body.id)));
+    const updated = await response(await patchSkill(jsonRequest({
+      procedure: "Run the clean database proof.",
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
     expect(updated).toMatchObject({ status: 200, body: { procedure: "Run the clean database proof." } });
     expect((await response(await deleteSkill(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
     expect((await response(await deleteSkill(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(404);
@@ -159,8 +164,38 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     const reread = await response(await getWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)));
     expect(reread.body.graph).toEqual(workflowGraph);
     const changedGraph = { ...workflowGraph, builderMetadata: { viewport: { x: 0, y: 0, zoom: 1 } } };
-    const updated = await response(await patchWorkflow(jsonRequest({ graph: changedGraph }), context(created.body.id)));
+    const updated = await response(await patchWorkflow(jsonRequest({
+      graph: changedGraph,
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
     expect(updated.body.graph).toEqual(changedGraph);
+
+    const duplicateEdgeGraph = {
+      ...changedGraph,
+      edges: [
+        ...changedGraph.edges,
+        { source: "intake", target: "implement", condition: { verdict: "ready" } },
+      ],
+    };
+    const duplicateOnUpdate = await response(await patchWorkflow(jsonRequest({
+      graph: duplicateEdgeGraph,
+      expectedUpdatedAt: updated.body.updatedAt,
+    }), context(created.body.id)));
+    expect(duplicateOnUpdate).toMatchObject({ status: 400, body: { error: { code: "invalid_graph" } } });
+
+    const duplicateOnCreate = await response(await createWorkflow(jsonRequest({
+      name: "Duplicate transition",
+      description: "Should not persist.",
+      graph: {
+        nodes: [{ id: "one", agentId: 1, config: {} }, { id: "two", agentId: 2, config: {} }],
+        edges: [
+          { source: "one", target: "two", condition: { verdict: "ready", labels: { first: true, second: false } } },
+          { source: "one", target: "two", condition: { labels: { second: false, first: true }, verdict: "ready" } },
+        ],
+      },
+      isTemplate: false,
+    })));
+    expect(duplicateOnCreate).toMatchObject({ status: 400, body: { error: { code: "invalid_graph" } } });
 
     const malformed = await response(await createWorkflow(jsonRequest({
       name: "Broken",
@@ -181,6 +216,25 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     expect(nonObject).toMatchObject({ status: 400, body: { error: { code: "invalid_type" } } });
     expect((await response(await getAgent(new Request("http://orbitfactory.test"), context("999")))).status).toBe(404);
 
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const missingPrecondition = await response(await patchAgent(jsonRequest({ role: "reviewer" }), context(agent.body.id)));
+    expect(missingPrecondition).toMatchObject({ status: 400, body: { error: { code: "missing_precondition" } } });
+    const skill = await response(await createSkill(jsonRequest({ name: "Precondition skill", description: "x", procedure: "y" })));
+    expect(await response(await patchSkill(jsonRequest({ description: "changed" }), context(skill.body.id)))).toMatchObject({
+      status: 400,
+      body: { error: { code: "missing_precondition" } },
+    });
+    const workflow = await response(await createWorkflow(jsonRequest({
+      name: "Precondition workflow",
+      description: "x",
+      graph: workflowGraph,
+      isTemplate: false,
+    })));
+    expect(await response(await patchWorkflow(jsonRequest({ description: "changed" }), context(workflow.body.id)))).toMatchObject({
+      status: 400,
+      body: { error: { code: "missing_precondition" } },
+    });
+
     const databaseFailure = await response(handleError(Object.assign(new Error("postgresql://secret@example.test"), { code: "08006" })));
     expect(databaseFailure).toEqual({
       status: 500,
@@ -188,7 +242,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     });
   });
 
-  it("rolls back a repository transaction and rejects one of two stale concurrent updates", async () => {
+  it("rolls back a repository transaction and lets one route-level client update each shared version", async () => {
     const repository = new ControlPlaneRepository(pool);
     await expect(repository.transaction(async (client) => {
       await client.query("INSERT INTO skills (name, description, procedure) VALUES ('rolled back', 'x', 'y')");
@@ -196,13 +250,40 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     })).rejects.toThrow("force rollback");
     expect((await repository.listSkills()).map((skill) => skill.name)).not.toContain("rolled back");
 
-    const skill = await repository.createSkill({ name: "Concurrent", description: "Original", procedure: "Keep me." });
-    const [first, second] = await Promise.all([
-      repository.updateSkill(skill.id, { description: "First writer", expectedUpdatedAt: skill.updatedAt }),
-      repository.updateSkill(skill.id, { description: "Second writer", expectedUpdatedAt: skill.updatedAt }),
-    ]);
-    expect([first.kind, second.kind].sort()).toEqual(["conflict", "updated"]);
-    const current = await repository.getSkill(skill.id);
-    expect(["First writer", "Second writer"]).toContain(current!.description);
+    const agent = await response(await createAgent(jsonRequest({ ...agentBody, name: "Concurrent agent", openclawRef: "openclaw:concurrent-agent" })));
+    const skill = await response(await createSkill(jsonRequest({ name: "Concurrent skill", description: "Original", procedure: "Keep me." })));
+    const workflow = await response(await createWorkflow(jsonRequest({
+      name: "Concurrent workflow",
+      description: "Original",
+      graph: workflowGraph,
+      isTemplate: false,
+    })));
+
+    const cases = [
+      {
+        resource: "agent",
+        read: () => getAgent(new Request("http://orbitfactory.test"), context(agent.body.id)),
+        patch: (expectedUpdatedAt: string, role: string) => patchAgent(jsonRequest({ role, expectedUpdatedAt }), context(agent.body.id)),
+      },
+      {
+        resource: "skill",
+        read: () => getSkill(new Request("http://orbitfactory.test"), context(skill.body.id)),
+        patch: (expectedUpdatedAt: string, description: string) => patchSkill(jsonRequest({ description, expectedUpdatedAt }), context(skill.body.id)),
+      },
+      {
+        resource: "workflow",
+        read: () => getWorkflow(new Request("http://orbitfactory.test"), context(workflow.body.id)),
+        patch: (expectedUpdatedAt: string, description: string) => patchWorkflow(jsonRequest({ description, expectedUpdatedAt }), context(workflow.body.id)),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const [readerOne, readerTwo] = await Promise.all([testCase.read(), testCase.read()]);
+      const [first, second] = await Promise.all([
+        testCase.patch((await response(readerOne)).body.updatedAt, "first writer"),
+        testCase.patch((await response(readerTwo)).body.updatedAt, "second writer"),
+      ]);
+      expect([first.status, second.status].sort()).toEqual([200, 409]);
+    }
   });
 });

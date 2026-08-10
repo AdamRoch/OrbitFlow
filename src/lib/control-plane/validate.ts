@@ -54,8 +54,13 @@ function nullableString(value: unknown, field: string): string | null {
   return requiredString(value, field);
 }
 
-function optionalTimestamp(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
+function requiredTimestamp(value: unknown): string {
+  if (value === undefined) {
+    throw new ValidationError(
+      "expectedUpdatedAt is required for PATCH requests",
+      "missing_precondition",
+    );
+  }
   if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
     throw new ValidationError(
       "expectedUpdatedAt must be an ISO-8601 timestamp",
@@ -118,7 +123,7 @@ export function parseUpdateAgent(body: Record<string, unknown>): UpdateAgentInpu
     "name", "role", "systemPrompt", "model", "codingToolEnabled", "guardrails",
     "interactionRules", "channelBinding", "memory", "openclawRef",
   ]);
-  const result: UpdateAgentInput = { expectedUpdatedAt: optionalTimestamp(input.expectedUpdatedAt) };
+  const result: UpdateAgentInput = { expectedUpdatedAt: requiredTimestamp(input.expectedUpdatedAt) };
   if (input.name !== undefined) result.name = requiredString(input.name, "name");
   if (input.role !== undefined) result.role = requiredString(input.role, "role");
   if (input.systemPrompt !== undefined) result.systemPrompt = requiredString(input.systemPrompt, "systemPrompt");
@@ -145,7 +150,7 @@ export function parseCreateSkill(body: Record<string, unknown>): CreateSkillInpu
 export function parseUpdateSkill(body: Record<string, unknown>): UpdateSkillInput {
   const input = requestObject(body);
   updateFields(input, ["name", "description", "procedure"]);
-  const result: UpdateSkillInput = { expectedUpdatedAt: optionalTimestamp(input.expectedUpdatedAt) };
+  const result: UpdateSkillInput = { expectedUpdatedAt: requiredTimestamp(input.expectedUpdatedAt) };
   if (input.name !== undefined) result.name = requiredString(input.name, "name");
   if (input.description !== undefined) result.description = requiredString(input.description, "description");
   if (input.procedure !== undefined) result.procedure = requiredString(input.procedure, "procedure");
@@ -184,6 +189,7 @@ export function parseGraph(value: unknown): JsonObject {
     requiredObject(node.config, "graph node config");
   }
 
+  const edgeIdentities = new Set<string>();
   for (const edge of graph.edges) {
     if (!isObject(edge)) {
       throw new ValidationError("graph.edges must contain objects", "invalid_graph");
@@ -196,8 +202,29 @@ export function parseGraph(value: unknown): JsonObject {
     if (!("condition" in edge)) {
       throw new ValidationError("graph edge condition is required", "invalid_graph");
     }
+    // A transition is defined by its endpoints and condition. Canonicalizing
+    // solely for this comparison makes duplicate detection stable when JSON
+    // object keys arrive in a different order; the submitted graph is still
+    // returned by reference and persisted without normalization.
+    const identity = JSON.stringify([source, target, canonicalJson(edge.condition)]);
+    if (edgeIdentities.has(identity)) {
+      throw new ValidationError("graph edges must not contain duplicate transitions", "invalid_graph");
+    }
+    edgeIdentities.add(identity);
   }
   return graph;
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (isObject(value)) {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJson(value[key])]),
+    );
+  }
+  return value;
 }
 
 export function parseCreateWorkflow(body: Record<string, unknown>): CreateWorkflowInput {
@@ -214,7 +241,7 @@ export function parseCreateWorkflow(body: Record<string, unknown>): CreateWorkfl
 export function parseUpdateWorkflow(body: Record<string, unknown>): UpdateWorkflowInput {
   const input = requestObject(body);
   updateFields(input, ["name", "description", "graph", "isTemplate"]);
-  const result: UpdateWorkflowInput = { expectedUpdatedAt: optionalTimestamp(input.expectedUpdatedAt) };
+  const result: UpdateWorkflowInput = { expectedUpdatedAt: requiredTimestamp(input.expectedUpdatedAt) };
   if (input.name !== undefined) result.name = requiredString(input.name, "name");
   if (input.description !== undefined) result.description = requiredString(input.description, "description");
   if (input.graph !== undefined) result.graph = parseGraph(input.graph);
