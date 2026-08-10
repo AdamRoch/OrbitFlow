@@ -6,12 +6,19 @@ import {
   OpenClawContractError,
   evaluateOpenRouterDiagnostic,
   parseCommandJson,
+  parseOpenClawVersion,
   parseCliJson,
   parseOpenAiRequestLog,
   parseOutputContract,
   parseTurnResult,
   validateAgentProof,
 } from "../src/runtime/openclaw-runtime-spike.mjs";
+
+test("parseOpenClawVersion retains the supported semantic version from official output", () => {
+  assert.equal(parseOpenClawVersion("OpenClaw 2026.4.15 (041266a)\n"), "2026.4.15");
+  assert.equal(parseOpenClawVersion("2026.4.15\n"), "2026.4.15");
+  assert.throws(() => parseOpenClawVersion("OpenClaw unknown"), /version output is malformed/);
+});
 
 const outputContract = JSON.stringify({
   artifact: {

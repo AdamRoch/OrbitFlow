@@ -36,6 +36,7 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
       "0003-message-plane.sql",
       "0004-message-consumption.sql",
       "0009-state-stream-notify.sql",
+      "0010-coding-tool-usage.sql",
     ]);
     await hub.ready();
     assert.equal(first.filter((event) => event.type === "state.resync").length, 1);

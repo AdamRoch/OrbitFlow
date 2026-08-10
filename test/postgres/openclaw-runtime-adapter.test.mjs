@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,16 @@ const { Pool } = pg;
 const fixture = fileURLToPath(
   new URL("../runtime/fixtures/fake-openclaw.mjs", import.meta.url),
 );
+const migrationDirectory = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const migrationFile = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(migrationDirectory))
+    .filter((name) => migrationFile.test(name))
+    .sort();
+}
 
 function completedOutput(label) {
   return {
@@ -169,13 +179,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     );
     assert.deepEqual(
       migrations.rows.map((row) => row.version),
-      [
-        "0001-control-plane.sql",
-        "0002-tickets.sql",
-        "0003-message-plane.sql",
-        "0004-message-consumption.sql",
-        "0009-state-stream-notify.sql",
-      ],
+      await committedMigrationFiles(),
     );
   });
 

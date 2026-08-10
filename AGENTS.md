@@ -13,8 +13,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 v1 wraps the `opencode` CLI headlessly, authenticated via `OPENROUTER_API_KEY`
 only. `coding-adapter/DECISION.md` owns the selection rationale, rejected
 candidates, evaluator proof, interface, and failure contracts. `coding-adapter/`
-is a standalone Phase 0 spike; `tickets/P2-4-coding-tool-adapter.md` owns its
-productionization and workspace lifecycle.
+contains the one production implementation; `docs/coding-tool-adapter.md` owns
+its OpenClaw tool, workspace, attribution, and repeat-proof runbook.
 
 ## Maintaining this file
 

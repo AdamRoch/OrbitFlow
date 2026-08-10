@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
 import { runSafeGit } from "../src/git.js";
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
-import { makeFakeChild } from "./fakeChild.js";
-import { successfulRun, TEST_CREDENTIAL } from "./protocolFixture.js";
+import { fakeOpenCodeAdapter } from "./testAdapter.js";
 
 test("diff ignores repository external helpers and fsmonitor", async () => {
   const workspace = await createIsolatedGitWorkspace();
@@ -42,7 +40,7 @@ test("diff ignores repository external helpers and fsmonitor", async () => {
   }
   await writeFile(path.join(workspace, "sample.txt"), "after\n");
 
-  const adapter = successfulAdapter();
+  const adapter = fakeOpenCodeAdapter();
   const result = await adapter.delegate_coding_task("task", workspace);
 
   assert.match(result.diff, /\+after/);
@@ -75,17 +73,3 @@ test("workspace creation ignores host Git config and hooks", async () => {
     await rm(control, { recursive: true, force: true });
   }
 });
-
-function successfulAdapter() {
-  return createOpenCodeAdapter({
-    spawn() {
-      const child = makeFakeChild();
-      queueMicrotask(() => {
-        child.stdout.emit("data", successfulRun());
-        child.emit("close", 0);
-      });
-      return child;
-    },
-    env: { OPENROUTER_API_KEY: TEST_CREDENTIAL },
-  });
-}

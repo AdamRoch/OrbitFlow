@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { access, readdir, rm } from "node:fs/promises";
+import { access, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
 import {
   createIsolatedGitWorkspace,
   removeIsolatedGitWorkspace,
 } from "../src/workspace.js";
-import { makeFakeChild } from "./fakeChild.js";
-import { successfulRun, TEST_CREDENTIAL } from "./protocolFixture.js";
+import { fakeOpenCodeAdapter } from "./testAdapter.js";
 
 test("workspace cleanup refuses a substituted temporary root", async () => {
   const workspace = await createIsolatedGitWorkspace();
@@ -42,36 +40,21 @@ test("OpenCode state cleanup refuses a substituted temporary root", async () => 
   let stateRoot;
   let displacedRoot;
   let sentinel;
-  const adapter = createOpenCodeAdapter({
-    spawn(binary, args, opts) {
-      stateRoot = opts.env.HOME;
-      displacedRoot = `${stateRoot}-displaced`;
-      const markerName = ".coding-adapter-owner";
-      const marker = readFileSync(path.join(stateRoot, markerName), "utf8");
-      renameSync(stateRoot, displacedRoot);
-      mkdirSync(stateRoot);
-      writeFileSync(path.join(stateRoot, markerName), marker);
-      sentinel = path.join(stateRoot, "caller-data.txt");
-      writeFileSync(sentinel, "preserve me\n");
-      const child = makeFakeChild();
-      queueMicrotask(() => {
-        child.stdout.emit("data", successfulRun());
-        child.emit("close", 0);
-      });
-      return child;
-    },
-    env: { OPENROUTER_API_KEY: TEST_CREDENTIAL },
-  });
+  const adapter = fakeOpenCodeAdapter();
 
   try {
     await assert.rejects(
-      () => adapter.delegate_coding_task("task", workspace),
+      () => adapter.delegate_coding_task("replace-state-root", workspace),
       (err) => err.code === "cli_failure" && err.message.includes("clean isolated opencode state")
     );
+    ({ stateRoot, displaced: displacedRoot } = JSON.parse(
+      await readFile(path.join(workspace, "replaced-state.json"), "utf8"),
+    ));
+    sentinel = path.join(stateRoot, "caller-data.txt");
     await access(sentinel);
   } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-    await rm(displacedRoot, { recursive: true, force: true });
+    if (stateRoot) await rm(stateRoot, { recursive: true, force: true });
+    if (displacedRoot) await rm(displacedRoot, { recursive: true, force: true });
     await removeIsolatedGitWorkspace(workspace);
   }
 });
