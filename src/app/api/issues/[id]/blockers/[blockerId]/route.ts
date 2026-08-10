@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db";
-import { removeBlocker } from "@/lib/domain";
+import { getIssue, removeBlocker } from "@/lib/domain";
 import {
   handleError,
   noContent,
@@ -7,6 +7,7 @@ import {
   requireProject,
   RouteContext,
 } from "@/lib/api";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 type Context = RouteContext<{ id: string; blockerId: string }>;
 
@@ -20,9 +21,12 @@ export async function DELETE(_req: Request, ctx: Context) {
     const db = getDb();
     const project = requireProject(db);
     const { id, blockerId } = await ctx.params;
+    const issue = getIssue(db, project, id);
+    if (!issue) return notFound("issue not found");
     const result = removeBlocker(db, project, id, blockerId);
     if (result === null) return notFound("issue not found");
     if (result === false) return notFound("dependency edge not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: issue.id, runId: null, agentId: null });
     return noContent();
   } catch (err) {
     return handleError(err);

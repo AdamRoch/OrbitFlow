@@ -56,6 +56,7 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       "0002-tickets.sql",
       "0003-message-plane.sql",
       "0004-message-consumption.sql",
+      "0009-state-stream-notify.sql",
     ]);
 
     await client.query(`

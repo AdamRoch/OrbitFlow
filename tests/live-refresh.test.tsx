@@ -2,10 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  LIVE_REFRESH_INTERVAL_MS,
-  LiveRefresh,
-} from "@/components/live-refresh";
+import { LiveRefresh } from "@/components/live-refresh";
 
 const { refreshMock } = vi.hoisted(() => ({ refreshMock: vi.fn() }));
 
@@ -13,64 +10,79 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: refreshMock }),
 }));
 
+class FakeEventSource extends EventTarget {
+  static instances: FakeEventSource[] = [];
+  readonly url: string;
+  closed = false;
+
+  constructor(url: string) {
+    super();
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+
+  close() {
+    this.closed = true;
+  }
+
+  emit(type: string, data?: string) {
+    const event = new Event(type) as MessageEvent<string>;
+    Object.defineProperty(event, "data", { value: data });
+    this.dispatchEvent(event);
+  }
+}
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("LiveRefresh", () => {
   let container: HTMLDivElement;
   let root: Root;
-  let visibilityState: DocumentVisibilityState;
-  let visibilitySpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
-    vi.useFakeTimers();
     refreshMock.mockReset();
-    visibilityState = "visible";
-    visibilitySpy = vi
-      .spyOn(document, "visibilityState", "get")
-      .mockImplementation(() => visibilityState);
-
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    await act(async () => {
-      root.render(<LiveRefresh />);
-    });
+    await act(async () => root.render(<LiveRefresh />));
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
-    visibilitySpy.mockRestore();
-    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
-  it("soft-refreshes the route on the configured interval", () => {
-    act(() => vi.advanceTimersByTime(LIVE_REFRESH_INTERVAL_MS - 1));
-    expect(refreshMock).not.toHaveBeenCalled();
+  it("re-fetches on connection, valid wake-ups, and reconnects", () => {
+    const stream = FakeEventSource.instances[0];
+    expect(stream.url).toBe("/api/state-stream");
 
-    act(() => vi.advanceTimersByTime(1));
+    act(() => stream.emit("open"));
     expect(refreshMock).toHaveBeenCalledOnce();
 
-    act(() => vi.advanceTimersByTime(LIVE_REFRESH_INTERVAL_MS * 2));
+    act(() => stream.emit("state", JSON.stringify({
+      schemaVersion: 1,
+      type: "ticket.updated",
+      runId: null,
+      agentId: null,
+      ticketId: "42",
+      occurredAt: "2026-08-10T12:00:00.000Z",
+    })));
+    expect(refreshMock).toHaveBeenCalledTimes(2);
+
+    act(() => stream.emit("open"));
     expect(refreshMock).toHaveBeenCalledTimes(3);
   });
 
-  it("pauses while hidden and refreshes immediately when visible again", () => {
-    visibilityState = "hidden";
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-      vi.advanceTimersByTime(LIVE_REFRESH_INTERVAL_MS * 2);
-    });
+  it("ignores malformed data and closes the connection on unmount", async () => {
+    const stream = FakeEventSource.instances[0];
+    act(() => stream.emit("state", "not json"));
+    act(() => stream.emit("state", JSON.stringify({ type: "ticket.updated" })));
     expect(refreshMock).not.toHaveBeenCalled();
 
-    visibilityState = "visible";
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    expect(refreshMock).toHaveBeenCalledOnce();
-
-    act(() => vi.advanceTimersByTime(LIVE_REFRESH_INTERVAL_MS));
-    expect(refreshMock).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+    expect(stream.closed).toBe(true);
   });
 });
