@@ -3,6 +3,8 @@ import { Pool } from "pg";
 import { GET as listAgents, POST as createAgent } from "@/app/api/agents/route";
 import { DELETE as deleteAgent, GET as getAgent, PATCH as patchAgent } from "@/app/api/agents/[id]/route";
 import { DELETE as detachSkill, PUT as attachSkill } from "@/app/api/agents/[id]/skills/[skillId]/route";
+import { GET as listAgentSchedules, POST as createAgentSchedule } from "@/app/api/agents/[id]/schedules/route";
+import { DELETE as deleteSchedule, PATCH as patchSchedule } from "@/app/api/schedules/[id]/route";
 import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
 import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
 import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
@@ -71,7 +73,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   if (!pool) return;
-  await pool.query("TRUNCATE agent_skills, skills, agents, workflows RESTART IDENTITY CASCADE");
+  await pool.query("TRUNCATE schedules, agent_skills, skills, agents, workflows RESTART IDENTITY CASCADE");
 });
 
 afterAll(async () => {
@@ -148,6 +150,38 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     expect((await response(await deleteSkill(new Request("http://orbitfactory.test"), context(skill.body.id)))).status).toBe(204);
     expect((await response(await getAgent(new Request("http://orbitfactory.test"), context(agent.body.id)))).body.skills).toEqual([]);
     expect((await response(await detachSkill(new Request("http://orbitfactory.test", { method: "DELETE" }), skillContext(agent.body.id, skill.body.id)))).status).toBe(404);
+  });
+
+  it("persists direct agent schedules without introducing schedule execution", async () => {
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const created = await response(await createAgentSchedule(jsonRequest({
+      cronExpression: "0 9 * * 1-5",
+      taskPrompt: "Prepare the daily standup.",
+      enabled: true,
+    }), context(agent.body.id)));
+    expect(created).toMatchObject({
+      status: 201,
+      body: {
+        agentId: agent.body.id,
+        workflowId: null,
+        cronExpression: "0 9 * * 1-5",
+        taskPrompt: "Prepare the daily standup.",
+        enabled: true,
+      },
+    });
+    expect((await response(await listAgentSchedules(new Request("http://orbitfactory.test"), context(agent.body.id)))).body).toEqual([created.body]);
+
+    const updated = await response(await patchSchedule(jsonRequest({
+      taskPrompt: "Prepare a concise daily standup.",
+      enabled: false,
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
+    expect(updated).toMatchObject({ status: 200, body: { taskPrompt: "Prepare a concise daily standup.", enabled: false } });
+    expect(await response(await patchSchedule(jsonRequest({
+      enabled: true,
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)))).toMatchObject({ status: 409, body: { error: { code: "stale_update" } } });
+    expect((await response(await deleteSchedule(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
   });
 
   it("preserves a valid workflow graph value and rejects malformed graph structure", async () => {

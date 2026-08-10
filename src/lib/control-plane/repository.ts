@@ -3,11 +3,14 @@ import type { Pool, PoolClient } from "pg";
 import type {
   AgentDTO,
   CreateAgentInput,
+  CreateAgentScheduleInput,
   CreateSkillInput,
   CreateWorkflowInput,
   JsonObject,
+  ScheduleDTO,
   SkillDTO,
   UpdateAgentInput,
+  UpdateScheduleInput,
   UpdateResult,
   UpdateSkillInput,
   UpdateWorkflowInput,
@@ -106,6 +109,19 @@ function workflowFromRow(row: Row): WorkflowDTO {
   };
 }
 
+function scheduleFromRow(row: Row): ScheduleDTO {
+  return {
+    id: String(row.id),
+    cronExpression: String(row.cron_expression),
+    workflowId: row.workflow_id === null ? null : String(row.workflow_id),
+    agentId: row.agent_id === null ? null : String(row.agent_id),
+    taskPrompt: row.task_prompt === null ? null : String(row.task_prompt),
+    enabled: Boolean(row.enabled),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
 async function one<T>(queryable: Queryable, text: string, values: unknown[] = []): Promise<T | null> {
   const result = await queryable.query(text, values);
   return result.rows[0] ? (result.rows[0] as T) : null;
@@ -190,6 +206,61 @@ export class ControlPlaneRepository {
 
   async deleteAgent(id: string): Promise<boolean> {
     const result = await this.pool.query("DELETE FROM agents WHERE id = $1", [id]);
+    return result.rowCount === 1;
+  }
+
+  async listSchedulesForAgent(agentId: string): Promise<ScheduleDTO[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM schedules WHERE agent_id = $1 ORDER BY id",
+      [agentId],
+    );
+    return result.rows.map((row) => scheduleFromRow(row));
+  }
+
+  async createAgentSchedule(agentId: string, input: CreateAgentScheduleInput): Promise<ScheduleDTO | null> {
+    return this.transaction(async (client) => {
+      if (!(await this.getAgent(agentId, client))) return null;
+      const row = await one<Row>(
+        client,
+        `INSERT INTO schedules (cron_expression, agent_id, task_prompt, enabled)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [input.cronExpression, agentId, input.taskPrompt, input.enabled],
+      );
+      return scheduleFromRow(row!);
+    });
+  }
+
+  async getSchedule(id: string): Promise<ScheduleDTO | null> {
+    const row = await one<Row>(this.pool, "SELECT * FROM schedules WHERE id = $1", [id]);
+    return row ? scheduleFromRow(row) : null;
+  }
+
+  async updateSchedule(id: string, input: UpdateScheduleInput): Promise<UpdateResult<ScheduleDTO>> {
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    const add = (column: string, value: unknown) => {
+      values.push(value);
+      assignments.push(`${column} = $${values.length}`);
+    };
+    if (input.cronExpression !== undefined) add("cron_expression", input.cronExpression);
+    if (input.taskPrompt !== undefined) add("task_prompt", input.taskPrompt);
+    if (input.enabled !== undefined) add("enabled", input.enabled);
+    values.push(id);
+    let where = `id = $${values.length}`;
+    values.push(input.expectedUpdatedAt);
+    where += ` AND updated_at = $${values.length}::timestamptz`;
+    const row = await one<Row>(
+      this.pool,
+      `UPDATE schedules SET ${assignments.join(", ")}, updated_at = now()
+       WHERE ${where} RETURNING *`,
+      values,
+    );
+    if (row) return { kind: "updated", value: scheduleFromRow(row) };
+    return (await this.getSchedule(id)) ? { kind: "conflict" } : { kind: "not_found" };
+  }
+
+  async deleteSchedule(id: string): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM schedules WHERE id = $1", [id]);
     return result.rowCount === 1;
   }
 

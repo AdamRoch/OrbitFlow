@@ -1,0 +1,25 @@
+import { handleError, noContent, notFound, parseJson, type RouteContext } from "@/lib/api";
+import { getControlPlaneRepository } from "@/lib/control-plane";
+import { resultResponse } from "@/lib/control-plane/http";
+import { parseId, parseUpdateSchedule } from "@/lib/control-plane/validate";
+
+export async function PATCH(request: Request, context: RouteContext) {
+  try {
+    const { id } = await context.params;
+    return resultResponse(await getControlPlaneRepository().updateSchedule(
+      parseId(id),
+      parseUpdateSchedule(await parseJson<Record<string, unknown>>(request)),
+    ));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+export async function DELETE(_request: Request, context: RouteContext) {
+  try {
+    const { id } = await context.params;
+    return (await getControlPlaneRepository().deleteSchedule(parseId(id))) ? noContent() : notFound("schedule not found");
+  } catch (error) {
+    return handleError(error);
+  }
+}

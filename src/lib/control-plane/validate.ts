@@ -3,10 +3,12 @@ import type {
   CreateAgentInput,
   CreateSkillInput,
   CreateWorkflowInput,
+  CreateAgentScheduleInput,
   JsonObject,
   UpdateAgentInput,
   UpdateSkillInput,
   UpdateWorkflowInput,
+  UpdateScheduleInput,
 } from "./types";
 
 function isObject(value: unknown): value is JsonObject {
@@ -134,6 +136,26 @@ export function parseUpdateAgent(body: Record<string, unknown>): UpdateAgentInpu
   if (input.channelBinding !== undefined) result.channelBinding = nullableObject(input.channelBinding, "channelBinding");
   if (input.memory !== undefined) result.memory = requiredObject(input.memory, "memory");
   if (input.openclawRef !== undefined) result.openclawRef = nullableString(input.openclawRef, "openclawRef");
+  return result;
+}
+
+export function parseCreateAgentSchedule(body: Record<string, unknown>): CreateAgentScheduleInput {
+  const input = requestObject(body);
+  createFields(input, ["cronExpression", "taskPrompt", "enabled"]);
+  return {
+    cronExpression: requiredString(input.cronExpression, "cronExpression"),
+    taskPrompt: requiredString(input.taskPrompt, "taskPrompt"),
+    enabled: requiredBoolean(input.enabled, "enabled"),
+  };
+}
+
+export function parseUpdateSchedule(body: Record<string, unknown>): UpdateScheduleInput {
+  const input = requestObject(body);
+  updateFields(input, ["cronExpression", "taskPrompt", "enabled"]);
+  const result: UpdateScheduleInput = { expectedUpdatedAt: requiredTimestamp(input.expectedUpdatedAt) };
+  if (input.cronExpression !== undefined) result.cronExpression = requiredString(input.cronExpression, "cronExpression");
+  if (input.taskPrompt !== undefined) result.taskPrompt = requiredString(input.taskPrompt, "taskPrompt");
+  if (input.enabled !== undefined) result.enabled = requiredBoolean(input.enabled, "enabled");
   return result;
 }
 

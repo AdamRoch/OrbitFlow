@@ -9,6 +9,7 @@ import { UfoIcon, AlienIcon, StarIcon, CometIcon } from "@/components/icons";
 const LINKS = [
   { href: "/", label: "Tickets", Icon: StarIcon },
   { href: "/frontier", label: "Frontier", Icon: CometIcon },
+  { href: "/agents", label: "Agents", Icon: UfoIcon },
   { href: "/labels", label: "Labels", Icon: AlienIcon },
 ];
 
