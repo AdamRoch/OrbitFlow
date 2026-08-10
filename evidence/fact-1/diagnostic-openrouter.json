@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 2,
+  "credentialSource": "OPENROUTER_API_KEY",
+  "credentialValueRetained": false,
+  "openclawVersion": "OpenClaw 2026.4.15 (041266a)",
+  "observedGeneratedBaseUrl": "https://openrouter.ai/v1",
+  "officialBaseUrl": "https://openrouter.ai/api/v1",
+  "controlledComparison": {
+    "changedCondition": "models.providers.openrouter.baseUrl",
+    "keptConstant": [
+      "models.mode=replace",
+      "model=openai/gpt-4.1-mini",
+      "authProfile=openrouter:default",
+      "prompt=Reply with exactly OK. Do not use tools.",
+      "sessionId=fact-1-openrouter-diagnostic"
+    ],
+    "requestCapture": "OpenAI SDK info log emitted inside the OpenClaw process",
+    "failedRequestCaptureTimeoutMs": 150000,
+    "stateIsolation": "Both conditions started from the same state snapshot; the failing request ran in a clone and only the corrected state's baseUrl changed.",
+    "startingStateSha256": "a5262d4eb660c6358d4cb9beb53861a566424f8e092fa6a1e14ad4720978f33c"
+  },
+  "directProviderRequest": {
+    "method": "POST",
+    "origin": "https://openrouter.ai",
+    "path": "/api/v1/chat/completions",
+    "requestedModel": "openai/gpt-4.1-mini",
+    "responseModel": "openai/gpt-4.1-mini",
+    "httpStatus": 200,
+    "contentType": "application/json",
+    "output": "OK",
+    "finishReason": "stop",
+    "usage": {
+      "promptTokens": 17,
+      "completionTokens": 2,
+      "totalTokens": 19
+    }
+  },
+  "openClawBeforeCorrection": {
+    "configuration": {
+      "modelsMode": "replace",
+      "provider": "openrouter",
+      "api": "openai-completions",
+      "baseUrl": "https://openrouter.ai/v1",
+      "models": [
+        {
+          "id": "openai/gpt-4.1-mini",
+          "name": "OpenAI GPT-4.1 Mini",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1047576,
+          "maxTokens": 32768
+        }
+      ]
+    },
+    "request": {
+      "method": "POST",
+      "origin": "https://openrouter.ai",
+      "path": "/v1/chat/completions",
+      "httpStatus": 404,
+      "outcome": "failed"
+    },
+    "runtime": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4.1-mini",
+      "authMode": "auth-profile",
+      "authProfile": {
+        "provider": "openrouter",
+        "profileId": "openrouter:default",
+        "credentialSource": "OPENROUTER_API_KEY",
+        "credentialStorage": "env SecretRef"
+      }
+    },
+    "result": {
+      "exitCode": null,
+      "signal": "SIGKILL",
+      "completed": false,
+      "stoppedAfterAuthoritativeRequestCapture": true,
+      "output": null
+    }
+  },
+  "openClawAfterCorrection": {
+    "configuration": {
+      "modelsMode": "replace",
+      "provider": "openrouter",
+      "api": "openai-completions",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "models": [
+        {
+          "id": "openai/gpt-4.1-mini",
+          "name": "OpenAI GPT-4.1 Mini",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1047576,
+          "maxTokens": 32768
+        }
+      ]
+    },
+    "request": {
+      "method": "POST",
+      "origin": "https://openrouter.ai",
+      "path": "/api/v1/chat/completions",
+      "httpStatus": 200,
+      "outcome": "succeeded"
+    },
+    "runtime": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4.1-mini",
+      "authMode": "auth-profile",
+      "authProfile": {
+        "provider": "openrouter",
+        "profileId": "openrouter:default",
+        "credentialSource": "OPENROUTER_API_KEY",
+        "credentialStorage": "env SecretRef"
+      }
+    },
+    "result": {
+      "exitCode": 0,
+      "completed": true,
+      "stopReason": "stop",
+      "livenessState": "working",
+      "errorKind": null,
+      "output": "OK"
+    }
+  },
+  "conclusion": "Changing only the OpenRouter base URL moved OpenClaw from /v1/chat/completions 404 to successful real inference at /api/v1/chat/completions.",
+  "acceptanceCriteria": {
+    "directOfficialEndpointRealInference": true,
+    "oneChangedCondition": true,
+    "authoritativeOpenClawRequestPaths": true,
+    "sameOpenClawModelAndAuth": true,
+    "correctedOpenClawRealInference": true,
+    "credentialRedaction": true
+  }
+}

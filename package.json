@@ -1,0 +1,12 @@
+{
+  "name": "orbitflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
