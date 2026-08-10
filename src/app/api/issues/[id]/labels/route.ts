@@ -9,6 +9,7 @@ import {
   RouteContext,
 } from "@/lib/api";
 import { parseLabelNames } from "@/lib/validate";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 interface SetLabelsBody {
   labelNames?: unknown;
@@ -30,6 +31,7 @@ export async function PUT(req: Request, ctx: RouteContext) {
 
     const updated = setIssueLabels(db, project, id, labelNames);
     if (!updated) return notFound("issue not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: updated.id, runId: null, agentId: null });
     return ok(updated);
   } catch (err) {
     return handleError(err);

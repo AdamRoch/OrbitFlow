@@ -4,6 +4,7 @@ import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const OPENCLAW_MODEL = "openrouter/openai/gpt-4.1-mini";
+export const OPENCLAW_VERSION = "2026.4.15";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const OPENROUTER_MODEL = "openai/gpt-4.1-mini";
 
@@ -39,6 +40,12 @@ export class OpenClawContractError extends Error {
     this.name = "OpenClawContractError";
     this.details = details;
   }
+}
+
+export function parseOpenClawVersion(output) {
+  const match = String(output).trim().match(/^(?:OpenClaw\s+)?(\d{4}\.\d+\.\d+)(?:\s|$)/);
+  if (!match) throw new OpenClawContractError("OpenClaw version output is malformed");
+  return match[1];
 }
 
 export function parseCliJson(stdout) {

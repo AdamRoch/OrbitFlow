@@ -37,6 +37,17 @@ export interface WorkflowDTO {
   updatedAt: string;
 }
 
+export interface ScheduleDTO {
+  id: string;
+  cronExpression: string;
+  workflowId: string | null;
+  agentId: string | null;
+  taskPrompt: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CreateAgentInput {
   name: string;
   role: string;
@@ -74,6 +85,17 @@ export interface CreateWorkflowInput {
 }
 
 export interface UpdateWorkflowInput extends Partial<CreateWorkflowInput> {
+  /** Required optimistic-lock version read from the resource's updatedAt. */
+  expectedUpdatedAt: string;
+}
+
+export interface CreateAgentScheduleInput {
+  cronExpression: string;
+  taskPrompt: string;
+  enabled: boolean;
+}
+
+export interface UpdateScheduleInput extends Partial<CreateAgentScheduleInput> {
   /** Required optimistic-lock version read from the resource's updatedAt. */
   expectedUpdatedAt: string;
 }

@@ -13,8 +13,12 @@ Productionize the P0-1 spike into the `RuntimeAdapter` (PRD §5): create/update 
 
 ## Acceptance criteria
 
-- [ ] Agent row → live OpenClaw agent, updated on edit.
-- [ ] Wake → structured output captured, token usage lands in `cost_events`.
-- [ ] Malformed output: one retry, then `system` error message on the bus.
-- [ ] Hung wake: timeout fires, session terminated, run surfaces the error instead of stalling.
-- [ ] A fact stored in run 1 is present in the composed prompt of run 2.
+- [x] Agent row → live OpenClaw agent, updated on edit.
+- [x] Wake → structured output captured, token usage lands in `cost_events`.
+- [x] Malformed output: one retry, then `system` error message on the bus.
+- [x] Hung wake: timeout fires, session terminated, run surfaces the error instead of stalling.
+- [x] A fact stored in run 1 is present in the composed prompt of run 2.
+- [x] Only the pinned 2026.4.15 gateway envelope can complete; blocked, error, aborted, replay-invalid, and unsupported shapes fail closed.
+- [x] Returned session identity maps to the exact requested explicit session key.
+- [x] A durable invocation replay cannot execute or charge twice.
+- [x] The child environment contains only isolated runtime paths and explicit gateway connection variables.

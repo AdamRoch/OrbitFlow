@@ -98,6 +98,13 @@ describe("UI smoke", () => {
     expect(html).toMatch(/\/api\/issues\/frontier/);
   });
 
+  it("agents page has a descriptive route title for route announcements", async () => {
+    const res = await api.fetch("/agents");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<title>Agents \| OrbitFactory<\/title>/);
+  });
+
   it("missing issue detail returns 404", async () => {
     const res = await api.fetch("/issues/FACT-88888");
     expect(res.status).toBe(404);

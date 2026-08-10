@@ -9,6 +9,7 @@ import {
   requireProject,
   RouteContext,
 } from "@/lib/api";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 interface AddBlockerBody {
   blockerId?: unknown;
@@ -49,6 +50,7 @@ export async function POST(req: Request, ctx: RouteContext) {
 
     const result = addBlocker(db, project, id, blockerId as string | number);
     if (result === null) return notFound("issue not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: result.blockedIssueId, runId: null, agentId: null });
 
     // The contract says 201 on creation; we return the edge object either way
     // but use 201 to signal "the relationship now exists."

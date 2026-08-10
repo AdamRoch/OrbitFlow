@@ -8,15 +8,24 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { devNull } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { runSafeGit } from "./git.js";
 import { createOwnedTempRoot, removeOwnedTempRoot } from "./ownedTemp.js";
+import { terminateProcessGroup } from "./processGroup.js";
+import {
+  addCosts,
+  addTokenCounts,
+  isDatabaseCost,
+  isDatabaseTokenCount,
+} from "./usage.js";
 import { getOwnedWorkspace, removeOwnedWorkspace } from "./workspace.js";
 import {
   MissingCredentialsError,
   CliFailureError,
   TimeoutError,
   MalformedOutputError,
+  OutputTooLargeError,
   CredentialExposureError,
 } from "./errors.js";
 
@@ -30,10 +39,14 @@ export const OPEN_CODE_BINARY = fileURLToPath(
   )
 );
 
-const DEFAULT_MODEL = "openrouter/anthropic/claude-haiku-4.5";
+export const OPEN_CODE_DEFAULT_MODEL = "openrouter/anthropic/claude-haiku-4.5";
+const EXECUTION_BOUNDARY = fileURLToPath(new URL("./openCodeBoundary.js", import.meta.url));
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_KILL_GRACE_MS = 2_000;
+const DEFAULT_KILL_WAIT_MS = 1_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_STDERR_CHARS = 4_000;
+const MAX_PROTOCOL_LINE_CHARS = 1024 * 1024;
 const MAX_DIFF_BYTES = 10 * 1024 * 1024;
 const MAX_WORKSPACE_SCAN_BYTES = 50 * 1024 * 1024;
 const EVENT_TYPES = new Set(["step_start", "step_finish", "text", "reasoning", "tool_use", "error"]);
@@ -41,84 +54,60 @@ const EVENT_TYPES = new Set(["step_start", "step_finish", "text", "reasoning", "
 export function createOpenCodeAdapter({
   spawn = nodeSpawn,
   apiKeyEnvVar = "OPENROUTER_API_KEY",
-  model = DEFAULT_MODEL,
+  model = OPEN_CODE_DEFAULT_MODEL,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  killGraceMs = DEFAULT_KILL_GRACE_MS,
+  killWaitMs = DEFAULT_KILL_WAIT_MS,
+  childStartHandshakeMs,
   binary = OPEN_CODE_BINARY,
   env = process.env,
+  workspaceAuthority = createTemporaryWorkspaceAuthority(),
+  beforeCredential,
 } = {}) {
-  async function delegate_coding_task(task, workspace) {
+  async function delegate_coding_task(task, workspace, { signal } = {}) {
+    if (signal?.aborted) {
+      throw new CliFailureError("coding delegation cancelled because run workspace is being deleted");
+    }
     const credential = env[apiKeyEnvVar];
     if (typeof credential !== "string" || credential.length === 0) {
       throw new MissingCredentialsError(apiKeyEnvVar);
     }
 
-    const ownership = getOwnedWorkspace(workspace);
-    if (!ownership) {
-      throw new CliFailureError(
-        "workspace must be created by createIsolatedGitWorkspace in this process"
-      );
-    }
-    workspace = ownership.workspace;
+    const workspaceHandle = await workspaceAuthority.resolve(workspace);
+    workspace = workspaceHandle.workspace;
     const secrets = secretVariants(credential);
-    const isolatedState = await createIsolatedState(apiKeyEnvVar, credential, env.PATH);
+    const isolatedState = await createIsolatedState(env.PATH);
     try {
-      const baseCommit = resolveBaseCommit(workspace, isolatedState.root);
-      await assertWorkspaceSafe(ownership, secrets, isolatedState.root);
-
-      const args = [
-        "--pure",
-        "run",
-        task,
-        "--format",
-        "json",
-        "-m",
-        model,
-        "--dir",
-        workspace,
-        "--auto",
-      ];
-      let result;
       try {
-        result = await runProcess(spawn, binary, args, {
-          cwd: workspace,
-          env: isolatedState.env,
+        const result = await runAnchoredBoundary({
+          spawn,
+          binary,
+          task,
+          model,
+          apiKeyEnvVar,
+          credential,
+          toolPath: env.PATH,
+          isolatedState,
+          workspaceHandle,
+          workspaceAuthority,
+          beforeCredential,
           timeoutMs,
+          killGraceMs,
+          killWaitMs,
+          childStartHandshakeMs,
           secrets,
+          signal,
         });
-      } catch (err) {
-        await assertWorkspaceSafe(ownership, secrets, isolatedState.root);
-        throw err;
+        if (!(await workspaceAuthority.assertCurrent(workspaceHandle))) {
+          throw new CliFailureError("workspace ownership changed during CLI execution");
+        }
+        return result;
+      } catch (error) {
+        if (error?.containWorkspace) {
+          await containCredentialExposure(workspaceAuthority, workspaceHandle);
+        }
+        throw error;
       }
-
-      await assertWorkspaceSafe(ownership, secrets, isolatedState.root, result.secretExposed);
-
-      if (result.timedOut) {
-        throw new TimeoutError(timeoutMs);
-      }
-
-      if (result.processError) throw result.processError;
-
-      if (result.exitCode !== 0) {
-        throw new CliFailureError(`${binary} exited with code ${result.exitCode}`, {
-          exitCode: result.exitCode,
-          signal: result.signal,
-          stderrTail: result.stderrTail,
-          stdoutTail: result.stdoutLog,
-        });
-      }
-
-      const usage = result.protocol.result(binary);
-      const rawDiff = computeDiff(workspace, baseCommit, isolatedState.root);
-      if (containsSecret(rawDiff, secrets)) {
-        await discardOwnedWorkspace(ownership);
-        throw new CredentialExposureError("credential exposure detected; workspace removed");
-      }
-
-      return {
-        diff: redact(rawDiff, secrets),
-        log: boundedRedacted(result.stdoutLog, secrets, MAX_LOG_CHARS),
-        usage,
-      };
     } finally {
       try {
         if (!removeOwnedTempRoot(isolatedState.ownership)) {
@@ -133,14 +122,13 @@ export function createOpenCodeAdapter({
   return { delegate_coding_task };
 }
 
-async function createIsolatedState(apiKeyEnvVar, credential, toolPath) {
+async function createIsolatedState(toolPath) {
   const ownership = await createOwnedTempRoot("opencode-state-");
   const root = ownership.root;
   return {
     ownership,
     root,
     env: {
-      [apiKeyEnvVar]: credential,
       PATH: toolPath || "/usr/local/bin:/usr/bin:/bin",
       HOME: root,
       TEMP: root,
@@ -153,15 +141,362 @@ async function createIsolatedState(apiKeyEnvVar, credential, toolPath) {
       OPENCODE_DISABLE_PROJECT_CONFIG: "true",
       OPENCODE_DISABLE_CLAUDE_CODE: "true",
       OPENCODE_DISABLE_AUTOUPDATE: "true",
+      __CF_USER_TEXT_ENCODING: "0x0:0x0:0x0",
     },
   };
 }
 
-function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
+function runAnchoredBoundary({
+  spawn,
+  binary,
+  task,
+  model,
+  apiKeyEnvVar,
+  credential,
+  toolPath,
+  isolatedState,
+  workspaceHandle,
+  workspaceAuthority,
+  beforeCredential,
+  timeoutMs,
+  killGraceMs,
+  killWaitMs,
+  childStartHandshakeMs,
+  secrets,
+  signal,
+}) {
+  const identity = workspaceIdentity(workspaceHandle);
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(process.execPath, [EXECUTION_BOUNDARY], {
+        cwd: isolatedState.root,
+        env: {
+          PATH: toolPath || "/usr/local/bin:/usr/bin:/bin",
+          HOME: isolatedState.root,
+          TMPDIR: isolatedState.root,
+        },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
+    } catch (error) {
+      reject(new CliFailureError(`failed to start coding execution boundary: ${errorMessage(error)}`));
+      return;
+    }
+
+    let settled = false;
+    let receivedResult = false;
+    let cliProcessGroupId = null;
+    let stderrTail = "";
+    let stdoutTail = "";
+    let credentialSent = false;
+    const overallTimeoutMs =
+      timeoutMs + killGraceMs + killWaitMs + (childStartHandshakeMs ?? 0) + 10_000;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(overallTimer);
+      signal?.removeEventListener("abort", abortForDeletion);
+      callback(value);
+    };
+
+    const fail = (error) => settle(reject, error);
+    const abortAndFail = (error) => {
+      try {
+        if (child.connected) child.send({ type: "abort" });
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+      fail(error);
+    };
+    const overallTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          if (Number.isInteger(cliProcessGroupId)) {
+            await terminateProcessGroup(cliProcessGroupId, {
+              killGraceMs,
+              killWaitMs,
+            });
+          }
+        } catch (error) {
+          fail(
+            new CliFailureError(
+              `failed to terminate coding CLI after boundary timeout: ${errorMessage(error)}`,
+            ),
+          );
+          return;
+        } finally {
+          child.kill("SIGKILL");
+        }
+        fail(new CliFailureError("coding execution boundary did not return a bounded result"));
+      })();
+    }, overallTimeoutMs);
+
+    const abortForDeletion = () => {
+      try {
+        if (child.connected) child.send({ type: "abort" });
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+    signal?.addEventListener("abort", abortForDeletion, { once: true });
+    if (signal?.aborted) abortForDeletion();
+
+    child.stdout?.on("data", (chunk) => {
+      stdoutTail = appendBounded(stdoutTail, chunk.toString(), MAX_STDERR_CHARS);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderrTail = appendBounded(stderrTail, chunk.toString(), MAX_STDERR_CHARS);
+    });
+
+    child.on("message", (message) => {
+      void (async () => {
+        if (!message || typeof message !== "object" || settled) return;
+        if (message.type === "ready") {
+          child.send({
+            type: "configure",
+            config: {
+              workspace: workspaceHandle.workspace,
+              workspaceDevice: identity.device,
+              workspaceInode: identity.inode,
+              binary,
+              task,
+              model,
+              apiKeyEnvVar,
+              stateRoot: isolatedState.root,
+              openCodeEnv: isolatedState.env,
+              timeoutMs,
+              killGraceMs,
+              killWaitMs,
+              childStartHandshakeMs,
+            },
+          });
+          return;
+        }
+        if (message.type === "credential_ready") {
+          if (credentialSent) {
+            abortAndFail(new CliFailureError("coding execution boundary requested credentials twice"));
+            return;
+          }
+          if (message.inheritedCredentialPresent !== false) {
+            abortAndFail(
+              new CliFailureError("coding execution boundary inherited a provider credential"),
+            );
+            return;
+          }
+          if (typeof beforeCredential === "function") {
+            await beforeCredential(workspaceHandle);
+          }
+          if (!(await workspaceAuthority.assertCurrent(workspaceHandle))) {
+            abortAndFail(
+              new CliFailureError("workspace ownership changed before credential handoff"),
+            );
+            return;
+          }
+          credentialSent = true;
+          child.send({ type: "credential", credential });
+          return;
+        }
+        if (message.type === "cli_started") {
+          if (Number.isInteger(message.processGroupId) && message.processGroupId > 0) {
+            cliProcessGroupId = message.processGroupId;
+          }
+          return;
+        }
+        if (message.type === "result") {
+          receivedResult = true;
+          if (message.ok === true) settle(resolve, message.result);
+          else fail(errorFromBoundary(message.error));
+        }
+      })().catch((error) => abortAndFail(error));
+    });
+
+    child.on("error", (error) => {
+      fail(
+        new CliFailureError(
+          `coding execution boundary failed: ${boundedRedacted(errorMessage(error), secrets, 1_000)}`,
+        ),
+      );
+    });
+    child.on("close", (code, signal) => {
+      if (!receivedResult && !settled) {
+        fail(
+          new CliFailureError("coding execution boundary exited before returning a result", {
+            exitCode: code,
+            signal,
+            stderrTail: boundedRedacted(stderrTail, secrets, MAX_STDERR_CHARS),
+            stdoutTail: boundedRedacted(stdoutTail, secrets, MAX_STDERR_CHARS),
+          }),
+        );
+      }
+    });
+  });
+}
+
+function workspaceIdentity(handle) {
+  const device = handle.record?.workspaceDevice ?? handle.workspaceDevice;
+  const inode = handle.record?.workspaceInode ?? handle.workspaceInode;
+  if (!/^\d+$/.test(String(device ?? "")) || !/^\d+$/.test(String(inode ?? ""))) {
+    throw new CliFailureError("workspace authority omitted its filesystem identity");
+  }
+  return { device: String(device), inode: String(inode) };
+}
+
+function errorFromBoundary(payload) {
+  const message = typeof payload?.message === "string" ? payload.message : "coding boundary failed";
+  let error;
+  switch (payload?.code) {
+    case "timeout":
+      error = new TimeoutError(payload.timeoutMs);
+      break;
+    case "malformed_output":
+      error = new MalformedOutputError(message, { rawTail: payload.rawTail });
+      break;
+    case "output_too_large":
+      error = new OutputTooLargeError(payload.limitBytes);
+      break;
+    case "credential_exposure":
+      error = new CredentialExposureError(message);
+      break;
+    default:
+      error = new CliFailureError(message, {
+        exitCode: payload?.exitCode,
+        signal: payload?.signal,
+        stderrTail: payload?.stderrTail,
+        stdoutTail: payload?.stdoutTail,
+      });
+  }
+  if (payload?.containWorkspace === true) error.containWorkspace = true;
+  return error;
+}
+
+export function prepareAnchoredWorkspace(stateRoot) {
+  return resolveBaseCommit(".", stateRoot);
+}
+
+export async function executeAnchoredOpenCode({
+  binary,
+  task,
+  model,
+  apiKeyEnvVar,
+  credential,
+  stateRoot,
+  openCodeEnv,
+  baseCommit,
+  timeoutMs,
+  killGraceMs,
+  killWaitMs,
+  childStartHandshakeMs,
+  onCliStart,
+  signal,
+}) {
+  const secrets = secretVariants(credential);
+  const env = { ...openCodeEnv, [apiKeyEnvVar]: credential };
+  assertAnchoredWorkspaceSafe(secrets, stateRoot);
+
+  const args = [
+    "--pure",
+    "run",
+    task,
+    "--format",
+    "json",
+    "-m",
+    model,
+    "--dir",
+    ".",
+    "--auto",
+  ];
+  const result = await runProcess(nodeSpawn, binary, args, {
+    cwd: ".",
+    env,
+    timeoutMs,
+    killGraceMs,
+    killWaitMs,
+    childStartHandshakeMs,
+    secrets,
+    onCliStart,
+    signal,
+  });
+
+  assertAnchoredWorkspaceSafe(secrets, stateRoot, result.secretExposed);
+  if (result.processError) throw result.processError;
+  if (result.timedOut) throw new TimeoutError(timeoutMs);
+  if (result.exitCode !== 0) {
+    throw new CliFailureError(`${binary} exited with code ${result.exitCode}`, {
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stderrTail: result.stderrTail,
+      stdoutTail: result.stdoutLog,
+    });
+  }
+
+  const usage = result.protocol.result(binary);
+  const rawDiff = computeDiff(".", baseCommit, stateRoot);
+  if (containsSecret(rawDiff, secrets)) {
+    const error = new CredentialExposureError("credential exposure detected; workspace contained");
+    error.containWorkspace = true;
+    throw error;
+  }
+  return {
+    diff: redact(rawDiff, secrets),
+    log: boundedRedacted(result.stdoutLog, secrets, MAX_LOG_CHARS),
+    usage,
+  };
+}
+
+export function serializeBoundaryError(error) {
+  return {
+    code: typeof error?.code === "string" ? error.code : "cli_failure",
+    message: String(error?.message ?? "coding boundary failed").slice(0, 1_000),
+    ...(Number.isInteger(error?.exitCode) ? { exitCode: error.exitCode } : {}),
+    ...(typeof error?.signal === "string" ? { signal: error.signal } : {}),
+    ...(Number.isInteger(error?.timeoutMs) ? { timeoutMs: error.timeoutMs } : {}),
+    ...(Number.isInteger(error?.limitBytes) ? { limitBytes: error.limitBytes } : {}),
+    ...(typeof error?.stderrTail === "string"
+      ? { stderrTail: error.stderrTail.slice(-MAX_STDERR_CHARS) }
+      : {}),
+    ...(typeof error?.stdoutTail === "string"
+      ? { stdoutTail: error.stdoutTail.slice(-MAX_STDERR_CHARS) }
+      : {}),
+    ...(typeof error?.rawTail === "string" ? { rawTail: error.rawTail.slice(-500) } : {}),
+    ...(error?.containWorkspace === true ? { containWorkspace: true } : {}),
+  };
+}
+
+export function redactBoundaryPayload(payload, credential) {
+  let serialized = JSON.stringify(payload);
+  for (const secret of secretVariants(credential)) {
+    serialized = serialized.split(secret).join("[REDACTED]");
+  }
+  return JSON.parse(serialized);
+}
+
+function runProcess(
+  spawn,
+  binary,
+  args,
+  {
+    cwd,
+    env,
+    timeoutMs,
+    killGraceMs,
+    killWaitMs,
+    childStartHandshakeMs,
+    secrets,
+    onCliStart,
+    signal,
+  },
+) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(binary, args, {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
     } catch (err) {
       reject(
         new CliFailureError(`failed to start ${binary}: ${redact(errorMessage(err), secrets)}`)
@@ -173,25 +508,26 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
     let stderrTail = "";
     let settled = false;
     let timedOut = false;
-    let forceKillTimer;
-    let settleTimer;
+    let spawned = false;
+    let terminating = false;
+    const closeState = { closed: false, exitCode: null, signal: null };
     const protocol = createProtocolAccumulator(secrets);
     const stdoutScanner = createSecretScanner(secrets);
     const stderrScanner = createSecretScanner(secrets);
     const overlap = longestSecret(secrets);
 
-    const finish = (exitCode, signal, processError = null) => {
+    const finish = (exitCode, exitSignal, processError = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
-      clearTimeout(forceKillTimer);
-      clearTimeout(settleTimer);
+      clearTimeout(handshakeTimer);
+      signal?.removeEventListener("abort", abortForDeletion);
       protocol.end();
       resolve({
         stdoutLog: boundedRedacted(stdoutLog, secrets, MAX_LOG_CHARS),
         stderrTail: boundedRedacted(stderrTail, secrets, MAX_STDERR_CHARS),
         exitCode,
-        signal,
+        signal: exitSignal,
         timedOut,
         protocol,
         processError,
@@ -199,27 +535,65 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
       });
     };
 
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        finish(null, "SIGTERM");
+    let timeoutTimer;
+    let handshakeTimer;
+    let timeoutArmed = false;
+    const armTimeout = () => {
+      if (timeoutArmed || terminating || settled) return;
+      timeoutArmed = true;
+      clearTimeout(handshakeTimer);
+      timeoutTimer = setTimeout(() => {
+        beginTermination(null, { timeout: true });
+      }, timeoutMs);
+    };
+    const beginTermination = (processError, { timeout = false } = {}) => {
+      if (terminating || settled) return;
+      terminating = true;
+      timedOut = timeout;
+      clearTimeout(timeoutTimer);
+      clearTimeout(handshakeTimer);
+      void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
+        .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL", processError))
+        .catch((error) =>
+          finish(
+            closeState.exitCode,
+            closeState.signal,
+            new CliFailureError(
+              `failed to terminate coding CLI process group: ${redact(errorMessage(error), secrets)}`,
+            ),
+          ),
+        );
+    };
+    const abortForDeletion = () => {
+      if (!spawned || settled) return;
+      beginTermination(
+        new CliFailureError("coding delegation cancelled because run workspace is being deleted"),
+      );
+    };
+    const beginTimeout = () => {
+      spawned = true;
+      if (Number.isInteger(child.pid) && typeof onCliStart === "function") {
+        onCliStart(child.pid);
+      }
+      if (signal?.aborted) {
+        abortForDeletion();
         return;
       }
-      forceKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          finish(null, "SIGKILL");
-          return;
-        }
-        settleTimer = setTimeout(() => finish(null, "SIGKILL"), 250);
-      }, 2000);
-    }, timeoutMs);
+      if (Number.isSafeInteger(childStartHandshakeMs) && childStartHandshakeMs > 0) {
+        handshakeTimer = setTimeout(() => {
+          beginTermination(new CliFailureError("coding CLI child-start handshake timed out"));
+        }, childStartHandshakeMs);
+      } else {
+        armTimeout();
+      }
+    };
+
+    signal?.addEventListener("abort", abortForDeletion, { once: true });
+    child.once("spawn", beginTimeout);
 
     child.stdout?.on("data", (chunk) => {
       const text = chunk.toString();
+      if (childStartHandshakeMs) armTimeout();
       stdoutScanner.write(text);
       protocol.write(text);
       stdoutLog = appendBounded(stdoutLog, text, MAX_LOG_CHARS + overlap);
@@ -231,15 +605,40 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
     });
 
     child.on("error", (err) => {
-      finish(
-        null,
-        null,
-        new CliFailureError(`${binary} process error: ${redact(errorMessage(err), secrets)}`)
-      );
+      if (!terminating) {
+        finish(
+          null,
+          null,
+          new CliFailureError(`${binary} process error: ${redact(errorMessage(err), secrets)}`),
+        );
+      }
     });
 
-    child.on("close", finish);
+    child.on("close", (exitCode, signal) => {
+      closeState.closed = true;
+      closeState.exitCode = exitCode;
+      closeState.signal = signal;
+      if (!terminating) finish(exitCode, signal);
+    });
   });
+}
+
+async function terminateProcessTree(child, closeState, { killGraceMs, killWaitMs }) {
+  const processGroup = process.platform !== "win32" && Number.isInteger(child.pid);
+  if (processGroup) {
+    await terminateProcessGroup(child.pid, { killGraceMs, killWaitMs });
+    return;
+  }
+  child.kill("SIGTERM");
+  const deadline = Date.now() + killGraceMs;
+  while (!closeState.closed && Date.now() < deadline) {
+    await delay(Math.min(20, Math.max(1, deadline - Date.now())));
+  }
+  if (closeState.closed) return;
+  child.kill("SIGKILL");
+  const killDeadline = Date.now() + killWaitMs;
+  while (!closeState.closed && Date.now() < killDeadline) await delay(20);
+  if (!closeState.closed) throw new Error("coding CLI remained alive");
 }
 
 function appendBounded(current, chunk, maxChars) {
@@ -327,6 +726,9 @@ function createProtocolAccumulator(secrets) {
     cacheWriteTokens: 0,
     costUsd: 0,
   };
+  const usageComplete = Object.fromEntries(
+    Object.keys(usage).map((field) => [field, true]),
+  );
 
   function malformed(message, rawTail = "") {
     return new MalformedOutputError(message, {
@@ -381,7 +783,7 @@ function createProtocolAccumulator(secrets) {
       }
       if (event.type === "step_finish") {
         if (openSteps === 0) throw malformed("opencode step finished without a matching start");
-        validateAndAddUsage(event.part, usage, malformed);
+        validateAndAddUsage(event.part, usage, usageComplete, malformed);
         openSteps -= 1;
         sawStepFinish = true;
         return;
@@ -406,11 +808,22 @@ function createProtocolAccumulator(secrets) {
 
   return {
     write(chunk) {
+      if (failure) return;
       pending += chunk;
+      if (pending.length > MAX_PROTOCOL_LINE_CHARS && !pending.includes("\n")) {
+        failure = malformed("opencode output line exceeded the protocol limit");
+        pending = "";
+        return;
+      }
       let newline;
       while ((newline = pending.indexOf("\n")) !== -1) {
-        consume(pending.slice(0, newline));
+        const line = pending.slice(0, newline);
         pending = pending.slice(newline + 1);
+        if (line.length > MAX_PROTOCOL_LINE_CHARS) {
+          failure = malformed("opencode output line exceeded the protocol limit");
+          return;
+        }
+        consume(line);
       }
     },
     end() {
@@ -428,7 +841,12 @@ function createProtocolAccumulator(secrets) {
       if (!sawStepFinish || openSteps !== 0 || lastType !== "step_finish") {
         throw malformed("opencode output did not end in a completed step");
       }
-      return usage;
+      return Object.fromEntries(
+        Object.entries(usage).map(([field, value]) => [
+          field,
+          usageComplete[field] ? value : null,
+        ]),
+      );
     },
   };
 }
@@ -445,28 +863,44 @@ function validatePart(part, expectedType, eventSessionID, malformed) {
   }
 }
 
-function validateAndAddUsage(part, usage, malformed) {
-  const tokens = part.tokens;
-  const values = [
-    part.cost,
-    tokens?.input,
-    tokens?.output,
-    tokens?.reasoning,
-    tokens?.cache?.read,
-    tokens?.cache?.write,
-  ];
-  if (typeof part.reason !== "string" || !values.every(isNonNegativeFiniteNumber)) {
+function validateAndAddUsage(part, usage, usageComplete, malformed) {
+  if (typeof part.reason !== "string") {
+    throw malformed("opencode usage data is malformed");
+  }
+  if (part.tokens !== undefined && part.tokens !== null && !isRecord(part.tokens)) {
+    throw malformed("opencode usage data is malformed");
+  }
+  if (
+    part.tokens?.cache !== undefined &&
+    part.tokens?.cache !== null &&
+    !isRecord(part.tokens.cache)
+  ) {
     throw malformed("opencode usage data is malformed");
   }
 
-  usage.costUsd += part.cost;
-  usage.inputTokens += tokens.input;
-  usage.outputTokens += tokens.output;
-  usage.reasoningTokens += tokens.reasoning;
-  usage.cacheReadTokens += tokens.cache.read;
-  usage.cacheWriteTokens += tokens.cache.write;
-  if (!Object.values(usage).every(Number.isFinite)) {
-    throw malformed("opencode usage totals overflowed");
+  addUsage("costUsd", part.cost, usage, usageComplete, malformed);
+  addUsage("inputTokens", part.tokens?.input, usage, usageComplete, malformed);
+  addUsage("outputTokens", part.tokens?.output, usage, usageComplete, malformed);
+  addUsage("reasoningTokens", part.tokens?.reasoning, usage, usageComplete, malformed);
+  addUsage("cacheReadTokens", part.tokens?.cache?.read, usage, usageComplete, malformed);
+  addUsage("cacheWriteTokens", part.tokens?.cache?.write, usage, usageComplete, malformed);
+}
+
+function addUsage(field, value, usage, usageComplete, malformed) {
+  if (value === undefined || value === null) {
+    usageComplete[field] = false;
+    return;
+  }
+  const tokenField = field !== "costUsd";
+  if (tokenField ? !isDatabaseTokenCount(value) : !isDatabaseCost(value)) {
+    throw malformed("opencode usage data is malformed");
+  }
+  if (usageComplete[field]) {
+    const total = tokenField
+      ? addTokenCounts(usage[field], value)
+      : addCosts(usage[field], value);
+    if (total === null) throw malformed("opencode usage totals overflowed");
+    usage[field] = total;
   }
 }
 
@@ -476,10 +910,6 @@ function isRecord(value) {
 
 function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function isNonNegativeFiniteNumber(value) {
-  return isFiniteNumber(value) && value >= 0;
 }
 
 function errorMessage(err) {
@@ -590,33 +1020,60 @@ function nulPaths(output) {
   return output.toString().split("\0").filter(Boolean);
 }
 
-async function assertWorkspaceSafe(ownership, secrets, gitHome, outputExposed = false) {
+function assertAnchoredWorkspaceSafe(secrets, gitHome, outputExposed = false) {
   if (outputExposed) {
-    await discardOwnedWorkspace(ownership);
-    throw new CredentialExposureError("credential exposure detected; workspace removed");
-  }
-  if (getOwnedWorkspace(ownership.workspace) !== ownership) {
-    await discardOwnedWorkspace(ownership);
-    throw new CliFailureError("workspace ownership changed during CLI execution");
+    const error = new CredentialExposureError("credential exposure detected; workspace contained");
+    error.containWorkspace = true;
+    throw error;
   }
 
-  const inspection = inspectWorkspaceState(ownership.workspace, secrets, gitHome);
+  const inspection = inspectWorkspaceState(".", secrets, gitHome);
   if (inspection.exposed) {
-    await discardOwnedWorkspace(ownership);
-    throw new CredentialExposureError("credential exposure detected; workspace removed");
+    const error = new CredentialExposureError("credential exposure detected; workspace contained");
+    error.containWorkspace = true;
+    throw error;
   }
   if (inspection.failed) {
-    await discardOwnedWorkspace(ownership);
-    throw new CliFailureError("failed to inspect workspace for credential exposure");
+    const error = new CliFailureError("failed to inspect workspace for credential exposure");
+    error.containWorkspace = true;
+    throw error;
   }
 }
 
-async function discardOwnedWorkspace(ownership) {
+async function containCredentialExposure(workspaceAuthority, workspaceHandle) {
   try {
-    if (!(await removeOwnedWorkspace(ownership))) throw new Error("workspace ownership changed");
+    await workspaceAuthority.containCredentialExposure(workspaceHandle);
   } catch {
-    throw new CliFailureError("failed to remove contaminated workspace");
+    throw new CliFailureError("failed to contain contaminated workspace");
   }
+}
+
+function createTemporaryWorkspaceAuthority() {
+  return {
+    async resolve(workspace) {
+      const ownership = getOwnedWorkspace(workspace);
+      if (!ownership) {
+        throw new CliFailureError(
+          "workspace must be created by createIsolatedGitWorkspace in this process",
+        );
+      }
+      const stat = lstatSync(ownership.workspace);
+      return {
+        workspace: ownership.workspace,
+        workspaceDevice: String(stat.dev),
+        workspaceInode: String(stat.ino),
+        ownership,
+      };
+    },
+    async assertCurrent(handle) {
+      return getOwnedWorkspace(handle.workspace) === handle.ownership;
+    },
+    async containCredentialExposure(handle) {
+      if (!(await removeOwnedWorkspace(handle.ownership))) {
+        throw new Error("workspace ownership changed");
+      }
+    },
+  };
 }
 
 function computeDiff(workspace, baseCommit, gitHome) {
@@ -631,17 +1088,21 @@ function computeDiff(workspace, baseCommit, gitHome) {
         baseCommit,
         "--",
       ],
-      { cwd: workspace, home: gitHome, maxBuffer: MAX_DIFF_BYTES }
-    ).toString();
+      { cwd: workspace, home: gitHome, maxBuffer: MAX_DIFF_BYTES + 1 }
+    );
+    if (tracked.length > MAX_DIFF_BYTES) throw new OutputTooLargeError(MAX_DIFF_BYTES);
+    const parts = [tracked];
+    let totalBytes = tracked.length;
     const untracked = nulPaths(
       runSafeGit(["ls-files", "--others", "--exclude-standard", "-z"], {
         cwd: workspace,
         home: gitHome,
-        maxBuffer: MAX_DIFF_BYTES,
+        maxBuffer: MAX_DIFF_BYTES + 1,
       })
-    )
-      .map((file) =>
-        runSafeGit(
+    );
+    for (const file of untracked) {
+      const remaining = MAX_DIFF_BYTES - totalBytes;
+      const fileDiff = runSafeGit(
           [
             "diff",
             "--no-ext-diff",
@@ -656,13 +1117,18 @@ function computeDiff(workspace, baseCommit, gitHome) {
             cwd: workspace,
             home: gitHome,
             allowedExitCodes: [0, 1],
-            maxBuffer: MAX_DIFF_BYTES,
+            maxBuffer: remaining + 1,
           }
-        ).toString()
-      )
-      .join("");
-    return tracked + untracked;
-  } catch {
+        );
+      if (fileDiff.length > remaining) throw new OutputTooLargeError(MAX_DIFF_BYTES);
+      parts.push(fileDiff);
+      totalBytes += fileDiff.length;
+    }
+    return Buffer.concat(parts, totalBytes).toString();
+  } catch (error) {
+    if (error instanceof OutputTooLargeError || error?.code === "GIT_OUTPUT_LIMIT") {
+      throw new OutputTooLargeError(MAX_DIFF_BYTES);
+    }
     throw new CliFailureError("failed to compute workspace diff");
   }
 }

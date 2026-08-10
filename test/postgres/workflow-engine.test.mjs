@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
@@ -17,6 +19,16 @@ import {
 } from "../../src/lib/postgres/workflow-engine.ts";
 
 const { Client, Pool } = pg;
+const migrationDirectory = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const migrationFile = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(migrationDirectory))
+    .filter((name) => migrationFile.test(name))
+    .sort();
+}
 
 class DeterministicRuntimeAdapter {
   constructor({ failNodeId = null, ambiguousNodeId = null } = {}) {
@@ -68,13 +80,7 @@ test("FACT-10 durable workflow engine", async (t) => {
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT10_PROOF_DATABASE);
 
     const migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(migration.applied, [
-      "0001-control-plane.sql",
-      "0002-tickets.sql",
-      "0003-message-plane.sql",
-      "0004-message-consumption.sql",
-      "0006-workflow-engine.sql",
-    ]);
+    assert.deepEqual(migration.applied, await committedMigrationFiles());
 
     const agents = {};
     for (const name of ["implement", "test", "report", "worker"]) {

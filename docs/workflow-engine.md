@@ -71,13 +71,12 @@ inserts the next dispatch. Those mutations, the FACT-9 receipt, and the cursor
 advance commit together. A semantic duplicate output for a completed dispatch
 is consumed without another transition.
 
-Migration `0006-workflow-engine.sql` is required because `workflow_runs.spec` is
+Migration `0011-workflow-engine.sql` is required because `workflow_runs.spec` is
 immutable task input and FACT-9 receipts only prove message routing. Neither can
 represent a node activation's pending/leased/active/completed state or enforce a
-fan-out capacity boundary. FACT-12 owns ordinal `0005`; if `0006` is deployed
-before `0005`, `0005` must not later be inserted behind applied history. Merge
-and deployment ordering must therefore land FACT-12's `0005` first when both
-changes are pending.
+fan-out capacity boundary. It lands after main's existing chain (`0001`–`0004`,
+`0009`, `0010`); the upgrade proof applies exactly `0011` on top of the exact
+main migration history.
 
 `workflow_dispatches` is the transactional dispatch outbox. A dispatcher claims
 one row with a monotonically increasing lease generation, calls the injected

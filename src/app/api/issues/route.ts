@@ -16,6 +16,7 @@ import {
   optionalDescription,
 } from "@/lib/validate";
 import type { CreateIssueInput } from "@/lib/types";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 /**
  * GET /api/issues?status=todo&priority=2&label=ready-for-agent
@@ -72,6 +73,7 @@ export async function POST(req: Request) {
       priority,
       labelNames,
     });
+    publishLocalStateEvent({ type: "ticket.created", ticketId: issue.id, runId: null, agentId: null });
     return ok(issue, 201);
   } catch (err) {
     return handleError(err);

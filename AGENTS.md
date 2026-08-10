@@ -7,14 +7,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The durable PostgreSQL contract and disposable clean-database proof live in `docs/postgres-schema.md`; apply it with `DATABASE_URL=... npm run db:migrate`.
 - FACT-9's producer, routing transaction, polling, and cleanup contracts live in `docs/message-bus.md`; prove them with `npm run fact9:proof`.
 - FACT-10's pure graph, durable dispatch, fan-out, lifecycle, and mock-runtime contracts live in `docs/workflow-engine.md`; prove them with `npm run fact10:proof`.
+- FACT-11's OpenClaw sync, wake, failure, credential, and fake-provider proof contracts live in `docs/openclaw-runtime-adapter.md`; prove them with `npm run fact11:proof`.
 
 ## CodingToolAdapter (PRD §5)
 
 v1 wraps the `opencode` CLI headlessly, authenticated via `OPENROUTER_API_KEY`
 only. `coding-adapter/DECISION.md` owns the selection rationale, rejected
 candidates, evaluator proof, interface, and failure contracts. `coding-adapter/`
-is a standalone Phase 0 spike; `tickets/P2-4-coding-tool-adapter.md` owns its
-productionization and workspace lifecycle.
+contains the one production implementation; `docs/coding-tool-adapter.md` owns
+its OpenClaw tool, workspace, attribution, and repeat-proof runbook.
 
 ## Maintaining this file
 

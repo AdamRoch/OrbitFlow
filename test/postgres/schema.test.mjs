@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,16 @@ const { Client } = pg;
 const FAILED_MIGRATION_DIRECTORY = fileURLToPath(
   new URL("./fixtures/failed-migration", import.meta.url),
 );
+const MIGRATION_DIRECTORY = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const MIGRATION_FILE = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(MIGRATION_DIRECTORY))
+    .filter((name) => MIGRATION_FILE.test(name))
+    .sort();
+}
 
 const expectedColumns = {
   schema_migrations: ["version", "checksum", "applied_at"],
@@ -194,6 +205,8 @@ const expectedColumns = {
     "computed_cost",
     "created_at",
     "updated_at",
+    "cache_read_tokens",
+    "cache_write_tokens",
   ],
 };
 
@@ -236,6 +249,8 @@ const requiredConstraints = [
   "agents_interaction_rules_object",
   "agents_memory_object",
   "agents_openclaw_ref_unique",
+  "cost_events_cache_read_tokens_nonnegative",
+  "cost_events_cache_write_tokens_nonnegative",
   "cost_events_computed_cost_nonnegative",
   "cost_events_tokens_in_nonnegative",
   "cost_events_tokens_out_nonnegative",
@@ -368,19 +383,14 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         databaseUrl,
         log: (line) => firstLog.push(line),
       });
-      assert.deepEqual(first.applied, [
-        "0001-control-plane.sql",
-        "0002-tickets.sql",
-        "0003-message-plane.sql",
-        "0004-message-consumption.sql",
-        "0006-workflow-engine.sql",
-      ]);
-      assert.equal(firstLog.length, 5);
+      const committed = await committedMigrationFiles();
+      assert.deepEqual(first.applied, committed);
+      assert.equal(firstLog.length, committed.length);
 
       const journalBefore = await client.query(
         "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
       );
-      assert.equal(journalBefore.rowCount, 5);
+      assert.equal(journalBefore.rowCount, committed.length);
       for (const row of journalBefore.rows) {
         assert.match(row.checksum, /^[a-f0-9]{64}$/);
       }
@@ -552,7 +562,9 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
             ('messages', 'payload'),
             ('messages', 'sequence_number'),
             ('messages', 'token_usage'),
-            ('cost_events', 'computed_cost')
+            ('cost_events', 'computed_cost'),
+            ('cost_events', 'cache_read_tokens'),
+            ('cost_events', 'cache_write_tokens')
           )
         ORDER BY table_name, column_name
       `);
@@ -560,6 +572,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         nativeTypes.rows.map((row) => [row.table_name, row.column_name, row.udt_name]),
         [
           ["agents", "guardrails", "jsonb"],
+          ["cost_events", "cache_read_tokens", "int8"],
+          ["cost_events", "cache_write_tokens", "int8"],
           ["cost_events", "computed_cost", "numeric"],
           ["messages", "payload", "jsonb"],
           ["messages", "sequence_number", "int8"],
@@ -570,6 +584,31 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           ["workflow_runs", "spec", "jsonb"],
           ["workflow_runs", "total_cost", "numeric"],
           ["workflows", "graph", "jsonb"],
+        ],
+      );
+
+      const nullableUsage = await client.query(`
+        SELECT column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'cost_events'
+          AND column_name IN (
+            'tokens_in',
+            'tokens_out',
+            'computed_cost',
+            'cache_read_tokens',
+            'cache_write_tokens'
+          )
+        ORDER BY column_name
+      `);
+      assert.deepEqual(
+        nullableUsage.rows.map((row) => [row.column_name, row.is_nullable]),
+        [
+          ["cache_read_tokens", "YES"],
+          ["cache_write_tokens", "YES"],
+          ["computed_cost", "YES"],
+          ["tokens_in", "YES"],
+          ["tokens_out", "YES"],
         ],
       );
 
@@ -674,13 +713,18 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       assert.deepEqual(
         triggers.rows.map((row) => row.tgname),
         [
+          "agents_90_notify_state_stream",
+          "cost_events_90_notify_state_stream",
           "messages_05_preserve_order",
           "messages_10_enforce_ticket_run",
           "messages_20_assign_sequence",
           "messages_30_track_consumption",
           "messages_40_refresh_ready_run",
+          "messages_90_notify_state_stream",
           "tickets_10_enforce_message_runs",
+          "tickets_90_notify_state_stream",
           "workflow_runs_30_initialize_message_consumer",
+          "workflow_runs_90_notify_state_stream",
         ],
       );
     });
@@ -1056,8 +1100,18 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       await rejectWithCode(
         client,
         `INSERT INTO cost_events (
-           run_id, agent_id, model, tokens_in, tokens_out, computed_cost
-         ) VALUES ($1, $2, 'test/model', 1, 2, -0.01)`,
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', 1, 2, 0.01, -1, 0)`,
+        [ids.run, ids.agent],
+        "23514",
+      );
+      await rejectWithCode(
+        client,
+        `INSERT INTO cost_events (
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', 1, 2, -0.01, 0, 0)`,
         [ids.run, ids.agent],
         "23514",
       );
@@ -1071,8 +1125,16 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
 
       await client.query(
         `INSERT INTO cost_events (
-           run_id, agent_id, model, tokens_in, tokens_out, computed_cost
-         ) VALUES ($1, $2, 'test/model', 12, 8, 0.0042)`,
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', 12, 8, 0.0042, 20, 3)`,
+        [ids.run, ids.agent],
+      );
+      await client.query(
+        `INSERT INTO cost_events (
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost,
+           cache_read_tokens, cache_write_tokens
+         ) VALUES ($1, $2, 'test/model', NULL, 0, NULL, NULL, 0)`,
         [ids.run, ids.agent],
       );
       await rejectWithCode(
