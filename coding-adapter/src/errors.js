@@ -47,3 +47,27 @@ export class CredentialExposureError extends Error {
     this.code = "credential_exposure";
   }
 }
+
+export class WorkspaceError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WorkspaceError";
+    this.code = "workspace_invalid";
+  }
+}
+
+export class PersistenceError extends Error {
+  constructor(message = "failed to persist coding-tool usage") {
+    super(message);
+    this.name = "PersistenceError";
+    this.code = "persistence_failure";
+  }
+}
+
+export class InvalidRequestError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InvalidRequestError";
+    this.code = "invalid_request";
+  }
+}

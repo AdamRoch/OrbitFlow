@@ -8,6 +8,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { devNull } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { runSafeGit } from "./git.js";
 import { createOwnedTempRoot, removeOwnedTempRoot } from "./ownedTemp.js";
@@ -30,8 +31,10 @@ export const OPEN_CODE_BINARY = fileURLToPath(
   )
 );
 
-const DEFAULT_MODEL = "openrouter/anthropic/claude-haiku-4.5";
+export const OPEN_CODE_DEFAULT_MODEL = "openrouter/anthropic/claude-haiku-4.5";
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_KILL_GRACE_MS = 2_000;
+const DEFAULT_KILL_WAIT_MS = 1_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_STDERR_CHARS = 4_000;
 const MAX_DIFF_BYTES = 10 * 1024 * 1024;
@@ -41,10 +44,13 @@ const EVENT_TYPES = new Set(["step_start", "step_finish", "text", "reasoning", "
 export function createOpenCodeAdapter({
   spawn = nodeSpawn,
   apiKeyEnvVar = "OPENROUTER_API_KEY",
-  model = DEFAULT_MODEL,
+  model = OPEN_CODE_DEFAULT_MODEL,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  killGraceMs = DEFAULT_KILL_GRACE_MS,
+  killWaitMs = DEFAULT_KILL_WAIT_MS,
   binary = OPEN_CODE_BINARY,
   env = process.env,
+  workspaceAuthority = createTemporaryWorkspaceAuthority(),
 } = {}) {
   async function delegate_coding_task(task, workspace) {
     const credential = env[apiKeyEnvVar];
@@ -52,18 +58,18 @@ export function createOpenCodeAdapter({
       throw new MissingCredentialsError(apiKeyEnvVar);
     }
 
-    const ownership = getOwnedWorkspace(workspace);
-    if (!ownership) {
-      throw new CliFailureError(
-        "workspace must be created by createIsolatedGitWorkspace in this process"
-      );
-    }
-    workspace = ownership.workspace;
+    const workspaceHandle = await workspaceAuthority.resolve(workspace);
+    workspace = workspaceHandle.workspace;
     const secrets = secretVariants(credential);
     const isolatedState = await createIsolatedState(apiKeyEnvVar, credential, env.PATH);
     try {
       const baseCommit = resolveBaseCommit(workspace, isolatedState.root);
-      await assertWorkspaceSafe(ownership, secrets, isolatedState.root);
+      await assertWorkspaceSafe(
+        workspaceHandle,
+        workspaceAuthority,
+        secrets,
+        isolatedState.root,
+      );
 
       const args = [
         "--pure",
@@ -83,20 +89,33 @@ export function createOpenCodeAdapter({
           cwd: workspace,
           env: isolatedState.env,
           timeoutMs,
+          killGraceMs,
+          killWaitMs,
           secrets,
         });
       } catch (err) {
-        await assertWorkspaceSafe(ownership, secrets, isolatedState.root);
+        await assertWorkspaceSafe(
+          workspaceHandle,
+          workspaceAuthority,
+          secrets,
+          isolatedState.root,
+        );
         throw err;
       }
 
-      await assertWorkspaceSafe(ownership, secrets, isolatedState.root, result.secretExposed);
+      await assertWorkspaceSafe(
+        workspaceHandle,
+        workspaceAuthority,
+        secrets,
+        isolatedState.root,
+        result.secretExposed,
+      );
+
+      if (result.processError) throw result.processError;
 
       if (result.timedOut) {
         throw new TimeoutError(timeoutMs);
       }
-
-      if (result.processError) throw result.processError;
 
       if (result.exitCode !== 0) {
         throw new CliFailureError(`${binary} exited with code ${result.exitCode}`, {
@@ -110,8 +129,8 @@ export function createOpenCodeAdapter({
       const usage = result.protocol.result(binary);
       const rawDiff = computeDiff(workspace, baseCommit, isolatedState.root);
       if (containsSecret(rawDiff, secrets)) {
-        await discardOwnedWorkspace(ownership);
-        throw new CredentialExposureError("credential exposure detected; workspace removed");
+        await containCredentialExposure(workspaceAuthority, workspaceHandle);
+        throw new CredentialExposureError("credential exposure detected; workspace contained");
       }
 
       return {
@@ -157,11 +176,21 @@ async function createIsolatedState(apiKeyEnvVar, credential, toolPath) {
   };
 }
 
-function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
+function runProcess(
+  spawn,
+  binary,
+  args,
+  { cwd, env, timeoutMs, killGraceMs, killWaitMs, secrets },
+) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(binary, args, {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
     } catch (err) {
       reject(
         new CliFailureError(`failed to start ${binary}: ${redact(errorMessage(err), secrets)}`)
@@ -173,8 +202,7 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
     let stderrTail = "";
     let settled = false;
     let timedOut = false;
-    let forceKillTimer;
-    let settleTimer;
+    const closeState = { closed: false, exitCode: null, signal: null };
     const protocol = createProtocolAccumulator(secrets);
     const stdoutScanner = createSecretScanner(secrets);
     const stderrScanner = createSecretScanner(secrets);
@@ -184,8 +212,6 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
-      clearTimeout(forceKillTimer);
-      clearTimeout(settleTimer);
       protocol.end();
       resolve({
         stdoutLog: boundedRedacted(stdoutLog, secrets, MAX_LOG_CHARS),
@@ -201,21 +227,15 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
 
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        finish(null, "SIGTERM");
-        return;
-      }
-      forceKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          finish(null, "SIGKILL");
-          return;
-        }
-        settleTimer = setTimeout(() => finish(null, "SIGKILL"), 250);
-      }, 2000);
+      void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
+        .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL"))
+        .catch(() =>
+          finish(
+            closeState.exitCode,
+            closeState.signal,
+            new CliFailureError("failed to terminate coding CLI process group"),
+          ),
+        );
     }, timeoutMs);
 
     child.stdout?.on("data", (chunk) => {
@@ -231,15 +251,60 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
     });
 
     child.on("error", (err) => {
-      finish(
-        null,
-        null,
-        new CliFailureError(`${binary} process error: ${redact(errorMessage(err), secrets)}`)
-      );
+      if (!timedOut) {
+        finish(
+          null,
+          null,
+          new CliFailureError(`${binary} process error: ${redact(errorMessage(err), secrets)}`),
+        );
+      }
     });
 
-    child.on("close", finish);
+    child.on("close", (exitCode, signal) => {
+      closeState.closed = true;
+      closeState.exitCode = exitCode;
+      closeState.signal = signal;
+      if (!timedOut) finish(exitCode, signal);
+    });
   });
+}
+
+async function terminateProcessTree(child, closeState, { killGraceMs, killWaitMs }) {
+  const processGroup = process.platform !== "win32" && Number.isInteger(child.pid);
+  signalProcessTree(child, processGroup, "SIGTERM");
+  if (await waitForProcessTreeExit(child, closeState, processGroup, killGraceMs)) return;
+  signalProcessTree(child, processGroup, "SIGKILL");
+  if (!(await waitForProcessTreeExit(child, closeState, processGroup, killWaitMs))) {
+    throw new Error("process group remained alive");
+  }
+}
+
+function signalProcessTree(child, processGroup, signal) {
+  try {
+    if (processGroup) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+}
+
+async function waitForProcessTreeExit(child, closeState, processGroup, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (processGroup ? !processGroupExists(child.pid) : closeState.closed) return true;
+    await delay(Math.min(20, Math.max(1, deadline - Date.now())));
+  } while (Date.now() < deadline);
+  return processGroup ? !processGroupExists(child.pid) : closeState.closed;
+}
+
+function processGroupExists(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 function appendBounded(current, chunk, maxChars) {
@@ -327,6 +392,9 @@ function createProtocolAccumulator(secrets) {
     cacheWriteTokens: 0,
     costUsd: 0,
   };
+  const usageComplete = Object.fromEntries(
+    Object.keys(usage).map((field) => [field, true]),
+  );
 
   function malformed(message, rawTail = "") {
     return new MalformedOutputError(message, {
@@ -381,7 +449,7 @@ function createProtocolAccumulator(secrets) {
       }
       if (event.type === "step_finish") {
         if (openSteps === 0) throw malformed("opencode step finished without a matching start");
-        validateAndAddUsage(event.part, usage, malformed);
+        validateAndAddUsage(event.part, usage, usageComplete, malformed);
         openSteps -= 1;
         sawStepFinish = true;
         return;
@@ -428,7 +496,12 @@ function createProtocolAccumulator(secrets) {
       if (!sawStepFinish || openSteps !== 0 || lastType !== "step_finish") {
         throw malformed("opencode output did not end in a completed step");
       }
-      return usage;
+      return Object.fromEntries(
+        Object.entries(usage).map(([field, value]) => [
+          field,
+          usageComplete[field] ? value : null,
+        ]),
+      );
     },
   };
 }
@@ -445,27 +518,39 @@ function validatePart(part, expectedType, eventSessionID, malformed) {
   }
 }
 
-function validateAndAddUsage(part, usage, malformed) {
-  const tokens = part.tokens;
-  const values = [
-    part.cost,
-    tokens?.input,
-    tokens?.output,
-    tokens?.reasoning,
-    tokens?.cache?.read,
-    tokens?.cache?.write,
-  ];
-  if (typeof part.reason !== "string" || !values.every(isNonNegativeFiniteNumber)) {
+function validateAndAddUsage(part, usage, usageComplete, malformed) {
+  if (typeof part.reason !== "string") {
+    throw malformed("opencode usage data is malformed");
+  }
+  if (part.tokens !== undefined && part.tokens !== null && !isRecord(part.tokens)) {
+    throw malformed("opencode usage data is malformed");
+  }
+  if (
+    part.tokens?.cache !== undefined &&
+    part.tokens?.cache !== null &&
+    !isRecord(part.tokens.cache)
+  ) {
     throw malformed("opencode usage data is malformed");
   }
 
-  usage.costUsd += part.cost;
-  usage.inputTokens += tokens.input;
-  usage.outputTokens += tokens.output;
-  usage.reasoningTokens += tokens.reasoning;
-  usage.cacheReadTokens += tokens.cache.read;
-  usage.cacheWriteTokens += tokens.cache.write;
-  if (!Object.values(usage).every(Number.isFinite)) {
+  addUsage("costUsd", part.cost, usage, usageComplete, malformed);
+  addUsage("inputTokens", part.tokens?.input, usage, usageComplete, malformed);
+  addUsage("outputTokens", part.tokens?.output, usage, usageComplete, malformed);
+  addUsage("reasoningTokens", part.tokens?.reasoning, usage, usageComplete, malformed);
+  addUsage("cacheReadTokens", part.tokens?.cache?.read, usage, usageComplete, malformed);
+  addUsage("cacheWriteTokens", part.tokens?.cache?.write, usage, usageComplete, malformed);
+}
+
+function addUsage(field, value, usage, usageComplete, malformed) {
+  if (value === undefined || value === null) {
+    usageComplete[field] = false;
+    return;
+  }
+  if (!isNonNegativeFiniteNumber(value)) {
+    throw malformed("opencode usage data is malformed");
+  }
+  if (usageComplete[field]) usage[field] += value;
+  if (!Number.isFinite(usage[field])) {
     throw malformed("opencode usage totals overflowed");
   }
 }
@@ -590,33 +675,60 @@ function nulPaths(output) {
   return output.toString().split("\0").filter(Boolean);
 }
 
-async function assertWorkspaceSafe(ownership, secrets, gitHome, outputExposed = false) {
+async function assertWorkspaceSafe(
+  workspaceHandle,
+  workspaceAuthority,
+  secrets,
+  gitHome,
+  outputExposed = false,
+) {
   if (outputExposed) {
-    await discardOwnedWorkspace(ownership);
-    throw new CredentialExposureError("credential exposure detected; workspace removed");
+    await containCredentialExposure(workspaceAuthority, workspaceHandle);
+    throw new CredentialExposureError("credential exposure detected; workspace contained");
   }
-  if (getOwnedWorkspace(ownership.workspace) !== ownership) {
-    await discardOwnedWorkspace(ownership);
+  if (!(await workspaceAuthority.assertCurrent(workspaceHandle))) {
     throw new CliFailureError("workspace ownership changed during CLI execution");
   }
 
-  const inspection = inspectWorkspaceState(ownership.workspace, secrets, gitHome);
+  const inspection = inspectWorkspaceState(workspaceHandle.workspace, secrets, gitHome);
   if (inspection.exposed) {
-    await discardOwnedWorkspace(ownership);
-    throw new CredentialExposureError("credential exposure detected; workspace removed");
+    await containCredentialExposure(workspaceAuthority, workspaceHandle);
+    throw new CredentialExposureError("credential exposure detected; workspace contained");
   }
   if (inspection.failed) {
-    await discardOwnedWorkspace(ownership);
+    await containCredentialExposure(workspaceAuthority, workspaceHandle);
     throw new CliFailureError("failed to inspect workspace for credential exposure");
   }
 }
 
-async function discardOwnedWorkspace(ownership) {
+async function containCredentialExposure(workspaceAuthority, workspaceHandle) {
   try {
-    if (!(await removeOwnedWorkspace(ownership))) throw new Error("workspace ownership changed");
+    await workspaceAuthority.containCredentialExposure(workspaceHandle);
   } catch {
-    throw new CliFailureError("failed to remove contaminated workspace");
+    throw new CliFailureError("failed to contain contaminated workspace");
   }
+}
+
+function createTemporaryWorkspaceAuthority() {
+  return {
+    async resolve(workspace) {
+      const ownership = getOwnedWorkspace(workspace);
+      if (!ownership) {
+        throw new CliFailureError(
+          "workspace must be created by createIsolatedGitWorkspace in this process",
+        );
+      }
+      return { workspace: ownership.workspace, ownership };
+    },
+    async assertCurrent(handle) {
+      return getOwnedWorkspace(handle.workspace) === handle.ownership;
+    },
+    async containCredentialExposure(handle) {
+      if (!(await removeOwnedWorkspace(handle.ownership))) {
+        throw new Error("workspace ownership changed");
+      }
+    },
+  };
 }
 
 function computeDiff(workspace, baseCommit, gitHome) {

@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+
+import pg from "pg";
+import {
+  createCodingTool,
+  createCostEventStore,
+  createRunWorkspaceService,
+} from "../coding-adapter/src/index.js";
+import { InvalidRequestError } from "../coding-adapter/src/errors.js";
+
+const { Pool } = pg;
+const MAX_REQUEST_BYTES = 1024 * 1024;
+
+let pool;
+try {
+  const request = await readRequest(process.stdin);
+  const databaseUrl = requiredEnv("DATABASE_URL");
+  const workspaceRoot = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
+  pool = new Pool({ connectionString: databaseUrl, application_name: "orbit-coding-tool" });
+  const workspaceService = createRunWorkspaceService({ pool, workspaceRoot });
+
+  let result;
+  if (request.command === "start_run_workspace") {
+    requireExactKeys(request, ["command", "runId"]);
+    result = { workspace: await workspaceService.startRunWorkspace(request.runId) };
+  } else if (request.command === "delegate_coding_task") {
+    requireExactKeys(request, ["agentId", "command", "runId", "task", "workspace"]);
+    const costEventStore = createCostEventStore({ pool });
+    const timeoutMs = optionalPositiveInteger(
+      process.env.ORBITFLOW_CODING_TIMEOUT_MS,
+      "ORBITFLOW_CODING_TIMEOUT_MS",
+    );
+    const adapterOptions = {
+      env: process.env,
+      ...(process.env.ORBITFLOW_OPENCODE_BINARY
+        ? { binary: process.env.ORBITFLOW_OPENCODE_BINARY }
+        : {}),
+      ...(process.env.ORBITFLOW_OPENCODE_MODEL
+        ? { model: process.env.ORBITFLOW_OPENCODE_MODEL }
+        : {}),
+      ...(timeoutMs ? { timeoutMs } : {}),
+    };
+    const tool = createCodingTool({
+      runId: request.runId,
+      agentId: request.agentId,
+      workspaceService,
+      costEventStore,
+      adapterOptions,
+    });
+    result = await tool.delegate_coding_task(request.task, request.workspace);
+  } else {
+    throw new InvalidRequestError("unknown coding-tool command");
+  }
+  writeResponse({ ok: true, result });
+} catch (error) {
+  writeResponse({ ok: false, error: structuredError(error) });
+  process.exitCode = 1;
+} finally {
+  if (pool) {
+    try {
+      await pool.end();
+    } catch {}
+  }
+}
+
+async function readRequest(stream) {
+  let contents = "";
+  for await (const chunk of stream) {
+    contents += chunk;
+    if (Buffer.byteLength(contents) > MAX_REQUEST_BYTES) {
+      throw new InvalidRequestError("coding-tool request is too large");
+    }
+  }
+  let value;
+  try {
+    value = JSON.parse(contents);
+  } catch {
+    throw new InvalidRequestError("coding-tool request must be one JSON object");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new InvalidRequestError("coding-tool request must be one JSON object");
+  }
+  return value;
+}
+
+function requireExactKeys(value, expected) {
+  const actual = Object.keys(value).sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new InvalidRequestError("coding-tool request has unexpected fields");
+  }
+}
+
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) throw new InvalidRequestError(`${name} is required`);
+  return value;
+}
+
+function optionalPositiveInteger(value, name) {
+  if (value === undefined) return null;
+  if (!/^[1-9]\d*$/.test(value)) throw new InvalidRequestError(`${name} must be a positive integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new InvalidRequestError(`${name} is too large`);
+  return parsed;
+}
+
+function structuredError(error) {
+  const result = {
+    code: typeof error?.code === "string" ? error.code : "internal_failure",
+    message: typeof error?.message === "string" ? error.message.slice(0, 1_000) : "coding tool failed",
+  };
+  if (Number.isInteger(error?.exitCode)) result.exitCode = error.exitCode;
+  if (typeof error?.signal === "string") result.signal = error.signal;
+  if (Number.isInteger(error?.timeoutMs)) result.timeoutMs = error.timeoutMs;
+  if (typeof error?.stderrTail === "string") result.stderrTail = error.stderrTail.slice(-4_000);
+  if (typeof error?.stdoutTail === "string") result.stdoutTail = error.stdoutTail.slice(-4_000);
+  if (typeof error?.rawTail === "string") result.rawTail = error.rawTail.slice(-500);
+  return result;
+}
+
+function writeResponse(value) {
+  let serialized = JSON.stringify(value);
+  const credential = process.env.OPENROUTER_API_KEY;
+  if (credential) serialized = serialized.split(credential).join("[REDACTED]");
+  process.stdout.write(`${serialized}\n`);
+}

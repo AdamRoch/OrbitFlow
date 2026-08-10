@@ -73,6 +73,7 @@ test("delegate_coding_task builds a pure command with a minimal environment", as
     "XDG_STATE_HOME",
   ]);
   assert.deepEqual(capturedOpts.stdio, ["ignore", "pipe", "pipe"]);
+  assert.equal(capturedOpts.detached, process.platform !== "win32");
 });
 
 test("delegate_coding_task cleans isolated OpenCode state", async () => {
