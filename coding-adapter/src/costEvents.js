@@ -1,13 +1,9 @@
 import { PersistenceError } from "./errors.js";
-
-const USAGE_FIELDS = [
-  "inputTokens",
-  "outputTokens",
-  "reasoningTokens",
-  "cacheReadTokens",
-  "cacheWriteTokens",
-  "costUsd",
-];
+import {
+  isDatabaseCost,
+  isDatabaseTokenCount,
+  TOKEN_USAGE_FIELDS,
+} from "./usage.js";
 
 export function createCostEventStore({ pool } = {}) {
   if (!pool || typeof pool.query !== "function") {
@@ -77,11 +73,14 @@ function validateUsage(usage) {
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
     throw new PersistenceError("coding-tool usage is malformed");
   }
-  for (const field of USAGE_FIELDS) {
+  for (const field of TOKEN_USAGE_FIELDS) {
     const value = usage[field];
-    if (value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+    if (value !== null && !isDatabaseTokenCount(value)) {
       throw new PersistenceError("coding-tool usage is malformed");
     }
+  }
+  if (usage.costUsd !== null && !isDatabaseCost(usage.costUsd)) {
+    throw new PersistenceError("coding-tool usage is malformed");
   }
 }
 

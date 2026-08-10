@@ -114,6 +114,7 @@ function structuredError(error) {
   if (Number.isInteger(error?.exitCode)) result.exitCode = error.exitCode;
   if (typeof error?.signal === "string") result.signal = error.signal;
   if (Number.isInteger(error?.timeoutMs)) result.timeoutMs = error.timeoutMs;
+  if (Number.isInteger(error?.limitBytes)) result.limitBytes = error.limitBytes;
   if (typeof error?.stderrTail === "string") result.stderrTail = error.stderrTail.slice(-4_000);
   if (typeof error?.stdoutTail === "string") result.stdoutTail = error.stdoutTail.slice(-4_000);
   if (typeof error?.rawTail === "string") result.rawTail = error.rawTail.slice(-500);

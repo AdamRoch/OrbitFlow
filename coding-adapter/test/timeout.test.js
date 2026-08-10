@@ -3,60 +3,59 @@ import assert from "node:assert/strict";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
+import {
+  inspectProcessGroup,
+  waitForProcessGroupAbsence,
+} from "../src/processGroup.js";
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
-import { makeFakeChild } from "./fakeChild.js";
-import { TEST_CREDENTIAL } from "./protocolFixture.js";
+import { HANGING_OPENCODE, TEST_CREDENTIAL } from "./testAdapter.js";
 
-test("a CLI that never exits is killed and rejected as TimeoutError", async () => {
-  const workspace = await createIsolatedGitWorkspace();
-  let fakeChild;
-  const fakeSpawn = () => {
-    fakeChild = makeFakeChild();
-    // never emits 'close' -- simulates a hang
-    return fakeChild;
-  };
-
-  const adapter = createOpenCodeAdapter({
-    spawn: fakeSpawn,
-    env: { OPENROUTER_API_KEY: TEST_CREDENTIAL },
-    timeoutMs: 20,
-  });
-
-  await assert.rejects(
-    () => adapter.delegate_coding_task("task", workspace),
-    (err) => err.code === "timeout" && err.timeoutMs === 20
-  );
-  assert.equal(fakeChild.killed, true);
-  assert.deepEqual(fakeChild.killSignals, ["SIGTERM"]);
-});
-
-test("timeout kills the executable CLI's complete process group", async () => {
+test("timeout repeatedly kills the executable CLI complete process group", async () => {
   if (process.platform === "win32") return;
   const workspace = await createIsolatedGitWorkspace();
   const control = await mkdtemp(path.join(tmpdir(), "coding-adapter-timeout-proof-"));
-  const pidFile = path.join(control, "descendant.pid");
-  const binary = fileURLToPath(new URL("../fixtures/hanging-opencode.mjs", import.meta.url));
-  const adapter = createOpenCodeAdapter({
-    binary,
-    env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
-    timeoutMs: 80,
-    killGraceMs: 40,
-    killWaitMs: 1_000,
-  });
-
   try {
-    await assert.rejects(
-      () => adapter.delegate_coding_task(pidFile, workspace),
-      (error) => error.code === "timeout" && error.timeoutMs === 80,
-    );
-    await access(pidFile);
-    const descendantPid = Number(await readFile(pidFile, "utf8"));
-    assert.equal(processExists(descendantPid), false);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const pidFile = path.join(control, `descendant-${attempt}.pid`);
+      const adapter = createOpenCodeAdapter({
+        binary: HANGING_OPENCODE,
+        env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
+        timeoutMs: 300,
+        killGraceMs: 100,
+        killWaitMs: 2_000,
+      });
+      await assert.rejects(
+        () => adapter.delegate_coding_task(pidFile, workspace),
+        (error) => error.code === "timeout" && error.timeoutMs === 300,
+      );
+      await access(pidFile);
+      const descendantPid = Number(await readFile(pidFile, "utf8"));
+      assert.equal(processExists(descendantPid), false, `attempt ${attempt} left a descendant`);
+    }
   } finally {
     await rm(control, { recursive: true, force: true });
   }
+});
+
+test("process-group inspection distinguishes absence from uninspectable liveness", async () => {
+  const errorFor = (code) => Object.assign(new Error(code), { code });
+  const absent = inspectProcessGroup(123, () => {
+    throw errorFor("ESRCH");
+  });
+  const uninspectable = inspectProcessGroup(
+    123,
+    () => {
+      throw errorFor("EPERM");
+    },
+    () => "uninspectable",
+  );
+  assert.deepEqual(absent, { state: "absent", code: "ESRCH" });
+  assert.deepEqual(uninspectable, { state: "uninspectable", code: "EPERM" });
+  await assert.rejects(
+    () => waitForProcessGroupAbsence(123, 10, { inspect: () => uninspectable }),
+    /uninspectable \(EPERM\)/,
+  );
 });
 
 function processExists(pid) {

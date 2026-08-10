@@ -52,20 +52,27 @@ Each run owns `run-<id>` directly below the canonical root. A root-side
 ownership record binds the run to the workspace, Git directory, and marker by
 device and inode. Every use verifies the run still exists, the requested path
 is exact, no boundary component is a symlink, and those identities are
-unchanged. Replacement or deletion fails closed. Credential contamination is
-retained under `.orbitflow/quarantine` instead of deleting a live workspace.
+unchanged. The credential-free execution boundary then changes into that path,
+validates the resulting current directory by device and inode, and requests the
+key over IPC only after the identity is established. All credential-bearing
+work and all Git, scan, and diff operations use that current directory through
+relative paths. Replacement or deletion fails closed. Credential contamination
+is retained under `.orbitflow/quarantine` instead of deleting a live workspace.
 There is intentionally no cleanup command in FACT-12.
 
 OpenCode receives an explicit environment allowlist: the selected key, tool
 `PATH`, isolated home/state paths, and fixed safety switches. The adapter parses
 the complete NDJSON stream, validates every event, scans all output and
-workspace/Git state for literal and reversible credential forms, and kills the
-complete POSIX process group on timeout.
+workspace/Git state for literal and reversible credential forms, applies one
+10 MiB cap to the complete tracked plus untracked diff, and kills the complete
+POSIX process group on timeout. Unknown process-group liveness fails closed.
 
 `cost_events` stores input, output, cache-read, cache-write, and computed cost
 against the calling run and agent. `NULL` means OpenCode omitted that field; `0`
 means OpenCode explicitly reported zero. Reasoning tokens remain in the returned
 usage object because the FACT-6 table does not define a reasoning-token column.
+Every token value and aggregate must be a safe nonnegative integer within
+PostgreSQL `BIGINT`; cost must be finite, nonnegative, and fit `NUMERIC(18,8)`.
 
 ## Local proof
 
@@ -93,9 +100,10 @@ ORBITFLOW_ENABLE_REAL_OPENCLAW_CODING_PROOF=1 npm run fact12:proof
 
 Each gate requires `OPENROUTER_API_KEY` and can spend provider credit. The first
 runs the production adapter through pinned real OpenCode. The second runs a real
-OpenClaw agent that invokes the production CLI through `exec`; its nested coding
-operation uses the deterministic fake so the proof isolates the OpenClaw tool
-boundary. With neither gate set, no provider request is made.
+OpenClaw 2026.4.15 agent and fails before the request if that exact supported
+version is unavailable. It invokes the production CLI through `exec`; its
+nested coding operation uses the deterministic fake so the proof isolates the
+OpenClaw tool boundary. With neither gate set, no provider request is made.
 
 ## Trust boundary
 

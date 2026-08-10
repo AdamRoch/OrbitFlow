@@ -72,9 +72,9 @@ tool call before an agent even sees the error.
 `coding-adapter/src/openCodeAdapter.js` exports `createOpenCodeAdapter()`
 implementing `delegate_coding_task(task, workspace) -> {diff, log, usage}`
 per PRD §5. Plurality is deferred (PRD §5, §6 stretch) -- the factory
-function shape (`spawn`, `apiKeyEnvVar`, `model`, `binary` all injectable)
-exists so a second adapter can be added later without reworking this one,
-without building a plugin framework now. The workspace must come from
+function shape keeps the adapter behind one interface, so a second adapter can
+be added later without reworking callers or building a plugin framework now.
+The workspace must come from
 `createIsolatedGitWorkspace()`, which registers a canonical temporary root and
 an ownership marker before the CLI can receive the provider credential.
 
@@ -88,14 +88,25 @@ an ownership marker before the CLI can receive the provider credential.
   group is terminated (`SIGTERM`, then `SIGKILL` after the grace period).
 - `MalformedOutputError` -- exit 0 but stdout didn't parse as the expected
   NDJSON event stream, has invalid usage, or lacks a terminal completed step.
+- `OutputTooLargeError` -- the aggregate tracked and untracked diff exceeded
+  the 10 MiB review limit.
 - `CredentialExposureError` -- the evaluator key or a reversible Base64, hex,
   or URL encoding appeared in CLI output or workspace state. No affected
   output is returned. Temporary proof workspaces are removed; durable run
   workspaces are retained in quarantine.
 
+The credential-free execution boundary changes into the validated workspace,
+checks the resulting current directory's device and inode, and only then asks
+the parent for the provider key over IPC. Git inspection, OpenCode, credential
+scanning, and diff generation all use that established current directory with
+relative paths. A path rename or replacement before handoff gets no key. A
+replacement after entry cannot redirect the established directory.
+
 The protocol stream is parsed in full while the presentation log remains
-bounded. Returned logs, diffs, error messages, and error details are redacted,
-and diff generation does not stage changes or write Git blobs. Before success,
+bounded. Token fields and their sums must be safe nonnegative integers within
+PostgreSQL `BIGINT`; cost must fit `NUMERIC(18,8)`. Returned logs, diffs, error
+messages, and error details are redacted, and diff generation does not stage
+changes or write Git blobs. Before success,
 the adapter scans literal and reversible credential forms across every file,
 ignored path, symlink, and decoded Git object in the complete owned workspace.
 Credential exposure containment acts only through the registered workspace
@@ -114,9 +125,12 @@ The production adapter retains the Phase 0 trust boundary: it assumes
 evaluator-authored tasks and every program they invoke are trusted. FACT-12
 also accepts a durable workspace created by the run workspace service, with its
 authority revalidated at each use. It is not a sandbox for hostile task code.
-Production timeout handling supervises the complete child process group;
-hostile execution still requires an operating-system sandbox outside this
-adapter. See `../docs/coding-tool-adapter.md` for the production runbook.
+Production timeout handling supervises the complete child process group. A
+permission or unknown liveness result fails closed; on macOS an independent
+process-table check may confirm that a group is actually absent after `kill(0)`
+returns `EPERM`. Hostile execution still requires an operating-system sandbox
+outside this adapter. See `../docs/coding-tool-adapter.md` for the production
+runbook.
 
 ## Proof
 

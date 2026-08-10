@@ -45,7 +45,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT12_PROOF_DATABASE);
     await migratePostgres({ databaseUrl, log: () => {} });
     const root = await realpath(configuredRoot);
-    const fixtures = await seedFixtures(pool, 11);
+    const fixtures = await seedFixtures(pool, 13);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
     const costEventStore = createCostEventStore({ pool });
     const adapterOptions = {
@@ -332,6 +332,55 @@ test("FACT-12 production coding-tool contract", async (t) => {
         (error) => error.code === "workspace_invalid",
       );
       await assert.rejects(access(deletedWorkspace), { code: "ENOENT" });
+    });
+
+    await t.test("rejects a spawn-boundary replacement before credential handoff", async () => {
+      const runId = fixtures.runIds[11];
+      const workspace = await workspaceService.startRunWorkspace(runId);
+      const retained = `${workspace}-retained`;
+      const replacement = await mkdtemp(path.join(tmpdir(), "orbitfactory-fact12-boundary-"));
+      const replacementTool = createCodingTool({
+        runId,
+        agentId: fixtures.agentId,
+        workspaceService,
+        costEventStore,
+        adapterOptions: {
+          ...adapterOptions,
+          async beforeCredential() {
+            await rename(workspace, retained);
+            await symlink(replacement, workspace, "dir");
+          },
+        },
+      });
+      try {
+        await assert.rejects(
+          () => replacementTool.delegate_coding_task("capture-command", workspace),
+          (error) => error.code === "cli_failure" && /credential handoff/.test(error.message),
+        );
+        await assert.rejects(access(path.join(replacement, "command-capture.json")), { code: "ENOENT" });
+        await assert.rejects(access(path.join(retained, "command-capture.json")), { code: "ENOENT" });
+        const persisted = await pool.query(
+          "SELECT count(*)::int AS count FROM cost_events WHERE run_id = $1",
+          [runId],
+        );
+        assert.equal(persisted.rows[0].count, 0);
+      } finally {
+        await rm(replacement, { recursive: true, force: true });
+      }
+    });
+
+    await t.test("rejects unsafe provider usage before cost persistence", async () => {
+      const runId = fixtures.runIds[12];
+      const workspace = await workspaceService.startRunWorkspace(runId);
+      await assert.rejects(
+        () => toolFor(runId).delegate_coding_task("invalid-usage:fractional", workspace),
+        (error) => error.code === "malformed_output",
+      );
+      const persisted = await pool.query(
+        "SELECT count(*)::int AS count FROM cost_events WHERE run_id = $1",
+        [runId],
+      );
+      assert.equal(persisted.rows[0].count, 0);
     });
   } finally {
     await pool.end();

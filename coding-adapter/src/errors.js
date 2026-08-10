@@ -40,6 +40,15 @@ export class MalformedOutputError extends Error {
   }
 }
 
+export class OutputTooLargeError extends Error {
+  constructor(limitBytes) {
+    super(`workspace diff exceeded the ${limitBytes}-byte output limit`);
+    this.name = "OutputTooLargeError";
+    this.code = "output_too_large";
+    this.limitBytes = limitBytes;
+  }
+}
+
 export class CredentialExposureError extends Error {
   constructor(message) {
     super(message);

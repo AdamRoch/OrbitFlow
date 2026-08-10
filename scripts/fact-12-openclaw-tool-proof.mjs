@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,10 +10,12 @@ import pg from "pg";
 import { createRunWorkspaceService } from "../coding-adapter/src/index.js";
 import {
   OPENCLAW_MODEL,
+  OPENCLAW_VERSION,
   OPENROUTER_BASE_URL,
   initializeOpenClaw,
   normalizeUsage,
   parseCommandJson,
+  parseOpenClawVersion,
   runOpenClaw,
   setConfig,
 } from "../src/runtime/openclaw-runtime-spike.mjs";
@@ -30,6 +33,15 @@ const pool = new Pool({ connectionString: databaseUrl, application_name: "fact12
 const runtimeRoot = await mkdtemp(path.join(tmpdir(), "orbitfactory-fact12-openclaw-"));
 
 try {
+  const openClawVersion = parseOpenClawVersion(
+    execFileSync("openclaw", ["--version"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin" },
+    }),
+  );
+  if (openClawVersion !== OPENCLAW_VERSION) {
+    throw new Error("supported OpenClaw 2026.4.15 is unavailable");
+  }
   const ids = await seedProof(pool);
   const workspaceService = createRunWorkspaceService({ pool, workspaceRoot });
   const codingWorkspace = await workspaceService.startRunWorkspace(ids.runId);
@@ -114,6 +126,7 @@ try {
       proof: "real-openclaw-tool-call",
       structuredInvocation: true,
       usagePersisted: true,
+      openClawVersion,
       openClawTokens: turn.usage.total,
     })}\n`,
   );

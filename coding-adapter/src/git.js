@@ -33,7 +33,9 @@ export function runSafeGit(
     }
   );
   if (result.error || !allowedExitCodes.includes(result.status)) {
-    throw new Error("isolated git command failed");
+    const error = new Error("isolated git command failed");
+    if (result.error?.code === "ENOBUFS") error.code = "GIT_OUTPUT_LIMIT";
+    throw error;
   }
   return result.stdout ?? Buffer.alloc(0);
 }
