@@ -350,7 +350,7 @@ async function writeAgentWorkspace(workspaceDir, agent) {
   return files;
 }
 
-async function setConfig(stateDir, configPath, value) {
+export async function setConfig(stateDir, configPath, value) {
   const result = await runOpenClaw(
     ["config", "set", configPath, JSON.stringify(value), "--strict-json"],
     { stateDir, timeoutMs: 30_000 },
@@ -381,7 +381,7 @@ function openRouterProviderConfig(baseUrl) {
   };
 }
 
-async function initializeOpenClaw(runtimeDir) {
+export async function initializeOpenClaw(runtimeDir) {
   if (!process.env.OPENROUTER_API_KEY) {
     throw new OpenClawContractError("Missing required credential source: OPENROUTER_API_KEY");
   }
@@ -875,7 +875,7 @@ async function runOpenRouterDiagnostic({ stateDir, generatedOpenRouterBaseUrl, o
   return { ...diagnostic, acceptanceCriteria };
 }
 
-async function writeChecksums(evidenceDir) {
+export async function writeChecksums(evidenceDir) {
   const files = (await listFiles(evidenceDir)).filter((file) => file !== "sha256sums.txt");
   const lines = [];
   for (const file of files) {

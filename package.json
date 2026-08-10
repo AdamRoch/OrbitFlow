@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
+    "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs",
     "test": "node --test"
   },
   "engines": {
