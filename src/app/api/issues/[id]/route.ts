@@ -16,6 +16,7 @@ import {
   requireTitle,
 } from "@/lib/validate";
 import type { UpdateIssueInput } from "@/lib/types";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 /**
  * GET /api/issues/:id — `:id` may be the numeric id or an identifier such as
@@ -59,6 +60,7 @@ export async function PATCH(req: Request, ctx: RouteContext) {
 
     const updated = updateIssue(db, project, id, args);
     if (!updated) return notFound("issue not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: updated.id, runId: null, agentId: null });
     return ok(updated);
   } catch (err) {
     return handleError(err);
@@ -74,8 +76,11 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
     const db = getDb();
     const project = requireProject(db);
     const { id } = await ctx.params;
+    const existing = getIssue(db, project, id);
+    if (!existing) return notFound("issue not found");
     const deleted = deleteIssue(db, project, id);
     if (!deleted) return notFound("issue not found");
+    publishLocalStateEvent({ type: "ticket.deleted", ticketId: existing.id, runId: null, agentId: null });
     return noContent();
   } catch (err) {
     return handleError(err);

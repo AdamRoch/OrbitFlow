@@ -2,62 +2,36 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-
-export const LIVE_REFRESH_INTERVAL_MS = 4_000;
+import { parseStateEvent } from "@/lib/state-events";
 
 /**
- * Keeps a server-rendered view current without doing a full page reload.
- * Next merges the refreshed Server Component payload into the existing tree,
- * preserving client state, browser scroll position, and in-progress form input.
- *
- * Hidden tabs do no work. Returning to a visible tab refreshes immediately,
- * then resumes the normal interval so changes made while away appear at once.
+ * Re-fetches the authoritative Server Component snapshot after a state-stream
+ * wake-up. The stream has no replay contract, so opening and reconnecting are
+ * also explicit snapshot boundaries.
  */
-export function LiveRefresh({
-  intervalMs = LIVE_REFRESH_INTERVAL_MS,
-}: {
-  intervalMs?: number;
-}) {
+export function LiveRefresh() {
   const router = useRouter();
 
   useEffect(() => {
-    let intervalId: number | undefined;
-
-    const stop = () => {
-      if (intervalId === undefined) return;
-      window.clearInterval(intervalId);
-      intervalId = undefined;
-    };
-
-    const start = () => {
-      if (
-        intervalId !== undefined ||
-        document.visibilityState !== "visible"
-      ) {
-        return;
-      }
-      intervalId = window.setInterval(() => {
-        router.refresh();
-      }, intervalMs);
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        router.refresh();
-        start();
-      } else {
-        stop();
+    const stream = new EventSource("/api/state-stream");
+    const refreshSnapshot = () => router.refresh();
+    const onState = (event: MessageEvent<string>) => {
+      try {
+        if (parseStateEvent(JSON.parse(event.data))) refreshSnapshot();
+      } catch {
+        // Invalid stream data cannot change client state or authorize a write.
       }
     };
 
-    start();
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    stream.addEventListener("open", refreshSnapshot);
+    stream.addEventListener("state", onState as EventListener);
 
     return () => {
-      stop();
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      stream.removeEventListener("open", refreshSnapshot);
+      stream.removeEventListener("state", onState as EventListener);
+      stream.close();
     };
-  }, [intervalMs, router]);
+  }, [router]);
 
   return null;
 }
