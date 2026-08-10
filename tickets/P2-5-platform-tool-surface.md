@@ -2,7 +2,7 @@
 
 **Phase:** 2 · **Tag:** [MUST] · **Depends:** P0-2 findings, P1-4
 
-Small CLI (or local HTTP) that OpenClaw agents call: `create_ticket`, `update_ticket`, `post_message` (incl. `type=question`), `list_tickets` (PRD §5). All calls write DB rows; data flow is one-directional (agent → DB → WebSocket → UI). No scraping.
+Implement the platform-owned CLI contract in PRD §5. Follow `docs/fact-2-platform-tool-spike.md` for the proven `TOOLS.md` registration method, supported `exec` integration, structured invocation capture, and PATH and host-execution constraints.
 
 ## Acceptance criteria
 
