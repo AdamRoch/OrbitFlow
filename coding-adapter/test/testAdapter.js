@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
 
-export const TEST_CREDENTIAL = "or-secret-1234567890";
+export const TEST_CREDENTIAL = "or-secret-1234567890"; // gitleaks:allow, deterministic fake
 export const FAKE_OPENCODE = fileURLToPath(
   new URL("../fixtures/fake-opencode.mjs", import.meta.url),
 );

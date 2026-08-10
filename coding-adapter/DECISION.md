@@ -74,11 +74,19 @@ implementing `delegate_coding_task(task, workspace) -> {diff, log, usage}`
 per PRD §5. Plurality is deferred (PRD §5, §6 stretch) -- the factory
 function shape keeps the adapter behind one interface, so a second adapter can
 be added later without reworking callers or building a plugin framework now.
-The workspace must come from
-`createIsolatedGitWorkspace()`, which registers a canonical temporary root and
-an ownership marker before the CLI can receive the provider credential.
+The production workspace comes from `createRunWorkspaceService()`, which binds
+one durable Git workspace to a verified `workflow_runs` row and filesystem
+identity. `createIsolatedGitWorkspace()` remains only for the Phase 0 and unit
+proof harnesses.
 
 ## Structured failures (`src/errors.js`)
+
+`PUBLIC_ERROR_RESPONSE_SCHEMA` is the authoritative executable-tool response
+schema. Its code enum contains `internal_failure`, `missing_credentials`,
+`cli_failure`, `timeout`, `malformed_output`, `output_too_large`,
+`credential_exposure`, `workspace_invalid`, `persistence_failure`, and
+`invalid_request`. Runtime serialization imports that schema rather than
+accepting arbitrary error codes.
 
 - `MissingCredentialsError` -- required env var absent, checked before
   spawning (no wasted process/network call).
@@ -124,12 +132,16 @@ objects, and fsmonitor disabled.
 
 Every recursive cleanup revalidates the temporary root and ownership marker by
 their original filesystem device and inode immediately before removal. Durable
-run cleanup first requires the `workflow_runs` row to be absent, moves the
-validated directory into the identity-tracked control area, and starts a
-credential-free cleanup boundary inside it. The boundary verifies the directory
-identity from its established working directory before removing contents. The
-ownership record is removed last. A renamed or substituted path produces a
-structured failure and is retained.
+run cleanup first requires the `workflow_runs` row to be absent, closes
+delegation admission for that run, cancels and joins every admitted provider
+process, moves the validated directory into the identity-tracked control area,
+and starts a credential-free cleanup boundary inside it. Cross-process
+admission uses a PostgreSQL shared advisory lock and a deletion notification;
+cleanup takes the exclusive form of the same lock before touching the
+workspace. The boundary verifies the directory identity from its established
+working directory before removing contents. The ownership record is removed
+last. A renamed or substituted path produces a structured failure and is
+retained.
 
 ## Trust boundary
 

@@ -63,7 +63,10 @@ export function createOpenCodeAdapter({
   workspaceAuthority = createTemporaryWorkspaceAuthority(),
   beforeCredential,
 } = {}) {
-  async function delegate_coding_task(task, workspace) {
+  async function delegate_coding_task(task, workspace, { signal } = {}) {
+    if (signal?.aborted) {
+      throw new CliFailureError("coding delegation cancelled because run workspace is being deleted");
+    }
     const credential = env[apiKeyEnvVar];
     if (typeof credential !== "string" || credential.length === 0) {
       throw new MissingCredentialsError(apiKeyEnvVar);
@@ -91,6 +94,7 @@ export function createOpenCodeAdapter({
           killGraceMs,
           killWaitMs,
           secrets,
+          signal,
         });
         if (!(await workspaceAuthority.assertCurrent(workspaceHandle))) {
           throw new CliFailureError("workspace ownership changed during CLI execution");
@@ -156,6 +160,7 @@ function runAnchoredBoundary({
   killGraceMs,
   killWaitMs,
   secrets,
+  signal,
 }) {
   const identity = workspaceIdentity(workspaceHandle);
   return new Promise((resolve, reject) => {
@@ -186,6 +191,7 @@ function runAnchoredBoundary({
       if (settled) return;
       settled = true;
       clearTimeout(overallTimer);
+      signal?.removeEventListener("abort", abortForDeletion);
       callback(value);
     };
 
@@ -221,6 +227,17 @@ function runAnchoredBoundary({
         fail(new CliFailureError("coding execution boundary did not return a bounded result"));
       })();
     }, overallTimeoutMs);
+
+    const abortForDeletion = () => {
+      try {
+        if (child.connected) child.send({ type: "abort" });
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+    signal?.addEventListener("abort", abortForDeletion, { once: true });
+    if (signal?.aborted) abortForDeletion();
 
     child.stdout?.on("data", (chunk) => {
       stdoutTail = appendBounded(stdoutTail, chunk.toString(), MAX_STDERR_CHARS);
@@ -366,6 +383,7 @@ export async function executeAnchoredOpenCode({
   killGraceMs,
   killWaitMs,
   onCliStart,
+  signal,
 }) {
   const secrets = secretVariants(credential);
   const env = { ...openCodeEnv, [apiKeyEnvVar]: credential };
@@ -391,6 +409,7 @@ export async function executeAnchoredOpenCode({
     killWaitMs,
     secrets,
     onCliStart,
+    signal,
   });
 
   assertAnchoredWorkspaceSafe(secrets, stateRoot, result.secretExposed);
@@ -450,7 +469,7 @@ function runProcess(
   spawn,
   binary,
   args,
-  { cwd, env, timeoutMs, killGraceMs, killWaitMs, secrets, onCliStart },
+  { cwd, env, timeoutMs, killGraceMs, killWaitMs, secrets, onCliStart, signal },
 ) {
   return new Promise((resolve, reject) => {
     let child;
@@ -472,22 +491,25 @@ function runProcess(
     let stderrTail = "";
     let settled = false;
     let timedOut = false;
+    let spawned = false;
+    let terminating = false;
     const closeState = { closed: false, exitCode: null, signal: null };
     const protocol = createProtocolAccumulator(secrets);
     const stdoutScanner = createSecretScanner(secrets);
     const stderrScanner = createSecretScanner(secrets);
     const overlap = longestSecret(secrets);
 
-    const finish = (exitCode, signal, processError = null) => {
+    const finish = (exitCode, exitSignal, processError = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
+      signal?.removeEventListener("abort", abortForDeletion);
       protocol.end();
       resolve({
         stdoutLog: boundedRedacted(stdoutLog, secrets, MAX_LOG_CHARS),
         stderrTail: boundedRedacted(stderrTail, secrets, MAX_STDERR_CHARS),
         exitCode,
-        signal,
+        signal: exitSignal,
         timedOut,
         protocol,
         processError,
@@ -496,26 +518,44 @@ function runProcess(
     };
 
     let timeoutTimer;
+    const beginTermination = (processError, { timeout = false } = {}) => {
+      if (terminating || settled) return;
+      terminating = true;
+      timedOut = timeout;
+      clearTimeout(timeoutTimer);
+      void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
+        .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL", processError))
+        .catch((error) =>
+          finish(
+            closeState.exitCode,
+            closeState.signal,
+            new CliFailureError(
+              `failed to terminate coding CLI process group: ${redact(errorMessage(error), secrets)}`,
+            ),
+          ),
+        );
+    };
+    const abortForDeletion = () => {
+      if (!spawned || settled) return;
+      beginTermination(
+        new CliFailureError("coding delegation cancelled because run workspace is being deleted"),
+      );
+    };
     const beginTimeout = () => {
+      spawned = true;
       if (Number.isInteger(child.pid) && typeof onCliStart === "function") {
         onCliStart(child.pid);
       }
+      if (signal?.aborted) {
+        abortForDeletion();
+        return;
+      }
       timeoutTimer = setTimeout(() => {
-        timedOut = true;
-        void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
-          .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL"))
-          .catch((error) =>
-            finish(
-              closeState.exitCode,
-              closeState.signal,
-              new CliFailureError(
-                `failed to terminate coding CLI process group: ${redact(errorMessage(error), secrets)}`,
-              ),
-            ),
-          );
+        beginTermination(null, { timeout: true });
       }, timeoutMs);
     };
 
+    signal?.addEventListener("abort", abortForDeletion, { once: true });
     child.once("spawn", beginTimeout);
 
     child.stdout?.on("data", (chunk) => {
@@ -531,7 +571,7 @@ function runProcess(
     });
 
     child.on("error", (err) => {
-      if (!timedOut) {
+      if (!terminating) {
         finish(
           null,
           null,
@@ -544,7 +584,7 @@ function runProcess(
       closeState.closed = true;
       closeState.exitCode = exitCode;
       closeState.signal = signal;
-      if (!timedOut) finish(exitCode, signal);
+      if (!terminating) finish(exitCode, signal);
     });
   });
 }

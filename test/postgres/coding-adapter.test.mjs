@@ -34,7 +34,7 @@ const FAKE_OPENCODE = fileURLToPath(
 const HANGING_OPENCODE = fileURLToPath(
   new URL("../../coding-adapter/fixtures/hanging-opencode.mjs", import.meta.url),
 );
-const TEST_CREDENTIAL = "fact12-disposable-secret";
+const TEST_CREDENTIAL = "fact12-disposable-secret"; // gitleaks:allow, deterministic fake
 
 test("FACT-12 production coding-tool contract", async (t) => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -48,7 +48,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT12_PROOF_DATABASE);
     await migratePostgres({ databaseUrl, log: () => {} });
     const root = await realpath(configuredRoot);
-    const fixtures = await seedFixtures(pool, 15);
+    const fixtures = await seedFixtures(pool, 16);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
     const costEventStore = createCostEventStore({ pool });
     const adapterOptions = {
@@ -313,6 +313,83 @@ test("FACT-12 production coding-tool contract", async (t) => {
       );
     });
 
+    await t.test("run deletion cancels and joins admitted providers before workspace cleanup", async () => {
+      if (process.platform === "win32") return;
+      const runId = fixtures.runIds[15];
+      let releaseDeletion;
+      let reportDeletionStarted;
+      const deletionStarted = new Promise((resolve) => {
+        reportDeletionStarted = resolve;
+      });
+      const holdDeletion = new Promise((resolve) => {
+        releaseDeletion = resolve;
+      });
+      const delegationService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: configuredRoot,
+      });
+      const coordinatedService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: configuredRoot,
+        async beforeDelegationJoin({ activeCount }) {
+          assert.equal(activeCount, 0);
+          reportDeletionStarted();
+          await holdDeletion;
+        },
+      });
+      const workspace = await delegationService.startRunWorkspace(runId);
+      const pidFile = path.join(workspace, "deletion-race-processes.json");
+      const blockedPidFile = path.join(workspace, "blocked-delegation-processes.json");
+      let credentialHandoffs = 0;
+      const activeTool = createCodingTool({
+        runId,
+        agentId: fixtures.agentId,
+        workspaceService: delegationService,
+        costEventStore,
+        adapterOptions: {
+          binary: HANGING_OPENCODE,
+          env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
+          timeoutMs: 30_000,
+          killGraceMs: 100,
+          killWaitMs: 2_000,
+          beforeCredential() {
+            credentialHandoffs += 1;
+          },
+        },
+      });
+      const activeDelegation = activeTool.delegate_coding_task(pidFile, workspace);
+      const activeFailure = assert.rejects(
+        activeDelegation,
+        (error) =>
+          error.code === "cli_failure" && /cancelled.*workspace.*deleted/.test(error.message),
+      );
+      await waitForPath(pidFile);
+      const { processGroupId, descendantPid } = JSON.parse(await readFile(pidFile, "utf8"));
+
+      await pool.query("DELETE FROM workflow_runs WHERE id = $1", [runId]);
+      const deletion = coordinatedService.deleteRunWorkspace(runId);
+      await deletionStarted;
+      await access(workspace);
+      await assert.rejects(
+        () => activeTool.delegate_coding_task(blockedPidFile, workspace),
+        (error) => error.code === "persistence_failure",
+      );
+      assert.equal(credentialHandoffs, 1);
+      await assert.rejects(access(blockedPidFile), { code: "ENOENT" });
+
+      releaseDeletion();
+      assert.equal(await deletion, true);
+      await activeFailure;
+      assert.equal(inspectProcessGroup(processGroupId).state, "absent");
+      assert.equal(processExists(descendantPid), false);
+      await assert.rejects(access(workspace), { code: "ENOENT" });
+      const persisted = await pool.query(
+        "SELECT count(*)::int AS count FROM cost_events WHERE run_id = $1",
+        [runId],
+      );
+      assert.equal(persisted.rows[0].count, 0);
+    });
+
     await t.test("retains renamed and substituted paths during run-deletion cleanup", async () => {
       const runId = fixtures.runIds[14];
       const workspace = await workspaceService.startRunWorkspace(runId);
@@ -479,6 +556,20 @@ function processExists(pid) {
     if (error?.code === "ESRCH") return false;
     throw error;
   }
+}
+
+async function waitForPath(target, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await access(target);
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${target}`);
 }
 
 function runCodingToolCli(request, env) {

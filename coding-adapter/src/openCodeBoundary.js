@@ -29,6 +29,7 @@ let phase = "waiting_for_configuration";
 let config;
 let baseCommit;
 let activeCredential;
+let executionController;
 
 process.on("message", (message) => {
   void handleMessage(message).catch((error) => finishError(error));
@@ -39,8 +40,12 @@ send({ type: "ready" });
 async function handleMessage(message) {
   if (!message || typeof message !== "object") throw new Error("boundary message is malformed");
   if (message.type === "abort") {
-    phase = "aborted";
-    process.disconnect();
+    if (phase === "executing") {
+      executionController.abort();
+    } else {
+      phase = "aborted";
+      process.disconnect();
+    }
     return;
   }
   if (message.type === "configure" && phase === "waiting_for_configuration") {
@@ -68,10 +73,12 @@ async function handleMessage(message) {
     }
     phase = "executing";
     activeCredential = message.credential;
+    executionController = new AbortController();
     const result = await executeAnchoredOpenCode({
       ...config,
       credential: message.credential,
       baseCommit,
+      signal: executionController.signal,
       onCliStart(processGroupId) {
         send({ type: "cli_started", processGroupId });
       },

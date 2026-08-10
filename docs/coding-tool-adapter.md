@@ -27,6 +27,27 @@ Failures return `{"ok":false,"error":{"code","message",...}}` with bounded,
 redacted details and a nonzero process exit. Usage persistence happens before a
 success response, so a failed `cost_events` write never looks successful.
 
+The authoritative public error response schema is
+`coding-adapter/src/errors.js` `PUBLIC_ERROR_RESPONSE_SCHEMA`. Its complete code
+enum is:
+
+| Code | Meaning |
+|---|---|
+| `internal_failure` | An unexpected runtime error was mapped to the bounded public fallback. |
+| `missing_credentials` | The required evaluator API key was absent. |
+| `cli_failure` | Launch, provider execution, inspection, cancellation, or cleanup failed. |
+| `timeout` | The provider process exceeded its configured timeout. |
+| `malformed_output` | OpenCode returned an invalid or incomplete event stream or invalid usage. |
+| `output_too_large` | The aggregate review diff exceeded its byte limit. |
+| `credential_exposure` | A credential form appeared in output or workspace state. |
+| `workspace_invalid` | Run or workspace ownership, containment, lifecycle, or identity was invalid. |
+| `persistence_failure` | Run and agent attribution verification or usage persistence failed. |
+| `invalid_request` | The public command request or trusted calling context was invalid. |
+
+Runtime serialization imports this schema and maps any non-enumerated internal
+code to `internal_failure`. Tests assert the exact enum, so code and prose drift
+fails locally.
+
 OpenClaw registers this executable through its supported `exec` tool, using the
 same `TOOLS.md` pattern proved by FACT-2. The engine binds `ORBITFLOW_RUN_ID`,
 `ORBITFLOW_AGENT_ID`, and the run workspace. Run and agent identity are process
@@ -59,12 +80,16 @@ work and all Git, scan, and diff operations use that current directory through
 relative paths. Replacement or deletion fails closed. Credential contamination
 is retained under `.orbitflow/quarantine` instead of deleting a live workspace.
 The workspace service refuses cleanup while the owning `workflow_runs` row
-exists. After the platform deletes that row, `deleteRunWorkspace(runId)` moves
-only the identity-matched retained directory into the control area. A
-credential-free cleanup boundary enters that directory and verifies its device
-and inode from the established working directory before removing contents. The
-ownership record is removed last. Renamed, symlinked, or substituted cleanup
-targets fail closed and are retained.
+exists. After the platform deletes that row, `deleteRunWorkspace(runId)` closes
+new delegation admission, cancels and joins every already admitted provider
+process, and only then moves the identity-matched retained directory into the
+control area. Delegations hold a PostgreSQL shared advisory lock and listen for
+the run deletion notification. Cleanup publishes that notification and must
+obtain the exclusive form of the same lock, which makes the join work across
+separate tool and cleanup processes. A credential-free cleanup boundary enters
+that directory and verifies its device and inode from the established working
+directory before removing contents. The ownership record is removed last.
+Renamed, symlinked, or substituted cleanup targets fail closed and are retained.
 
 OpenCode receives an explicit environment allowlist: the selected key, tool
 `PATH`, isolated home/state paths, and fixed safety switches. The adapter parses

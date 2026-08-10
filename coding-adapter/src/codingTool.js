@@ -23,10 +23,14 @@ export function createCodingTool({
     throw new InvalidRequestError("cost event store is required");
   }
   const model = adapterOptions.model ?? OPEN_CODE_DEFAULT_MODEL;
+  const workspaceAuthority = workspaceService.authorityForRun(runId);
+  if (typeof workspaceAuthority.withDelegation !== "function") {
+    throw new InvalidRequestError("workspace service must coordinate delegation lifecycle");
+  }
   const adapter = adapterFactory({
     ...adapterOptions,
     model,
-    workspaceAuthority: workspaceService.authorityForRun(runId),
+    workspaceAuthority,
   });
 
   async function delegate_coding_task(task, workspace) {
@@ -37,15 +41,17 @@ export function createCodingTool({
       throw new InvalidRequestError("workspace must be a non-empty string");
     }
 
-    await costEventStore.verifyAttribution({ runId, agentId });
-    const result = await adapter.delegate_coding_task(task, workspace);
-    await costEventStore.recordDelegation({
-      runId,
-      agentId,
-      model,
-      usage: result.usage,
+    return workspaceAuthority.withDelegation(async ({ signal }) => {
+      await costEventStore.verifyAttribution({ runId, agentId });
+      const result = await adapter.delegate_coding_task(task, workspace, { signal });
+      await costEventStore.recordDelegation({
+        runId,
+        agentId,
+        model,
+        usage: result.usage,
+      });
+      return result;
     });
-    return result;
   }
 
   return { delegate_coding_task };

@@ -4,6 +4,10 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
+import {
+  createPublicErrorResponse,
+  PUBLIC_ERROR_RESPONSE_SCHEMA,
+} from "../src/errors.js";
 import { fakeOpenCodeAdapter, TEST_CREDENTIAL } from "./testAdapter.js";
 
 test("delegate_coding_task builds a pure command with a minimal environment", async () => {
@@ -77,4 +81,26 @@ test("missing credential short-circuits before spawning the credential-free boun
     (error) => error.code === "missing_credentials" && error.varName === "OPENROUTER_API_KEY",
   );
   assert.equal(spawnCalled, false);
+});
+
+test("public error responses are bound to the complete authoritative code schema", () => {
+  assert.deepEqual(PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum, [
+    "internal_failure",
+    "missing_credentials",
+    "cli_failure",
+    "timeout",
+    "malformed_output",
+    "output_too_large",
+    "credential_exposure",
+    "workspace_invalid",
+    "persistence_failure",
+    "invalid_request",
+  ]);
+  for (const code of PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum) {
+    assert.equal(createPublicErrorResponse({ code, message: code }).code, code);
+  }
+  assert.deepEqual(createPublicErrorResponse({ code: "not_public", message: "boom" }), {
+    code: "internal_failure",
+    message: "boom",
+  });
 });

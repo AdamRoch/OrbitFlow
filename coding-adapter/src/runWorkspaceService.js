@@ -20,9 +20,15 @@ const QUARANTINE_DIRECTORY = "quarantine";
 const DISPOSAL_DIRECTORY = "disposal";
 const WORKSPACE_MARKER = "orbitflow-workspace.json";
 const RECORD_VERSION = 1;
+const DELETION_CHANNEL = "orbitflow_workspace_deletion";
 const CLEANUP_BOUNDARY = fileURLToPath(new URL("./workspaceCleanupBoundary.js", import.meta.url));
 
-export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBoundary } = {}) {
+export function createRunWorkspaceService({
+  pool,
+  workspaceRoot,
+  beforeDelegationJoin,
+  beforeCleanupBoundary,
+} = {}) {
   if (!pool || typeof pool.query !== "function") {
     throw new WorkspaceError("a PostgreSQL pool is required for run workspaces");
   }
@@ -31,6 +37,7 @@ export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBo
   }
 
   let initialized;
+  const delegationCoordinator = createDelegationCoordinator(pool);
 
   async function initialize() {
     if (!initialized) initialized = initializeRoot(workspaceRoot);
@@ -100,10 +107,19 @@ export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBo
   async function deleteRunWorkspace(runIdValue) {
     let client;
     let inTransaction = false;
+    let deletionRunId = null;
     try {
       const runId = normalizeId(runIdValue, "runId");
       const root = await initialize();
       client = await pool.connect();
+      await requireDeletedRun(client, runId);
+      await client.query("SELECT pg_notify($1, $2)", [DELETION_CHANNEL, runId]);
+      const deletion = delegationCoordinator.beginDeletion(runId);
+      deletionRunId = runId;
+      if (typeof beforeDelegationJoin === "function") {
+        await beforeDelegationJoin({ runId, activeCount: deletion.activeCount });
+      }
+      await deletion.join();
       await client.query("BEGIN");
       inTransaction = true;
       await client.query(
@@ -114,6 +130,7 @@ export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBo
       await assertRootCurrent(root);
       const entry = await readRecordEntryIfPresent(root, runId);
       if (!entry) {
+        delegationCoordinator.completeDeletion(runId);
         await client.query("COMMIT");
         inTransaction = false;
         return false;
@@ -132,10 +149,12 @@ export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBo
       await removeOwnedDirectory(disposalPath, owned.identity);
       await removeOwnedRecord(root, runId, entry);
 
+      delegationCoordinator.completeDeletion(runId);
       await client.query("COMMIT");
       inTransaction = false;
       return true;
     } catch (error) {
+      if (deletionRunId) delegationCoordinator.failDeletion(deletionRunId);
       if (inTransaction) {
         try {
           await client.query("ROLLBACK");
@@ -184,10 +203,13 @@ export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBo
   }
 
   function authorityForRun(runId) {
+    const normalizedRunId = normalizeId(runId, "runId");
     return {
-      resolve: (workspace) => resolveWorkspace(runId, workspace),
+      resolve: (workspace) => resolveWorkspace(normalizedRunId, workspace),
       assertCurrent: assertHandleCurrent,
       containCredentialExposure: quarantine,
+      withDelegation: (operation) =>
+        delegationCoordinator.withDelegation(normalizedRunId, operation),
     };
   }
 
@@ -199,6 +221,126 @@ export function createRunWorkspaceService({ pool, workspaceRoot, beforeCleanupBo
     authorityForRun,
     configuredRoot: () => initialize().then((root) => root.path),
   };
+}
+
+function createDelegationCoordinator(pool) {
+  const runs = new Map();
+
+  function stateFor(runId) {
+    let state = runs.get(runId);
+    if (!state) {
+      state = { phase: "open", active: new Set() };
+      runs.set(runId, state);
+    }
+    return state;
+  }
+
+  async function withDelegation(runId, operation) {
+    if (typeof operation !== "function") {
+      throw new WorkspaceError("delegation operation is required");
+    }
+    const state = stateFor(runId);
+    if (state.phase !== "open") {
+      throw new WorkspaceError("run workspace deletion blocks new delegation");
+    }
+
+    const client = await pool.connect();
+    let locked = false;
+    let listening = false;
+    let admission;
+    let databaseFailure = null;
+    const controller = new AbortController();
+    const onNotification = (message) => {
+      if (message.channel === DELETION_CHANNEL && message.payload === runId) {
+        controller.abort(new WorkspaceError("run workspace is being deleted"));
+      }
+    };
+    const onDatabaseError = (error) => {
+      databaseFailure = error;
+      controller.abort(
+        new WorkspaceError("run deletion state became uninspectable during delegation"),
+      );
+    };
+    client.on("notification", onNotification);
+    client.on("error", onDatabaseError);
+    try {
+      await client.query(
+        "SELECT pg_advisory_lock_shared(hashtextextended('orbitfactory:workspace:' || $1, 0))",
+        [runId],
+      );
+      locked = true;
+      await client.query(`LISTEN ${DELETION_CHANNEL}`);
+      listening = true;
+      if (state.phase !== "open" || controller.signal.aborted) {
+        throw new WorkspaceError("run workspace deletion blocks new delegation");
+      }
+
+      let resolveFinished;
+      admission = {
+        controller,
+        finished: new Promise((resolve) => {
+          resolveFinished = resolve;
+        }),
+        resolveFinished,
+      };
+      state.active.add(admission);
+      return await operation({ signal: controller.signal });
+    } finally {
+      if (admission) {
+        state.active.delete(admission);
+        admission.resolveFinished();
+      }
+      let cleanupFailure = null;
+      try {
+        if (listening) await client.query(`UNLISTEN ${DELETION_CHANNEL}`);
+        if (locked) {
+          const unlocked = await client.query(
+            "SELECT pg_advisory_unlock_shared(hashtextextended('orbitfactory:workspace:' || $1, 0)) AS unlocked",
+            [runId],
+          );
+          if (unlocked.rows[0]?.unlocked !== true) {
+            throw new WorkspaceError("delegation admission lock release failed");
+          }
+        }
+      } catch (error) {
+        cleanupFailure = error;
+      } finally {
+        client.off("notification", onNotification);
+        client.off("error", onDatabaseError);
+        client.release(
+          databaseFailure || cleanupFailure
+            ? new Error("delegation admission database boundary failed")
+            : undefined,
+        );
+      }
+      if (databaseFailure || cleanupFailure) {
+        throw new WorkspaceError("run deletion state became uninspectable during delegation");
+      }
+    }
+  }
+
+  function beginDeletion(runId) {
+    const state = stateFor(runId);
+    state.phase = "deleting";
+    const admitted = [...state.active];
+    for (const admission of admitted) {
+      admission.controller.abort(new WorkspaceError("run workspace is being deleted"));
+    }
+    return Object.freeze({
+      activeCount: admitted.length,
+      join: () => Promise.all(admitted.map((admission) => admission.finished)),
+    });
+  }
+
+  function completeDeletion(runId) {
+    stateFor(runId).phase = "deleted";
+  }
+
+  function failDeletion(runId) {
+    if (runId) stateFor(runId).phase = "deletion_failed";
+  }
+
+  return { withDelegation, beginDeletion, completeDeletion, failDeletion };
 }
 
 async function initializeRoot(configuredRoot) {

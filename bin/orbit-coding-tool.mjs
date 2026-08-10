@@ -6,7 +6,10 @@ import {
   createCostEventStore,
   createRunWorkspaceService,
 } from "../coding-adapter/src/index.js";
-import { InvalidRequestError } from "../coding-adapter/src/errors.js";
+import {
+  createPublicErrorResponse,
+  InvalidRequestError,
+} from "../coding-adapter/src/errors.js";
 
 const { Pool } = pg;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -55,7 +58,7 @@ try {
   }
   writeResponse({ ok: true, result });
 } catch (error) {
-  writeResponse({ ok: false, error: structuredError(error) });
+  writeResponse({ ok: false, error: createPublicErrorResponse(error) });
   process.exitCode = 1;
 } finally {
   if (pool) {
@@ -104,21 +107,6 @@ function optionalPositiveInteger(value, name) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) throw new InvalidRequestError(`${name} is too large`);
   return parsed;
-}
-
-function structuredError(error) {
-  const result = {
-    code: typeof error?.code === "string" ? error.code : "internal_failure",
-    message: typeof error?.message === "string" ? error.message.slice(0, 1_000) : "coding tool failed",
-  };
-  if (Number.isInteger(error?.exitCode)) result.exitCode = error.exitCode;
-  if (typeof error?.signal === "string") result.signal = error.signal;
-  if (Number.isInteger(error?.timeoutMs)) result.timeoutMs = error.timeoutMs;
-  if (Number.isInteger(error?.limitBytes)) result.limitBytes = error.limitBytes;
-  if (typeof error?.stderrTail === "string") result.stderrTail = error.stderrTail.slice(-4_000);
-  if (typeof error?.stdoutTail === "string") result.stdoutTail = error.stdoutTail.slice(-4_000);
-  if (typeof error?.rawTail === "string") result.rawTail = error.rawTail.slice(-500);
-  return result;
 }
 
 function writeResponse(value) {
