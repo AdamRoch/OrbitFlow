@@ -235,7 +235,8 @@ export class ControlPlaneRepository {
     return row ? scheduleFromRow(row) : null;
   }
 
-  async updateSchedule(id: string, input: UpdateScheduleInput): Promise<UpdateResult<ScheduleDTO>> {
+  /** FACT-19 may mutate only schedules that target an agent, never workflows. */
+  async updateAgentSchedule(id: string, input: UpdateScheduleInput): Promise<UpdateResult<ScheduleDTO>> {
     const assignments: string[] = [];
     const values: unknown[] = [];
     const add = (column: string, value: unknown) => {
@@ -246,7 +247,7 @@ export class ControlPlaneRepository {
     if (input.taskPrompt !== undefined) add("task_prompt", input.taskPrompt);
     if (input.enabled !== undefined) add("enabled", input.enabled);
     values.push(id);
-    let where = `id = $${values.length}`;
+    let where = `id = $${values.length} AND agent_id IS NOT NULL`;
     values.push(input.expectedUpdatedAt);
     where += ` AND updated_at = $${values.length}::timestamptz`;
     const row = await one<Row>(
@@ -256,11 +257,16 @@ export class ControlPlaneRepository {
       values,
     );
     if (row) return { kind: "updated", value: scheduleFromRow(row) };
-    return (await this.getSchedule(id)) ? { kind: "conflict" } : { kind: "not_found" };
+    return (await this.getAgentSchedule(id)) ? { kind: "conflict" } : { kind: "not_found" };
   }
 
-  async deleteSchedule(id: string): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM schedules WHERE id = $1", [id]);
+  async getAgentSchedule(id: string): Promise<ScheduleDTO | null> {
+    const row = await one<Row>(this.pool, "SELECT * FROM schedules WHERE id = $1 AND agent_id IS NOT NULL", [id]);
+    return row ? scheduleFromRow(row) : null;
+  }
+
+  async deleteAgentSchedule(id: string): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM schedules WHERE id = $1 AND agent_id IS NOT NULL", [id]);
     return result.rowCount === 1;
   }
 

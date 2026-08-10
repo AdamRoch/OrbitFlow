@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentDTO, JsonObject, ScheduleDTO, SkillDTO } from "@/lib/control-plane/types";
 import { AlienIcon, CheckIcon, CometIcon, RadarIcon, SignalIcon, UfoIcon } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,19 @@ type EditorForm = {
   interactionRulesAdvanced: string;
   channelBindingAdvanced: string;
   memoryAdvanced: string;
+  isExisting: boolean;
+  guardrailsOriginal: JsonObject;
+  interactionRulesOriginal: JsonObject;
+  channelBindingOriginal: JsonObject;
+  memoryOriginal: JsonObject;
+  costLimitTouched: boolean;
+  rateLimitTouched: boolean;
+  blockedActionsTouched: boolean;
+  mayAnswerQuestionsTouched: boolean;
+  autonomyTouched: boolean;
+  channelProviderTouched: boolean;
+  channelChatIdTouched: boolean;
+  factsTouched: boolean;
 };
 
 type ScheduleForm = { cronExpression: string; taskPrompt: string; enabled: boolean };
@@ -65,6 +78,14 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 function factsFromMemory(memory: JsonObject): string[] {
   return Array.isArray(memory.facts) ? memory.facts.filter((fact): fact is string => typeof fact === "string") : [];
 }
@@ -80,6 +101,9 @@ function formFromAgent(agent?: AgentDTO): EditorForm {
       costLimit: "", rateLimit: "", blockedActions: "", mayAnswerQuestions: false, autonomy: "",
       channelProvider: "", channelChatId: "", openclawRef: "", facts: [],
       guardrailsAdvanced: "{}", interactionRulesAdvanced: "{}", channelBindingAdvanced: "{}", memoryAdvanced: "{}",
+      isExisting: false, guardrailsOriginal: {}, interactionRulesOriginal: {}, channelBindingOriginal: {}, memoryOriginal: {},
+      costLimitTouched: false, rateLimitTouched: false, blockedActionsTouched: false, mayAnswerQuestionsTouched: false,
+      autonomyTouched: false, channelProviderTouched: false, channelChatIdTouched: false, factsTouched: false,
     };
   }
   const guardrails = object(agent.guardrails);
@@ -93,19 +117,32 @@ function formFromAgent(agent?: AgentDTO): EditorForm {
     systemPrompt: agent.systemPrompt,
     model: agent.model,
     codingToolEnabled: agent.codingToolEnabled,
-    costLimit: guardrails.costLimit === undefined ? "" : String(guardrails.costLimit),
-    rateLimit: rateLimit.perMinute === undefined ? "" : String(rateLimit.perMinute),
-    blockedActions: Array.isArray(guardrails.blockedActions) ? guardrails.blockedActions.filter((item): item is string => typeof item === "string").join("\n") : "",
+    costLimit: finiteNumber(guardrails.costLimit) ? String(guardrails.costLimit) : "",
+    rateLimit: finiteNumber(rateLimit.perMinute) ? String(rateLimit.perMinute) : "",
+    blockedActions: stringArray(guardrails.blockedActions) ? guardrails.blockedActions.join("\n") : "",
     mayAnswerQuestions: rules.mayAnswerQuestions === true,
     autonomy: stringValue(rules.autonomy),
     channelProvider: stringValue(channel.provider),
     channelChatId: stringValue(channel.chatId),
     openclawRef: agent.openclawRef ?? "",
-    facts: factsFromMemory(memory),
-    guardrailsAdvanced: JSON.stringify(withoutKeys(guardrails, ["costLimit", "rateLimit", "blockedActions"]), null, 2),
-    interactionRulesAdvanced: JSON.stringify(withoutKeys(rules, ["mayAnswerQuestions", "autonomy"]), null, 2),
-    channelBindingAdvanced: JSON.stringify(withoutKeys(channel, ["provider", "chatId"]), null, 2),
-    memoryAdvanced: JSON.stringify(withoutKeys(memory, ["facts"]), null, 2),
+    facts: stringArray(memory.facts) ? factsFromMemory(memory) : [],
+    guardrailsAdvanced: JSON.stringify(withoutKeys(guardrails, [
+      ...(finiteNumber(guardrails.costLimit) ? ["costLimit"] : []),
+      ...(finiteNumber(rateLimit.perMinute) ? ["rateLimit"] : []),
+      ...(stringArray(guardrails.blockedActions) ? ["blockedActions"] : []),
+    ]), null, 2),
+    interactionRulesAdvanced: JSON.stringify(withoutKeys(rules, [
+      ...(typeof rules.mayAnswerQuestions === "boolean" ? ["mayAnswerQuestions"] : []),
+      ...(typeof rules.autonomy === "string" ? ["autonomy"] : []),
+    ]), null, 2),
+    channelBindingAdvanced: JSON.stringify(withoutKeys(channel, [
+      ...(typeof channel.provider === "string" ? ["provider"] : []),
+      ...(typeof channel.chatId === "string" ? ["chatId"] : []),
+    ]), null, 2),
+    memoryAdvanced: JSON.stringify(withoutKeys(memory, stringArray(memory.facts) ? ["facts"] : []), null, 2),
+    isExisting: true, guardrailsOriginal: guardrails, interactionRulesOriginal: rules, channelBindingOriginal: channel, memoryOriginal: memory,
+    costLimitTouched: false, rateLimitTouched: false, blockedActionsTouched: false, mayAnswerQuestionsTouched: false,
+    autonomyTouched: false, channelProviderTouched: false, channelChatIdTouched: false, factsTouched: false,
   };
 }
 
@@ -120,33 +157,47 @@ function parseObject(text: string, field: string): JsonObject {
 }
 
 function payloadFromForm(form: EditorForm) {
-  const guardrails = parseObject(form.guardrailsAdvanced, "Guardrail details");
-  const interactionRules = parseObject(form.interactionRulesAdvanced, "Interaction-rule details");
-  const channelExtras = parseObject(form.channelBindingAdvanced, "Channel details");
-  const memory = parseObject(form.memoryAdvanced, "Memory details");
+  const guardrails = { ...form.guardrailsOriginal, ...parseObject(form.guardrailsAdvanced, "Guardrail details") };
+  const interactionRules = { ...form.interactionRulesOriginal, ...parseObject(form.interactionRulesAdvanced, "Interaction-rule details") };
+  const channelBinding = { ...form.channelBindingOriginal, ...parseObject(form.channelBindingAdvanced, "Channel details") };
+  const memory = { ...form.memoryOriginal, ...parseObject(form.memoryAdvanced, "Memory details") };
   const costLimit = Number(form.costLimit);
   const rateLimit = Number(form.rateLimit);
 
-  if (form.costLimit.trim()) {
-    if (!Number.isFinite(costLimit) || costLimit < 0) throw new Error("Cost ceiling must be a non-negative number.");
-    guardrails.costLimit = costLimit;
+  if (!form.isExisting || form.costLimitTouched) {
+    if (form.costLimit.trim()) {
+      if (!Number.isFinite(costLimit) || costLimit < 0) throw new Error("Cost ceiling must be a non-negative number.");
+      guardrails.costLimit = costLimit;
+    } else {
+      delete guardrails.costLimit;
+    }
   }
-  if (form.rateLimit.trim()) {
-    if (!Number.isFinite(rateLimit) || rateLimit < 0) throw new Error("Rate limit must be a non-negative number.");
-    guardrails.rateLimit = { ...object(guardrails.rateLimit), perMinute: rateLimit };
+  if (!form.isExisting || form.rateLimitTouched) {
+    if (form.rateLimit.trim()) {
+      if (!Number.isFinite(rateLimit) || rateLimit < 0) throw new Error("Rate limit must be a non-negative number.");
+      guardrails.rateLimit = { ...object(guardrails.rateLimit), perMinute: rateLimit };
+    } else {
+      delete guardrails.rateLimit;
+    }
   }
-  guardrails.blockedActions = form.blockedActions.split("\n").map((action) => action.trim()).filter(Boolean);
-  interactionRules.mayAnswerQuestions = form.mayAnswerQuestions;
-  if (form.autonomy.trim()) interactionRules.autonomy = form.autonomy.trim();
-  else delete interactionRules.autonomy;
-  memory.facts = form.facts.map((fact) => fact.trim()).filter(Boolean);
-
-  const channelBinding = form.channelProvider.trim() || form.channelChatId.trim() || Object.keys(channelExtras).length
-    ? { ...channelExtras, ...(form.channelProvider.trim() ? { provider: form.channelProvider.trim() } : {}), ...(form.channelChatId.trim() ? { chatId: form.channelChatId.trim() } : {}) }
-    : null;
+  if (!form.isExisting || form.blockedActionsTouched) guardrails.blockedActions = form.blockedActions.split("\n").map((action) => action.trim()).filter(Boolean);
+  if (!form.isExisting || form.mayAnswerQuestionsTouched) interactionRules.mayAnswerQuestions = form.mayAnswerQuestions;
+  if (!form.isExisting || form.autonomyTouched) {
+    if (form.autonomy.trim()) interactionRules.autonomy = form.autonomy.trim();
+    else delete interactionRules.autonomy;
+  }
+  if (!form.isExisting || form.factsTouched) memory.facts = form.facts.map((fact) => fact.trim()).filter(Boolean);
+  if (!form.isExisting || form.channelProviderTouched) {
+    if (form.channelProvider.trim()) channelBinding.provider = form.channelProvider.trim();
+    else delete channelBinding.provider;
+  }
+  if (!form.isExisting || form.channelChatIdTouched) {
+    if (form.channelChatId.trim()) channelBinding.chatId = form.channelChatId.trim();
+    else delete channelBinding.chatId;
+  }
   return {
     name: form.name.trim(), role: form.role.trim(), systemPrompt: form.systemPrompt.trim(), model: form.model.trim(),
-    codingToolEnabled: form.codingToolEnabled, guardrails, interactionRules, channelBinding, memory,
+    codingToolEnabled: form.codingToolEnabled, guardrails, interactionRules, channelBinding: Object.keys(channelBinding).length ? channelBinding : null, memory,
     openclawRef: form.openclawRef.trim() || null,
   };
 }
@@ -174,30 +225,65 @@ export function AgentEditor() {
   const [scheduleForm, setScheduleForm] = useState<ScheduleForm>(blankSchedule);
   const [editingSchedule, setEditingSchedule] = useState<ScheduleDTO | null>(null);
   const [loading, setLoading] = useState(true);
+  const [agentsLoadError, setAgentsLoadError] = useState("");
+  const [schedulesLoading, setSchedulesLoading] = useState(false);
+  const [schedulesLoadError, setSchedulesLoadError] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [stale, setStale] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const selectedAgentId = useRef<string | null>(null);
+  const scheduleRequestGeneration = useRef(0);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  const deleteOpenerRef = useRef<HTMLElement | null>(null);
+
+  const loadSchedules = useCallback(async (agentId: string) => {
+    const generation = ++scheduleRequestGeneration.current;
+    setSchedules([]);
+    setSchedulesLoading(true);
+    setSchedulesLoadError("");
+    try {
+      const nextSchedules = await request<ScheduleDTO[]>(`/api/agents/${agentId}/schedules`);
+      if (scheduleRequestGeneration.current === generation && selectedAgentId.current === agentId) setSchedules(nextSchedules);
+    } catch (loadError) {
+      if (scheduleRequestGeneration.current === generation && selectedAgentId.current === agentId) {
+        setSchedulesLoadError(loadError instanceof Error ? loadError.message : "Unable to load schedules.");
+      }
+    } finally {
+      if (scheduleRequestGeneration.current === generation && selectedAgentId.current === agentId) setSchedulesLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async (agentId?: string) => {
     setLoading(true);
     setError("");
+    setAgentsLoadError("");
     try {
       const [nextAgents, nextSkills] = await Promise.all([request<AgentDTO[]>("/api/agents"), request<SkillDTO[]>("/api/skills")]);
       setAgents(nextAgents);
       setSkills(nextSkills);
       const nextSelected = agentId ? nextAgents.find((agent) => agent.id === agentId) ?? null : null;
+      selectedAgentId.current = nextSelected?.id ?? null;
       setSelected(nextSelected);
       setForm(formFromAgent(nextSelected ?? undefined));
-      setSchedules(nextSelected ? await request<ScheduleDTO[]>(`/api/agents/${nextSelected.id}/schedules`) : []);
+      if (nextSelected) await loadSchedules(nextSelected.id);
+      else {
+        ++scheduleRequestGeneration.current;
+        setSchedules([]);
+        setSchedulesLoading(false);
+        setSchedulesLoadError("");
+      }
       setStale(false);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unable to load agents from PostgreSQL.");
+      const detail = loadError instanceof Error ? loadError.message : "Unable to load agents from PostgreSQL.";
+      setAgentsLoadError(detail);
+      setError(detail);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadSchedules]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
@@ -205,22 +291,61 @@ export function AgentEditor() {
   }, [load]);
 
   const selectAgent = async (agent: AgentDTO) => {
+    selectedAgentId.current = agent.id;
     setSelected(agent);
     setForm(formFromAgent(agent));
-    setSchedules([]);
+    setEditingSchedule(null);
     setError("");
     setMessage("");
     setStale(false);
-    try {
-      setSchedules(await request<ScheduleDTO[]>(`/api/agents/${agent.id}/schedules`));
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unable to load schedules.");
-    }
+    void loadSchedules(agent.id);
   };
 
   const newAgent = () => {
-    setSelected(null); setForm(formFromAgent()); setSchedules([]); setEditingSchedule(null); setMessage(""); setError(""); setStale(false);
+    selectedAgentId.current = null;
+    ++scheduleRequestGeneration.current;
+    setSelected(null); setForm(formFromAgent()); setSchedules([]); setSchedulesLoading(false); setSchedulesLoadError(""); setEditingSchedule(null); setMessage(""); setError(""); setStale(false);
   };
+
+  const beginDelete = (record: PendingDelete) => {
+    deleteOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPendingDelete(record);
+  };
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!pendingDelete) {
+      content?.removeAttribute("inert");
+      deleteOpenerRef.current?.focus();
+      return;
+    }
+    content?.setAttribute("inert", "");
+    const dialog = deleteDialogRef.current;
+    const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? []);
+    window.setTimeout(() => focusable()[0]?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPendingDelete(null);
+      }
+      if (event.key === "Tab") {
+        const controls = focusable();
+        if (controls.length === 0) return;
+        const first = controls[0]!;
+        const last = controls.at(-1)!;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault(); last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault(); first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      content?.removeAttribute("inert");
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [pendingDelete]);
 
   const applyTemplate = (templateId: string) => {
     const template = templates.find((item) => item.id === templateId);
@@ -295,9 +420,11 @@ export function AgentEditor() {
 
   const attachedSkillIds = useMemo(() => new Set(selected?.skills.map((skill) => skill.id)), [selected]);
   const setField = <K extends keyof EditorForm>(field: K, value: EditorForm[K]) => setForm((current) => ({ ...current, [field]: value }));
+  const setFacts = (facts: string[]) => setForm((current) => ({ ...current, facts, factsTouched: true }));
 
   return (
-    <div className="min-w-0">
+    <>
+    <div ref={contentRef} className="min-w-0">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <span className="eyebrow"><UfoIcon className="h-3 w-3" /> Control plane</span>
@@ -313,39 +440,56 @@ export function AgentEditor() {
       <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(15rem,0.75fr)_minmax(0,1.75fr)]">
         <aside className="glass rounded-2xl p-2 lg:self-start">
           <div className="flex items-center justify-between px-2 py-2"><span className="text-xs font-medium uppercase tracking-[0.16em] text-[--foreground-subtle]">Roster</span><Badge>{agents.length}</Badge></div>
-          {loading ? <p className="px-3 py-8 text-sm text-[--foreground-muted]">Loading agents…</p> : agents.length === 0 ? (
+          {loading ? <p className="px-3 py-8 text-sm text-[--foreground-muted]">Loading agents…</p> : agentsLoadError ? (
+            <div className="px-3 py-8 text-center"><p className="text-sm text-[--danger]">Could not load agents.</p><Button className="mt-3" size="sm" onClick={() => void load(selectedAgentId.current ?? undefined)}>Retry</Button></div>
+          ) : agents.length === 0 ? (
             <div className="px-3 py-8 text-center"><AlienIcon className="mx-auto h-8 w-8 text-[--foreground-subtle]" /><p className="mt-3 text-sm text-[--foreground-muted]">No agents yet.</p><p className="mt-1 text-xs text-[--foreground-subtle]">Start with an opinionated template, then make it yours.</p></div>
           ) : <div className="space-y-1">{agents.map((agent) => <button key={agent.id} type="button" onClick={() => void selectAgent(agent)} className={`w-full min-w-0 rounded-xl px-3 py-3 text-left transition-colors ${selected?.id === agent.id ? "bg-[--surface-hover] ring-1 ring-[--accent]/50" : "hover:bg-[--surface-hover]"}`}><span className="block truncate text-sm font-medium text-[--foreground]">{agent.name}</span><span className="mt-0.5 block truncate text-xs text-[--foreground-muted]">{agent.role} · {agent.model}</span></button>)}</div>}
         </aside>
 
         <div className="glass min-w-0 rounded-2xl p-4 sm:p-6">
           <form onSubmit={(event) => void submitAgent(event)}>
-          <div className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-[--foreground]">{selected ? `Edit ${selected.name}` : "Create an agent"}</h2><p className="mt-1 text-xs text-[--foreground-muted]">{selected ? "Changes use the version you opened; stale updates never overwrite another editor." : "Templates are starting points. Their prompts remain editable."}</p></div>{selected && <Button variant="danger" size="sm" onClick={() => setPendingDelete({ kind: "agent", id: selected.id, name: selected.name })}>Delete agent</Button>}</div>
+          <div className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-[--foreground]">{selected ? `Edit ${selected.name}` : "Create an agent"}</h2><p className="mt-1 text-xs text-[--foreground-muted]">{selected ? "Changes use the version you opened; stale updates never overwrite another editor." : "Templates are starting points. Their prompts remain editable."}</p></div>{selected && <Button variant="danger" size="sm" onClick={() => beginDelete({ kind: "agent", id: selected.id, name: selected.name })}>Delete agent</Button>}</div>
 
           {!selected && <div className="mb-5"><Label htmlFor="agent-template">Start from a template</Label><Select id="agent-template" defaultValue="" onChange={(event) => applyTemplate(event.target.value)}><option value="">Choose a starting point</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name} · {template.role}</option>)}</Select></div>}
           <section className="grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Name" htmlFor="agent-name"><Input id="agent-name" value={form.name} onChange={(event) => setField("name", event.target.value)} required /></Field><Field label="Role" htmlFor="agent-role"><Input id="agent-role" value={form.role} onChange={(event) => setField("role", event.target.value)} required /></Field><Field label="Model" htmlFor="agent-model"><Input id="agent-model" value={form.model} onChange={(event) => setField("model", event.target.value)} required /></Field><Field label="OpenClaw reference" htmlFor="agent-openclaw"><Input id="agent-openclaw" value={form.openclawRef} onChange={(event) => setField("openclawRef", event.target.value)} placeholder="Optional external runtime id" /></Field></section>
           <div className="mt-4"><Field label="System prompt" htmlFor="agent-prompt"><Textarea id="agent-prompt" value={form.systemPrompt} onChange={(event) => setField("systemPrompt", event.target.value)} required /></Field></div>
           <p className="mt-2 rounded-xl border border-[--border] bg-[--surface-2]/40 p-3 text-xs leading-relaxed text-[--foreground-muted]"><strong className="text-[--foreground]">Fixed runtime contract.</strong> Structured output, platform tool surface, and message types are applied by the runtime and are not editable here.</p>
 
-          <Section title="Tools and channel" icon={<SignalIcon className="h-4 w-4" />}><label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input type="checkbox" checked={form.codingToolEnabled} onChange={(event) => setField("codingToolEnabled", event.target.checked)} className="h-4 w-4 accent-[--accent]" /> Enable coding-tool access</label><div className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Channel provider" htmlFor="channel-provider"><Input id="channel-provider" value={form.channelProvider} onChange={(event) => setField("channelProvider", event.target.value)} placeholder="telegram" /></Field><Field label="Channel chat / destination" htmlFor="channel-chat"><Input id="channel-chat" value={form.channelChatId} onChange={(event) => setField("channelChatId", event.target.value)} placeholder="42" /></Field></div><Advanced label="Additional channel fields" id="channel-advanced" value={form.channelBindingAdvanced} onChange={(value) => setField("channelBindingAdvanced", value)} description="Optional JSON object for binding details not covered by provider and destination." /></Section>
+          <Section title="Tools and channel" icon={<SignalIcon className="h-4 w-4" />}>
+            <label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input type="checkbox" checked={form.codingToolEnabled} onChange={(event) => setField("codingToolEnabled", event.target.checked)} className="h-4 w-4 accent-[--accent]" /> Enable coding-tool access</label>
+            <div className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Channel provider" htmlFor="channel-provider"><Input id="channel-provider" value={form.channelProvider} onChange={(event) => { setField("channelProvider", event.target.value); setField("channelProviderTouched", true); }} placeholder="telegram" /></Field><Field label="Channel chat / destination" htmlFor="channel-chat"><Input id="channel-chat" value={form.channelChatId} onChange={(event) => { setField("channelChatId", event.target.value); setField("channelChatIdTouched", true); }} placeholder="42" /></Field></div>
+            <p className="mt-2 text-xs text-[--foreground-subtle]">Destination is the provider-specific recipient, such as a Telegram chat ID. It is not an agent name or a workflow ID.</p>
+            <Advanced label="Additional channel fields" id="channel-advanced" value={form.channelBindingAdvanced} onChange={(value) => setField("channelBindingAdvanced", value)} description="JSON object only. Use it for provider-supported keys beyond provider and destination, such as a threadId string." />
+          </Section>
 
-          <Section title="Interaction rules" icon={<RadarIcon className="h-4 w-4" />}><div className="grid min-w-0 gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input type="checkbox" checked={form.mayAnswerQuestions} onChange={(event) => setField("mayAnswerQuestions", event.target.checked)} className="h-4 w-4 accent-[--accent]" /> May answer questions</label><Field label="Autonomy level" htmlFor="agent-autonomy"><Input id="agent-autonomy" value={form.autonomy} onChange={(event) => setField("autonomy", event.target.value)} placeholder="ask-before-risk" /></Field></div><Advanced label="Additional interaction rules" id="interaction-advanced" value={form.interactionRulesAdvanced} onChange={(value) => setField("interactionRulesAdvanced", value)} description="Only use this for an existing persisted rule without a clear control above." /></Section>
+          <Section title="Interaction rules" icon={<RadarIcon className="h-4 w-4" />}>
+            <div className="grid min-w-0 gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3 text-sm text-[--foreground]"><input type="checkbox" checked={form.mayAnswerQuestions} onChange={(event) => { setField("mayAnswerQuestions", event.target.checked); setField("mayAnswerQuestionsTouched", true); }} className="h-4 w-4 accent-[--accent]" /> May answer questions</label><Field label="Autonomy level" htmlFor="agent-autonomy"><Input id="agent-autonomy" value={form.autonomy} onChange={(event) => { setField("autonomy", event.target.value); setField("autonomyTouched", true); }} placeholder="ask-before-risk" /></Field></div>
+            <p className="mt-2 text-xs text-[--foreground-subtle]">Autonomy describes when this agent should pause for human direction. Use a short policy such as “ask-before-risk”; runtime enforcement remains out of scope.</p>
+            <Advanced label="Additional interaction rules" id="interaction-advanced" value={form.interactionRulesAdvanced} onChange={(value) => setField("interactionRulesAdvanced", value)} description="JSON object only. Use this for a schema-supported persisted rule that has no dedicated control." />
+          </Section>
 
-          <Section title="Guardrails" icon={<CheckIcon className="h-4 w-4" />}><div className="grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Cost ceiling" htmlFor="cost-limit"><Input id="cost-limit" type="number" min="0" step="any" value={form.costLimit} onChange={(event) => setField("costLimit", event.target.value)} placeholder="12.50" /></Field><Field label="Rate limit per minute" htmlFor="rate-limit"><Input id="rate-limit" type="number" min="0" step="1" value={form.rateLimit} onChange={(event) => setField("rateLimit", event.target.value)} placeholder="8" /></Field></div><div className="mt-4"><Field label="Blocked actions" htmlFor="blocked-actions"><Textarea id="blocked-actions" className="min-h-24" value={form.blockedActions} onChange={(event) => setField("blockedActions", event.target.value)} placeholder={"deploy-production\ndelete-workspace"} /></Field><p className="mt-1 text-xs text-[--foreground-subtle]">One action per line. Enforcement is intentionally deferred to FACT-25.</p></div><Advanced label="Additional guardrail fields" id="guardrails-advanced" value={form.guardrailsAdvanced} onChange={(value) => setField("guardrailsAdvanced", value)} description="Optional JSON object for persisted guardrail details without a clearer field." /></Section>
+          <Section title="Guardrails" icon={<CheckIcon className="h-4 w-4" />}>
+            <div className="grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Cost ceiling" htmlFor="cost-limit"><Input id="cost-limit" type="number" min="0" step="any" value={form.costLimit} onChange={(event) => { setField("costLimit", event.target.value); setField("costLimitTouched", true); }} placeholder="12.50" /></Field><Field label="Rate limit per minute" htmlFor="rate-limit"><Input id="rate-limit" type="number" min="0" step="1" value={form.rateLimit} onChange={(event) => { setField("rateLimit", event.target.value); setField("rateLimitTouched", true); }} placeholder="8" /></Field></div>
+            <p className="mt-2 text-xs text-[--foreground-subtle]">Cost ceiling is the agent-level budget in the control plane’s configured currency unit; it is not a per-request price. Runtime enforcement is deferred to FACT-25.</p>
+            <div className="mt-4"><Field label="Blocked actions" htmlFor="blocked-actions"><Textarea id="blocked-actions" className="min-h-24" value={form.blockedActions} onChange={(event) => { setField("blockedActions", event.target.value); setField("blockedActionsTouched", true); }} placeholder={"deploy-production\ndelete-workspace"} /></Field><p className="mt-1 text-xs text-[--foreground-subtle]">One action per line. Enforcement is intentionally deferred to FACT-25.</p></div>
+            <Advanced label="Additional guardrail fields" id="guardrails-advanced" value={form.guardrailsAdvanced} onChange={(value) => setField("guardrailsAdvanced", value)} description="JSON object only. Preserve valid nested values here when they do not have a clearer dedicated control." />
+          </Section>
 
-          <Section title="Memory facts" icon={<AlienIcon className="h-4 w-4" />}><p className="mb-3 text-xs text-[--foreground-muted]">Facts are stored canonically in this agent’s <code className="text-[--accent]">memory.facts</code> field.</p><div className="space-y-2">{form.facts.map((fact, index) => <div key={index} className="flex min-w-0 gap-2"><Input aria-label={`Memory fact ${index + 1}`} value={fact} onChange={(event) => setField("facts", form.facts.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><Button variant="danger" size="sm" aria-label={`Delete memory fact ${index + 1}`} onClick={() => setField("facts", form.facts.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button></div>)}</div><Button className="mt-3" size="sm" onClick={() => setField("facts", [...form.facts, ""])}>Add fact</Button><Advanced label="Additional memory details" id="memory-advanced" value={form.memoryAdvanced} onChange={(value) => setField("memoryAdvanced", value)} description="Optional JSON object for canonical memory details beyond individual facts." /></Section>
+          <Section title="Memory facts" icon={<AlienIcon className="h-4 w-4" />}><p className="mb-3 text-xs text-[--foreground-muted]">Facts are stored canonically in this agent’s <code className="text-[--accent]">memory.facts</code> field.</p><div className="space-y-2">{form.facts.map((fact, index) => <div key={index} className="flex min-w-0 gap-2"><Input aria-label={`Memory fact ${index + 1}`} value={fact} onChange={(event) => setFacts(form.facts.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><Button variant="danger" size="sm" aria-label={`Delete memory fact ${index + 1}`} onClick={() => setFacts(form.facts.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button></div>)}</div><Button className="mt-3" size="sm" onClick={() => setFacts([...form.facts, ""])}>Add fact</Button><Advanced label="Additional memory details" id="memory-advanced" value={form.memoryAdvanced} onChange={(value) => setField("memoryAdvanced", value)} description="JSON object only, for canonical memory details beyond individual facts." /></Section>
 
           <div className="mt-7 flex flex-wrap justify-end gap-3"><Button type="submit" variant="primary" disabled={saving}>{saving ? "Saving…" : selected ? "Save changes" : "Create agent"}</Button></div>
           </form>
 
           {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><UfoIcon className="h-4 w-4 text-[--accent]" /> Attached skills</h3><p className="mt-1 text-xs text-[--foreground-muted]">Attachments use the FACT-8 skill endpoints; skill definitions remain managed by the control plane.</p><div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2">{skills.length === 0 ? <p className="text-sm text-[--foreground-muted]">No skills exist yet.</p> : skills.map((skill) => { const attached = attachedSkillIds.has(skill.id); return <button key={skill.id} type="button" aria-pressed={attached} onClick={() => void toggleSkill(skill, attached)} className={`min-w-0 rounded-xl border p-3 text-left text-sm transition-colors ${attached ? "border-[--accent]/50 bg-[--accent]/10" : "border-[--border] bg-[--surface-2]/35 hover:bg-[--surface-hover]"}`}><span className="block truncate font-medium text-[--foreground]">{skill.name}</span><span className="mt-1 block truncate text-xs text-[--foreground-muted]">{attached ? "Attached · click to detach" : "Click to attach"}</span></button>; })}</div></section>}
 
-          {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><CometIcon className="h-4 w-4 text-[--accent]" /> Schedule associations</h3><p className="mt-1 text-xs text-[--foreground-muted]">Persisted standing tasks only. Cron execution and hot enable/disable behavior belong to FACT-25.</p><div className="mt-3 space-y-2">{schedules.length === 0 ? <p className="rounded-xl border border-dashed border-[--border] p-3 text-sm text-[--foreground-muted]">No schedules are associated with this agent.</p> : schedules.map((schedule) => <div key={schedule.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-[--accent]">{schedule.cronExpression}</p><p className="mt-1 truncate text-sm text-[--foreground]">{schedule.taskPrompt}</p><p className="mt-1 text-xs text-[--foreground-muted]">{schedule.enabled ? "Persisted as enabled" : "Persisted as disabled"}</p></div><div className="flex gap-2"><Button size="sm" onClick={() => { setEditingSchedule(schedule); setScheduleForm({ cronExpression: schedule.cronExpression, taskPrompt: schedule.taskPrompt ?? "", enabled: schedule.enabled }); }}>Edit</Button><Button variant="danger" size="sm" onClick={() => setPendingDelete({ kind: "schedule", id: schedule.id, name: schedule.taskPrompt ?? schedule.cronExpression })}>Delete</Button></div></div>)}</div><form onSubmit={(event) => void submitSchedule(event)} className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/25 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-medium text-[--foreground]">{editingSchedule ? "Edit schedule" : "Add schedule"}</h4>{editingSchedule && <Button size="sm" onClick={() => { setEditingSchedule(null); setScheduleForm(blankSchedule()); }}>Cancel edit</Button>}</div><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Cron expression" htmlFor="schedule-cron"><Input id="schedule-cron" value={scheduleForm.cronExpression} onChange={(event) => setScheduleForm((current) => ({ ...current, cronExpression: event.target.value }))} required /></Field><label className="flex items-end gap-2 pb-2 text-sm text-[--foreground]"><input type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} className="h-4 w-4 accent-[--accent]" /> Persist as enabled</label></div><div className="mt-3"><Field label="Standing task" htmlFor="schedule-task"><Textarea id="schedule-task" className="min-h-24" value={scheduleForm.taskPrompt} onChange={(event) => setScheduleForm((current) => ({ ...current, taskPrompt: event.target.value }))} required /></Field></div><Button className="mt-3" type="submit" size="sm" disabled={saving}>{editingSchedule ? "Save schedule" : "Add schedule"}</Button></form></section>}
+          {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><CometIcon className="h-4 w-4 text-[--accent]" /> Schedule associations</h3><p className="mt-1 text-xs text-[--foreground-muted]">Persisted standing tasks only. Cron execution and hot enable/disable behavior belong to FACT-25.</p><div className="mt-3 space-y-2">{schedulesLoading ? <p className="rounded-xl border border-[--border] p-3 text-sm text-[--foreground-muted]">Loading schedules…</p> : schedulesLoadError ? <div className="rounded-xl border border-[--danger]/45 p-3 text-sm text-[--danger]"><p>Could not load schedules.</p><Button className="mt-2" size="sm" onClick={() => void loadSchedules(selected.id)}>Retry schedules</Button></div> : schedules.length === 0 ? <p className="rounded-xl border border-dashed border-[--border] p-3 text-sm text-[--foreground-muted]">No schedules are associated with this agent.</p> : schedules.map((schedule) => <div key={schedule.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-[--accent]">{schedule.cronExpression}</p><p className="mt-1 truncate text-sm text-[--foreground]">{schedule.taskPrompt}</p><p className="mt-1 text-xs text-[--foreground-muted]">{schedule.enabled ? "Persisted as enabled" : "Persisted as disabled"}</p></div><div className="flex gap-2"><Button size="sm" onClick={() => { setEditingSchedule(schedule); setScheduleForm({ cronExpression: schedule.cronExpression, taskPrompt: schedule.taskPrompt ?? "", enabled: schedule.enabled }); }}>Edit</Button><Button variant="danger" size="sm" onClick={() => beginDelete({ kind: "schedule", id: schedule.id, name: schedule.taskPrompt ?? schedule.cronExpression })}>Delete</Button></div></div>)}</div><form onSubmit={(event) => void submitSchedule(event)} className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/25 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-medium text-[--foreground]">{editingSchedule ? "Edit schedule" : "Add schedule"}</h4>{editingSchedule && <Button size="sm" onClick={() => { setEditingSchedule(null); setScheduleForm(blankSchedule()); }}>Cancel edit</Button>}</div><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Cron expression" htmlFor="schedule-cron"><Input id="schedule-cron" value={scheduleForm.cronExpression} onChange={(event) => setScheduleForm((current) => ({ ...current, cronExpression: event.target.value }))} required /></Field><label className="flex items-end gap-2 pb-2 text-sm text-[--foreground]"><input type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} className="h-4 w-4 accent-[--accent]" /> Persist as enabled</label></div><p className="mt-2 text-xs text-[--foreground-subtle]">Use five numeric fields: minute hour day-of-month month day-of-week. Example: 0 9 * * 1-5.</p><div className="mt-3"><Field label="Standing task" htmlFor="schedule-task"><Textarea id="schedule-task" className="min-h-24" value={scheduleForm.taskPrompt} onChange={(event) => setScheduleForm((current) => ({ ...current, taskPrompt: event.target.value }))} required /></Field></div><Button className="mt-3" type="submit" size="sm" disabled={saving}>{editingSchedule ? "Save schedule" : "Add schedule"}</Button></form></section>}
         </div>
       </div>
 
-      {pendingDelete && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm"><div role="alertdialog" aria-modal="true" aria-labelledby="delete-title" className="glass w-full max-w-md rounded-2xl p-5 shadow-2xl"><h2 id="delete-title" className="text-lg font-semibold text-[--foreground]">Delete {pendingDelete.kind === "agent" ? "agent" : "schedule"}?</h2><p className="mt-2 text-sm text-[--foreground-muted]">{pendingDelete.kind === "agent" ? `Delete ${pendingDelete.name}? Existing schedule associations must be removed first.` : `Delete the schedule for “${pendingDelete.name}”? This cannot be undone.`}</p><div className="mt-5 flex justify-end gap-3"><Button autoFocus onClick={() => setPendingDelete(null)}>Cancel</Button><Button variant="danger" onClick={() => void confirmDelete()} disabled={saving}>Delete</Button></div></div></div>}
     </div>
+      {pendingDelete && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm"><div ref={deleteDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description" className="glass w-full max-w-md rounded-2xl p-5 shadow-2xl"><h2 id="delete-title" className="text-lg font-semibold text-[--foreground]">Delete {pendingDelete.kind === "agent" ? "agent" : "schedule"}?</h2><p id="delete-description" className="mt-2 text-sm text-[--foreground-muted]">{pendingDelete.kind === "agent" ? `Delete ${pendingDelete.name}? Existing schedule associations must be removed first.` : `Delete the schedule for “${pendingDelete.name}”? This cannot be undone.`}</p><div className="mt-5 flex justify-end gap-3"><Button onClick={() => setPendingDelete(null)}>Cancel</Button><Button variant="danger" onClick={() => void confirmDelete()} disabled={saving}>Delete</Button></div></div></div>}
+    </>
   );
 }
 

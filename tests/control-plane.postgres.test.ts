@@ -179,9 +179,54 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     expect(updated).toMatchObject({ status: 200, body: { taskPrompt: "Prepare a concise daily standup.", enabled: false } });
     expect(await response(await patchSchedule(jsonRequest({
       enabled: true,
+      cronExpression: "0 9 * * 1-5",
       expectedUpdatedAt: created.body.updatedAt,
     }), context(created.body.id)))).toMatchObject({ status: 409, body: { error: { code: "stale_update" } } });
     expect((await response(await deleteSchedule(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+  });
+
+  it("accepts only the documented cron grammar and refuses workflow schedule mutation", async () => {
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const valid = await response(await createAgentSchedule(jsonRequest({
+      cronExpression: "*/15 0,12 1-31/2 1-12 1-5",
+      taskPrompt: "Check the control plane.",
+      enabled: true,
+    }), context(agent.body.id)));
+    expect(valid.status).toBe(201);
+    expect(await response(await createAgentSchedule(jsonRequest({
+      cronExpression: "0 9 * * MON",
+      taskPrompt: "This grammar is intentionally unsupported.",
+      enabled: true,
+    }), context(agent.body.id)))).toMatchObject({ status: 400, body: { error: { code: "invalid_cron" } } });
+    expect(await response(await createAgentSchedule(jsonRequest({
+      cronExpression: "59-0 * * * *",
+      taskPrompt: "Reverse ranges are invalid.",
+      enabled: true,
+    }), context(agent.body.id)))).toMatchObject({ status: 400, body: { error: { code: "invalid_cron" } } });
+    expect(await response(await patchSchedule(jsonRequest({
+      enabled: true,
+      expectedUpdatedAt: valid.body.updatedAt,
+    }), context(valid.body.id)))).toMatchObject({ status: 400, body: { error: { code: "invalid_cron" } } });
+
+    const workflow = await response(await createWorkflow(jsonRequest({
+      name: "Schedule boundary workflow",
+      description: "Owns a schedule outside FACT-19.",
+      graph: workflowGraph,
+      isTemplate: false,
+    })));
+    const inserted = await pool.query(
+      "INSERT INTO schedules (cron_expression, workflow_id, enabled) VALUES ($1, $2, true) RETURNING id, updated_at",
+      ["0 8 * * 1-5", workflow.body.id],
+    );
+    const workflowScheduleId = String(inserted.rows[0]!.id);
+    const workflowScheduleUpdatedAt = String(inserted.rows[0]!.updated_at);
+    expect(await response(await patchSchedule(jsonRequest({
+      cronExpression: "0 10 * * 1-5",
+      expectedUpdatedAt: workflowScheduleUpdatedAt,
+    }), context(workflowScheduleId)))).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+    expect((await response(await deleteSchedule(new Request("http://orbitfactory.test"), context(workflowScheduleId)))).status).toBe(404);
+    const preserved = await pool.query("SELECT cron_expression, workflow_id FROM schedules WHERE id = $1", [workflowScheduleId]);
+    expect(preserved.rows).toEqual([{ cron_expression: "0 8 * * 1-5", workflow_id: workflow.body.id }]);
   });
 
   it("preserves a valid workflow graph value and rejects malformed graph structure", async () => {
