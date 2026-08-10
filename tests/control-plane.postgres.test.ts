@@ -1,0 +1,289 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Pool } from "pg";
+import { GET as listAgents, POST as createAgent } from "@/app/api/agents/route";
+import { DELETE as deleteAgent, GET as getAgent, PATCH as patchAgent } from "@/app/api/agents/[id]/route";
+import { DELETE as detachSkill, PUT as attachSkill } from "@/app/api/agents/[id]/skills/[skillId]/route";
+import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
+import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
+import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
+import { DELETE as deleteWorkflow, GET as getWorkflow, PATCH as patchWorkflow } from "@/app/api/workflows/[id]/route";
+import {
+  ControlPlaneRepository,
+  getControlPlaneRepository,
+  resetControlPlaneRepository,
+} from "@/lib/control-plane";
+import { handleError } from "@/lib/api";
+import { migratePostgres } from "../scripts/migrate-postgres.mjs";
+
+const databaseUrl = process.env.DATABASE_URL;
+
+const agentBody = {
+  name: "Orchestrator",
+  role: "manager",
+  systemPrompt: "Coordinate work without losing the human's intent.",
+  model: "openrouter/fast-model",
+  codingToolEnabled: true,
+  guardrails: { costLimit: 12.5, rateLimit: { perMinute: 8 }, blockedActions: ["deploy"] },
+  interactionRules: { mayAnswerQuestions: true, autonomy: "ask-before-risk" },
+  channelBinding: { provider: "telegram", chatId: "42" },
+  memory: { facts: ["Adam prefers concise runbooks"] },
+  openclawRef: "openclaw:orchestrator",
+};
+
+const workflowGraph = {
+  nodes: [
+    { id: "intake", agentId: "1", config: { entry: true, planMode: "required" } },
+    { id: "implement", agentId: 2, config: { fanOut: { maxConcurrent: 3 } } },
+  ],
+  edges: [
+    { source: "intake", target: "implement", condition: { verdict: "ready" } },
+  ],
+  builderMetadata: { viewport: { x: 10, y: -4, zoom: 1.1 } },
+};
+
+let pool: Pool;
+
+function context(id: string) {
+  return { params: Promise.resolve({ id }) };
+}
+
+function skillContext(id: string, skillId: string) {
+  return { params: Promise.resolve({ id, skillId }) };
+}
+
+function jsonRequest(body: unknown): Request {
+  return new Request("http://orbitfactory.test/api", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function response(response: Response) {
+  return { status: response.status, body: response.status === 204 ? undefined : await response.json() };
+}
+
+beforeAll(async () => {
+  if (!databaseUrl) return;
+  await migratePostgres({ databaseUrl, log: () => {} });
+  pool = new Pool({ connectionString: databaseUrl, application_name: "orbitfactory-fact8-proof" });
+}, 60_000);
+
+beforeEach(async () => {
+  if (!pool) return;
+  await pool.query("TRUNCATE agent_skills, skills, agents, workflows RESTART IDENTITY CASCADE");
+});
+
+afterAll(async () => {
+  await resetControlPlaneRepository();
+  if (pool) await pool.end();
+});
+
+describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
+  it("round-trips every agent field without filling nullable values or mutating JSON", async () => {
+    const created = await response(await createAgent(jsonRequest(agentBody)));
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ ...agentBody, id: "1", skills: [] });
+    expect(created.body.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect((await response(await listAgents())).body.map((agent: { id: string }) => agent.id)).toEqual([created.body.id]);
+
+    const updated = await response(await patchAgent(jsonRequest({
+      channelBinding: {},
+      guardrails: { costLimit: 0, blockedActions: [] },
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
+    expect(updated.status).toBe(200);
+    expect(updated.body.channelBinding).toEqual({});
+    expect(updated.body.guardrails).toEqual({ costLimit: 0, blockedActions: [] });
+    expect(updated.body.interactionRules).toEqual(agentBody.interactionRules);
+    expect(updated.body.memory).toEqual(agentBody.memory);
+
+    const cleared = await response(await patchAgent(jsonRequest({
+      channelBinding: null,
+      openclawRef: null,
+      expectedUpdatedAt: updated.body.updatedAt,
+    }), context(created.body.id)));
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.channelBinding).toBeNull();
+    expect(cleared.body.openclawRef).toBeNull();
+
+    const reread = await response(await getAgent(new Request("http://orbitfactory.test"), context(created.body.id)));
+    expect(reread.status).toBe(200);
+    expect(reread.body).toEqual(cleared.body);
+
+    const duplicate = await response(await createAgent(jsonRequest({ ...agentBody, openclawRef: "different" })));
+    expect(duplicate).toMatchObject({ status: 409, body: { error: { code: "conflict" } } });
+
+    expect((await response(await deleteAgent(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+    expect((await response(await getAgent(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(404);
+  });
+
+  it("creates, updates, reads, and deletes skills through PostgreSQL", async () => {
+    const created = await response(await createSkill(jsonRequest({
+      name: "Postgres proof",
+      description: "Run database-backed checks.",
+      procedure: "Run npm run fact8:proof.",
+    })));
+    expect(created.status).toBe(201);
+    expect((await response(await listSkills())).body.map((skill: { id: string }) => skill.id)).toEqual([created.body.id]);
+    const updated = await response(await patchSkill(jsonRequest({
+      procedure: "Run the clean database proof.",
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
+    expect(updated).toMatchObject({ status: 200, body: { procedure: "Run the clean database proof." } });
+    expect((await response(await deleteSkill(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+    expect((await response(await deleteSkill(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(404);
+  });
+
+  it("attaches and detaches skills idempotently, and cascades a deleted skill", async () => {
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const skill = await response(await createSkill(jsonRequest({ name: "Review", description: "Review a diff.", procedure: "Read it." })));
+
+    const firstAttach = await response(await attachSkill(new Request("http://orbitfactory.test", { method: "PUT" }), skillContext(agent.body.id, skill.body.id)));
+    const secondAttach = await response(await attachSkill(new Request("http://orbitfactory.test", { method: "PUT" }), skillContext(agent.body.id, skill.body.id)));
+    expect(firstAttach).toEqual({ status: 200, body: { attached: true } });
+    expect(secondAttach).toEqual({ status: 200, body: { attached: true } });
+    expect((await response(await getAgent(new Request("http://orbitfactory.test"), context(agent.body.id)))).body.skills).toHaveLength(1);
+
+    expect((await response(await deleteSkill(new Request("http://orbitfactory.test"), context(skill.body.id)))).status).toBe(204);
+    expect((await response(await getAgent(new Request("http://orbitfactory.test"), context(agent.body.id)))).body.skills).toEqual([]);
+    expect((await response(await detachSkill(new Request("http://orbitfactory.test", { method: "DELETE" }), skillContext(agent.body.id, skill.body.id)))).status).toBe(404);
+  });
+
+  it("preserves a valid workflow graph value and rejects malformed graph structure", async () => {
+    const created = await response(await createWorkflow(jsonRequest({
+      name: "Software Factory",
+      description: "A graph with a handoff.",
+      graph: workflowGraph,
+      isTemplate: true,
+    })));
+    expect(created.status).toBe(201);
+    expect(created.body.graph).toEqual(workflowGraph);
+    expect((await response(await listWorkflows())).body.map((workflow: { id: string }) => workflow.id)).toEqual([created.body.id]);
+
+    const reread = await response(await getWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)));
+    expect(reread.body.graph).toEqual(workflowGraph);
+    const changedGraph = { ...workflowGraph, builderMetadata: { viewport: { x: 0, y: 0, zoom: 1 } } };
+    const updated = await response(await patchWorkflow(jsonRequest({
+      graph: changedGraph,
+      expectedUpdatedAt: created.body.updatedAt,
+    }), context(created.body.id)));
+    expect(updated.body.graph).toEqual(changedGraph);
+
+    const duplicateEdgeGraph = {
+      ...changedGraph,
+      edges: [
+        ...changedGraph.edges,
+        { source: "intake", target: "implement", condition: { verdict: "ready" } },
+      ],
+    };
+    const duplicateOnUpdate = await response(await patchWorkflow(jsonRequest({
+      graph: duplicateEdgeGraph,
+      expectedUpdatedAt: updated.body.updatedAt,
+    }), context(created.body.id)));
+    expect(duplicateOnUpdate).toMatchObject({ status: 400, body: { error: { code: "invalid_graph" } } });
+
+    const duplicateOnCreate = await response(await createWorkflow(jsonRequest({
+      name: "Duplicate transition",
+      description: "Should not persist.",
+      graph: {
+        nodes: [{ id: "one", agentId: 1, config: {} }, { id: "two", agentId: 2, config: {} }],
+        edges: [
+          { source: "one", target: "two", condition: { verdict: "ready", labels: { first: true, second: false } } },
+          { source: "one", target: "two", condition: { labels: { second: false, first: true }, verdict: "ready" } },
+        ],
+      },
+      isTemplate: false,
+    })));
+    expect(duplicateOnCreate).toMatchObject({ status: 400, body: { error: { code: "invalid_graph" } } });
+
+    const malformed = await response(await createWorkflow(jsonRequest({
+      name: "Broken",
+      description: "Should not persist.",
+      graph: { nodes: [{ id: "one", agentId: 1, config: {} }], edges: [{ source: "one", target: "missing", condition: {} }] },
+      isTemplate: false,
+    })));
+    expect(malformed).toMatchObject({ status: 400, body: { error: { code: "invalid_graph" } } });
+    expect((await getControlPlaneRepository().listWorkflows()).map((workflow) => workflow.name)).toEqual(["Software Factory"]);
+
+    expect((await response(await deleteWorkflow(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+  });
+
+  it("returns structured validation, not-found, conflict, and database errors", async () => {
+    const invalid = await response(await createAgent(jsonRequest({ ...agentBody, channelBinding: [] })));
+    expect(invalid).toMatchObject({ status: 400, body: { error: { code: "invalid_type" } } });
+    const nonObject = await response(await createAgent(jsonRequest(null)));
+    expect(nonObject).toMatchObject({ status: 400, body: { error: { code: "invalid_type" } } });
+    expect((await response(await getAgent(new Request("http://orbitfactory.test"), context("999")))).status).toBe(404);
+
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const missingPrecondition = await response(await patchAgent(jsonRequest({ role: "reviewer" }), context(agent.body.id)));
+    expect(missingPrecondition).toMatchObject({ status: 400, body: { error: { code: "missing_precondition" } } });
+    const skill = await response(await createSkill(jsonRequest({ name: "Precondition skill", description: "x", procedure: "y" })));
+    expect(await response(await patchSkill(jsonRequest({ description: "changed" }), context(skill.body.id)))).toMatchObject({
+      status: 400,
+      body: { error: { code: "missing_precondition" } },
+    });
+    const workflow = await response(await createWorkflow(jsonRequest({
+      name: "Precondition workflow",
+      description: "x",
+      graph: workflowGraph,
+      isTemplate: false,
+    })));
+    expect(await response(await patchWorkflow(jsonRequest({ description: "changed" }), context(workflow.body.id)))).toMatchObject({
+      status: 400,
+      body: { error: { code: "missing_precondition" } },
+    });
+
+    const databaseFailure = await response(handleError(Object.assign(new Error("postgresql://secret@example.test"), { code: "08006" })));
+    expect(databaseFailure).toEqual({
+      status: 500,
+      body: { error: { message: "internal server error", code: "internal" } },
+    });
+  });
+
+  it("rolls back a repository transaction and lets one route-level client update each shared version", async () => {
+    const repository = new ControlPlaneRepository(pool);
+    await expect(repository.transaction(async (client) => {
+      await client.query("INSERT INTO skills (name, description, procedure) VALUES ('rolled back', 'x', 'y')");
+      throw new Error("force rollback");
+    })).rejects.toThrow("force rollback");
+    expect((await repository.listSkills()).map((skill) => skill.name)).not.toContain("rolled back");
+
+    const agent = await response(await createAgent(jsonRequest({ ...agentBody, name: "Concurrent agent", openclawRef: "openclaw:concurrent-agent" })));
+    const skill = await response(await createSkill(jsonRequest({ name: "Concurrent skill", description: "Original", procedure: "Keep me." })));
+    const workflow = await response(await createWorkflow(jsonRequest({
+      name: "Concurrent workflow",
+      description: "Original",
+      graph: workflowGraph,
+      isTemplate: false,
+    })));
+
+    const cases = [
+      {
+        resource: "agent",
+        read: () => getAgent(new Request("http://orbitfactory.test"), context(agent.body.id)),
+        patch: (expectedUpdatedAt: string, role: string) => patchAgent(jsonRequest({ role, expectedUpdatedAt }), context(agent.body.id)),
+      },
+      {
+        resource: "skill",
+        read: () => getSkill(new Request("http://orbitfactory.test"), context(skill.body.id)),
+        patch: (expectedUpdatedAt: string, description: string) => patchSkill(jsonRequest({ description, expectedUpdatedAt }), context(skill.body.id)),
+      },
+      {
+        resource: "workflow",
+        read: () => getWorkflow(new Request("http://orbitfactory.test"), context(workflow.body.id)),
+        patch: (expectedUpdatedAt: string, description: string) => patchWorkflow(jsonRequest({ description, expectedUpdatedAt }), context(workflow.body.id)),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const [readerOne, readerTwo] = await Promise.all([testCase.read(), testCase.read()]);
+      const [first, second] = await Promise.all([
+        testCase.patch((await response(readerOne)).body.updatedAt, "first writer"),
+        testCase.patch((await response(readerTwo)).body.updatedAt, "second writer"),
+      ]);
+      expect([first.status, second.status].sort()).toEqual([200, 409]);
+    }
+  });
+});
