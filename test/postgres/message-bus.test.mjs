@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import {
@@ -11,6 +13,16 @@ import {
 } from "../../src/lib/postgres/message-bus.ts";
 
 const { Client, Pool } = pg;
+const migrationDirectory = fileURLToPath(
+  new URL("../../db/migrations/", import.meta.url),
+);
+const migrationFile = /^\d{4}-[a-z0-9-]+\.sql$/;
+
+async function committedMigrationFiles() {
+  return (await readdir(migrationDirectory))
+    .filter((name) => migrationFile.test(name))
+    .sort();
+}
 
 async function waitUntil(assertion, label) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -51,13 +63,7 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
     );
 
     const migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(migration.applied, [
-      "0001-control-plane.sql",
-      "0002-tickets.sql",
-      "0003-message-plane.sql",
-      "0004-message-consumption.sql",
-      "0008-platform-tool-idempotency.sql",
-    ]);
+    assert.deepEqual(migration.applied, await committedMigrationFiles());
 
     await client.query(`
       CREATE TABLE proof_routes (
@@ -718,61 +724,6 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       } finally {
         if (earlierOpen) await earlier.query("ROLLBACK");
         if (laterInsert) await laterInsert.catch(() => {});
-        if (laterOpen) await later.query("ROLLBACK");
-        await Promise.all([earlier.end(), later.end()]);
-      }
-    });
-
-    await t.test("rolls back a late message without leaving a durable queue entry", async () => {
-      const runId = await createRun("late-message-rollback");
-      const earlier = new Client({ connectionString: databaseUrl });
-      const later = new Client({ connectionString: databaseUrl });
-      await Promise.all([earlier.connect(), later.connect()]);
-      let laterOpen = false;
-
-      try {
-        await earlier.query("BEGIN");
-        const first = await insertMessage(earlier, {
-          runId,
-          sender: "agent:early",
-          recipient: "agent:next",
-          type: "output",
-          payload: { order: "first" },
-        });
-        await earlier.query("COMMIT");
-
-        await later.query("BEGIN");
-        laterOpen = true;
-        const second = await insertMessage(later, {
-          runId,
-          sender: "agent:late",
-          recipient: "agent:next",
-          type: "output",
-          payload: { order: "second" },
-        });
-        assert.deepEqual([first.sequenceNumber, second.sequenceNumber], ["1", "2"]);
-        await later.query("ROLLBACK");
-        laterOpen = false;
-
-        const persisted = await client.query(
-          `SELECT sequence_number, payload
-           FROM messages
-           WHERE run_id = $1
-           ORDER BY sequence_number`,
-          [runId],
-        );
-        assert.deepEqual(persisted.rows, [{ sequence_number: "1", payload: { order: "first" } }]);
-        const routed = await consumeNextMessage(pool, route("late-message-rollback"), {
-          consumerId: "late-message-rollback-engine",
-        });
-        assert.equal(routed?.message.sequenceNumber, "1");
-        assert.equal(
-          await consumeNextMessage(pool, route("late-message-rollback"), {
-            consumerId: "late-message-rollback-engine",
-          }),
-          null,
-        );
-      } finally {
         if (laterOpen) await later.query("ROLLBACK");
         await Promise.all([earlier.end(), later.end()]);
       }

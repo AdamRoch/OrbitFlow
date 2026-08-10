@@ -8,6 +8,7 @@ import {
   requireProject,
   RouteContext,
 } from "@/lib/api";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 /**
  * POST /api/issues/:id/claim
@@ -33,6 +34,7 @@ export async function POST(_req: Request, ctx: RouteContext) {
         "not_claimable",
       );
     }
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: result.issue.id, runId: null, agentId: null });
     return ok(result.issue);
   } catch (err) {
     return handleError(err);

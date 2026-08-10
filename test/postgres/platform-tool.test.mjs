@@ -58,7 +58,10 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
     "0002-tickets.sql",
     "0003-message-plane.sql",
     "0004-message-consumption.sql",
-    "0008-platform-tool-idempotency.sql",
+    "0009-state-stream-notify.sql",
+    "0010-coding-tool-usage.sql",
+    "0011-workflow-engine.sql",
+    "0012-platform-tool-idempotency.sql",
   ]);
 
   const client = new Client({ connectionString: databaseUrl, application_name: "orbitfactory-fact13-proof" });

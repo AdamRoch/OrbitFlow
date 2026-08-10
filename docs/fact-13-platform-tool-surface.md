@@ -27,10 +27,14 @@ durable message, enqueue, ready projection, and idempotency result commit or
 roll back together. `list_tickets` is read-only, scoped to the calling run, and
 records its durable idempotent invocation in the same PostgreSQL authority.
 
-Migration `0008-platform-tool-idempotency.sql` is required because a retry after
+Migration `0012-platform-tool-idempotency.sql` is required because a retry after
 the agent loses a successful response must replay its first durable result,
 rather than making another ticket or message. The key is unique per agent and
-run; reusing it for a different request fails closed.
+run; reusing it for a different request fails closed. FACT-13 developed this
+migration as `0008`, but current main already applied ordinals `0009` through
+`0011`, so the additive file moved forward to `0012`; its content and SHA-256
+checksum are unchanged, and the historical `0005` through `0008` gap stays
+empty.
 
 Run the disposable, real-PostgreSQL proof with:
 

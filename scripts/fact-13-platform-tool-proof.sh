@@ -3,6 +3,7 @@ set -euo pipefail
 
 container_name="orbitfactory-fact13-postgres-proof"
 database_name="orbitfactory_fact13_proof"
+upgrade_database_name="orbitfactory_fact13_upgrade_proof"
 database_user="orbitfactory"
 database_password="fact13-local-proof"
 created_container="false"
@@ -56,4 +57,8 @@ fi
 host_port="$(docker port "$container_name" 5432/tcp | sed 's/.*://')"
 export DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$database_name"
 export ORBITFACTORY_FACT13_PROOF_DATABASE="$database_name"
+docker exec "$container_name" createdb --username "$database_user" "$upgrade_database_name"
+export ORBITFACTORY_FACT13_UPGRADE_DATABASE="$upgrade_database_name"
+export ORBITFACTORY_FACT13_UPGRADE_DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$upgrade_database_name"
+node --test test/postgres/platform-tool-upgrade.test.mjs
 node --experimental-strip-types --test test/postgres/platform-tool.test.mjs

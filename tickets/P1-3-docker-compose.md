@@ -15,3 +15,19 @@
 - [ ] OpenClaw and the coding CLI are runnable by the evaluator with no manual setup beyond `.env` (containerized, or one documented fallback command).
 - [ ] All secrets/config via env vars (`.env.example` provided) — API keys only, no interactive auth.
 - [ ] Restart is idempotent (no re-migration failures, no orphaned state).
+
+## Implementation status
+
+In progress: FACT-7 has current `origin/main` through FACT-19 merged at
+`36be14457e46acba81f06c7f5aba92cdea053914`, without a rebase. At
+`f74c566d0e7c9300e929052e18f895ae588d210e`, the retained no-cache Compose
+proof passed on its unique non-3000 ports. It verifies required-config and
+failed-migration negatives, hermetic interpolation, ordered health, UI and
+PostgreSQL-backed `GET /api/agents` before and after restart, the full chain
+through `0004-message-consumption.sql`, OpenClaw/OpenCode/Git readiness, the
+real missing-key adapter contract, and the literal documented coding-adapter
+command through a no-credit fake child with the scoped FACT-3 environment. Its
+trap verified exact label-scoped containers, networks, volumes, and images
+empty. FACT-6, FACT-8, FACT-9, inherited tests, typecheck, lint, production
+build, and both production dependency audits passed locally. Firstmate owns
+independent exact-head review, merge, and tracker completion.

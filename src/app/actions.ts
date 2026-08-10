@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   createIssue,
+  getIssue,
   updateIssue,
   deleteIssue,
   claimIssue,
@@ -27,6 +28,7 @@ import {
   parseLabelName,
 } from "@/lib/validate";
 import type { ProjectRow } from "@/lib/db/schema";
+import { publishLocalStateEvent } from "@/lib/state-events";
 
 /**
  * Server actions — the UI's mutation seam. They go through the same domain
@@ -103,6 +105,7 @@ export async function createIssueAction(
       priority,
       labelNames,
     });
+    publishLocalStateEvent({ type: "ticket.created", ticketId: issue.id, runId: null, agentId: null });
     revalidatePath("/");
     revalidatePath("/frontier");
     redirect(`/issues/${issue.identifier}`);
@@ -139,6 +142,7 @@ export async function updateIssueAction(
 
     const updated = updateIssue(db, project, identifier, args);
     if (!updated) return fail("issue not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: updated.id, runId: null, agentId: null });
     revalidatePath(`/issues/${identifier}`);
     revalidatePath("/");
     revalidatePath("/frontier");
@@ -162,8 +166,11 @@ export async function deleteIssueAction(
     if (e instanceof ValidationError) return fail(e.message);
     throw e;
   }
+  const existing = getIssue(db, project, identifier);
+  if (!existing) return fail("issue not found");
   const ok = deleteIssue(db, project, identifier);
   if (!ok) return fail("issue not found");
+  publishLocalStateEvent({ type: "ticket.deleted", ticketId: existing.id, runId: null, agentId: null });
   revalidatePath("/");
   revalidatePath("/frontier");
   redirect("/");
@@ -192,6 +199,7 @@ export async function claimIssueAction(
     }
     return fail(`cannot claim an issue with status "${result.status}"`);
   }
+  publishLocalStateEvent({ type: "ticket.updated", ticketId: result.issue.id, runId: null, agentId: null });
   revalidatePath(`/issues/${identifier}`);
   revalidatePath("/");
   revalidatePath("/frontier");
@@ -217,6 +225,7 @@ export async function setIssueLabelsAction(
     );
     const updated = setIssueLabels(db, project, identifier, labelNames);
     if (!updated) return fail("issue not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: updated.id, runId: null, agentId: null });
     revalidatePath(`/issues/${identifier}`);
     return { ok: true };
   } catch (e) {
@@ -247,6 +256,7 @@ export async function addBlockerAction(
     }
     const result = addBlocker(db, project, identifier, blockerId.trim());
     if (result === null) return fail("issue not found");
+    publishLocalStateEvent({ type: "ticket.updated", ticketId: result.blockedIssueId, runId: null, agentId: null });
     revalidatePath(`/issues/${identifier}`);
     return { ok: true };
   } catch (e) {
@@ -269,9 +279,12 @@ export async function removeBlockerAction(
     if (e instanceof ValidationError) return fail(e.message);
     throw e;
   }
+  const issue = getIssue(db, project, identifier);
+  if (!issue) return fail("issue not found");
   const result = removeBlocker(db, project, identifier, blockerId);
   if (result === null) return fail("issue not found");
   if (result === false) return fail("dependency edge not found");
+  publishLocalStateEvent({ type: "ticket.updated", ticketId: issue.id, runId: null, agentId: null });
   revalidatePath(`/issues/${identifier}`);
   return { ok: true };
 }

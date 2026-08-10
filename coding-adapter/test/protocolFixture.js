@@ -1,5 +1,5 @@
 const SESSION_ID = "ses_test";
-export const TEST_CREDENTIAL = "or-secret-1234567890";
+export const TEST_CREDENTIAL = "or-secret-1234567890"; // gitleaks:allow, deterministic fake
 
 function base(type) {
   return { type, timestamp: 1, sessionID: SESSION_ID };
