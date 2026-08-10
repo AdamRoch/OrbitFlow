@@ -199,6 +199,14 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       });
       const firstPool = new Pool({ connectionString: databaseUrl, max: 1 });
       const secondPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      let handlerFinishedAt;
+      const timedRoute = async (transaction, routedMessage) => {
+        await route("race-winner", 75)(transaction, routedMessage);
+        const marker = await transaction.query(
+          "SELECT clock_timestamp() AS finished_at",
+        );
+        handlerFinishedAt = marker.rows[0].finished_at;
+      };
 
       try {
         const [firstPid, secondPid] = await Promise.all([
@@ -208,14 +216,18 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
         assert.notEqual(firstPid.rows[0].pid, secondPid.rows[0].pid);
 
         const results = await Promise.all([
-          consumeNextMessage(firstPool, route("engine-a", 75), {
+          consumeNextMessage(firstPool, timedRoute, {
             consumerId: "engine-a",
           }),
-          consumeNextMessage(secondPool, route("engine-b", 75), {
+          consumeNextMessage(secondPool, timedRoute, {
             consumerId: "engine-b",
           }),
         ]);
         assert.equal(results.filter(Boolean).length, 1);
+        const consumed = results.find(Boolean);
+        assert.ok(
+          consumed.consumption.consumedAt.getTime() >= handlerFinishedAt.getTime(),
+        );
 
         const durable = await client.query(
           `SELECT
@@ -224,6 +236,18 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
           [message.id],
         );
         assert.deepEqual(durable.rows[0], { routes: 1, receipts: 1 });
+
+        const falselyAged = await client.query(
+          `SELECT count(*)::int AS count
+           FROM message_consumptions
+           WHERE message_id = $1 AND consumed_at < $2`,
+          [message.id, handlerFinishedAt],
+        );
+        assert.equal(
+          falselyAged.rows[0].count,
+          0,
+          "a slow handler cannot make a fresh receipt eligible for age cleanup",
+        );
       } finally {
         await Promise.all([firstPool.end(), secondPool.end()]);
       }
@@ -292,6 +316,51 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       }
     });
 
+    await t.test("fairly covers active runs beyond one bounded candidate window", async () => {
+      const runIds = [];
+      for (let index = 0; index < 40; index += 1) {
+        const runId = await createRun(`fair-run-${index}`);
+        runIds.push(runId);
+        const messageCount = index < 32 ? 2 : 1;
+        for (let messageIndex = 0; messageIndex < messageCount; messageIndex += 1) {
+          await insertMessage(pool, {
+            runId,
+            sender: "system",
+            recipient: "agent:worker",
+            type: "system",
+            payload: { index, messageIndex },
+          });
+        }
+      }
+
+      const firstPass = [];
+      for (let index = 0; index < runIds.length; index += 1) {
+        const consumed = await consumeNextMessage(pool, route("fair-window"), {
+          consumerId: "fair-window-engine",
+        });
+        assert.ok(consumed);
+        firstPass.push(consumed.message.runId);
+      }
+      assert.deepEqual(new Set(firstPass), new Set(runIds));
+
+      while (
+        await consumeNextMessage(pool, route("fair-window-drain"), {
+          consumerId: "fair-window-engine",
+        })
+      ) {
+        // Drain the second message from the first 32 runs.
+      }
+
+      const pending = await client.query(
+        `SELECT count(*)::int AS count
+         FROM message_enqueues AS enqueue
+         JOIN messages AS message ON message.id = enqueue.message_id
+         WHERE message.run_id = ANY($1::bigint[])`,
+        [runIds],
+      );
+      assert.equal(pending.rows[0].count, 0);
+    });
+
     await t.test("rolls back handler failure, retries after restart, and stays done", async () => {
       const runId = await createRun("handler-failure-restart");
       const message = await insertMessage(pool, {
@@ -314,6 +383,18 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
           ),
         /deliberate handler failure/,
       );
+
+      const reused = await beforeRestart.query(
+        `SELECT txid_current_if_assigned() AS transaction_id,
+                EXISTS (
+                  SELECT 1 FROM proof_routes WHERE message_id = $1
+                ) AS leaked_route`,
+        [message.id],
+      );
+      assert.deepEqual(reused.rows[0], {
+        transaction_id: null,
+        leaked_route: false,
+      });
       await beforeRestart.end();
 
       const rolledBack = await client.query(
@@ -363,6 +444,7 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       crashingPool.on("error", (error) => connectionErrors.push(error));
       const armedClient = await crashingPool.connect();
       armedClient.on("error", (error) => connectionErrors.push(error));
+      const crashedBackend = await armedClient.query("SELECT pg_backend_pid() AS pid");
       armedClient.release();
 
       await assert.rejects(() =>
@@ -377,7 +459,6 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
           { consumerId: "crashing-engine" },
         ),
       );
-      await crashingPool.end();
       assert.ok(
         connectionErrors.some((error) => /terminat/i.test(error.message)),
         "the killed backend reports its connection failure",
@@ -391,10 +472,13 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       );
       assert.deepEqual(afterCrash.rows[0], { routes: 0, receipts: 0 });
 
-      const replayed = await consumeNextMessage(pool, route("crash-replay"), {
+      const replacementBackend = await crashingPool.query("SELECT pg_backend_pid() AS pid");
+      assert.notEqual(replacementBackend.rows[0].pid, crashedBackend.rows[0].pid);
+      const replayed = await consumeNextMessage(crashingPool, route("crash-replay"), {
         consumerId: "replacement-engine",
       });
       assert.equal(replayed?.message.id, message.id);
+      await crashingPool.end();
     });
 
     await t.test("does not skip an earlier producer or a later blocked commit", async () => {
@@ -518,6 +602,59 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       assert.equal(attempts, 2);
       assert.equal(errors.length, 1);
       assert.match(errors[0].message, /first worker attempt fails/);
+    });
+
+    await t.test("cancels an exhausted-pool checkout before BEGIN or handler", async () => {
+      const runId = await createRun("worker-exhausted-pool-stop");
+      const message = await insertMessage(pool, {
+        runId,
+        sender: "system",
+        recipient: "agent:worker",
+        type: "system",
+        payload: { worker: "queued-checkout" },
+      });
+      const exhaustedPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      const heldClient = await exhaustedPool.connect();
+      let handlerCalls = 0;
+      const worker = startMessageBusWorker(
+        exhaustedPool,
+        async (transaction, routedMessage) => {
+          handlerCalls += 1;
+          await route("must-not-run-after-abort")(transaction, routedMessage);
+        },
+        { consumerId: "exhausted-pool-worker", pollIntervalMs: 10 },
+      );
+
+      await waitUntil(
+        () => exhaustedPool.waitingCount === 1,
+        "worker to queue on exhausted pool",
+      );
+      await Promise.race([
+        worker.stop(),
+        delay(500).then(() => {
+          assert.fail("worker stop waited for an exhausted pool checkout");
+        }),
+      ]);
+      assert.equal(handlerCalls, 0);
+
+      heldClient.release();
+      await waitUntil(
+        () => exhaustedPool.waitingCount === 0 && exhaustedPool.idleCount === 1,
+        "late checkout to be returned to the pool",
+      );
+      await delay(20);
+      assert.equal(handlerCalls, 0);
+      const beforeReplay = await client.query(
+        "SELECT count(*)::int AS count FROM message_consumptions WHERE message_id = $1",
+        [message.id],
+      );
+      assert.equal(beforeReplay.rows[0].count, 0);
+      await exhaustedPool.end();
+
+      const replayed = await consumeNextMessage(pool, route("after-cancel"), {
+        consumerId: "replacement-after-cancel",
+      });
+      assert.equal(replayed?.message.id, message.id);
     });
 
     await t.test("cancels idle polling and waits for an in-flight transaction", async () => {

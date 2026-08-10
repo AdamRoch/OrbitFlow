@@ -74,6 +74,7 @@ export type DatabaseRoutingHandler = (
 
 export interface ConsumeOptions {
   consumerId: string;
+  signal?: AbortSignal;
 }
 
 export interface RunWorkerOptions extends ConsumeOptions {
@@ -270,17 +271,37 @@ export async function insertMessage(
   return messageFromRow(result.rows[0]);
 }
 
-async function rollbackAfterFailure(client: PoolClient, cause: unknown): Promise<never> {
+async function acquirePoolClient(
+  pool: Pool,
+  signal: AbortSignal | undefined,
+): Promise<PoolClient | null> {
+  if (!signal) return pool.connect();
+  if (signal.aborted) return null;
+
+  const connecting = pool.connect();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<null>((resolve) => {
+    onAbort = () => resolve(null);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  let client: PoolClient | null;
   try {
-    await client.query("ROLLBACK");
-  } catch (rollbackError) {
-    throw new AggregateError(
-      [cause, rollbackError],
-      "message routing failed and its transaction could not confirm rollback",
-      { cause },
-    );
+    client = await Promise.race([connecting, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
-  throw cause;
+  if (!client) {
+    void connecting.then(
+      (lateClient) => lateClient.release(),
+      () => undefined,
+    );
+    return null;
+  }
+  if (signal.aborted) {
+    client.release();
+    return null;
+  }
+  return client;
 }
 
 /**
@@ -296,22 +317,26 @@ export async function consumeNextMessage(
   options: ConsumeOptions,
 ): Promise<ConsumedMessage | null> {
   const consumerId = nonBlankString(options.consumerId, "consumerId");
-  const client = await pool.connect();
+  const client = await acquirePoolClient(pool, options.signal);
+  if (!client) return null;
   let transactionOpen = false;
+  let clientReleased = false;
 
   try {
     await client.query("BEGIN");
     transactionOpen = true;
 
-    const candidateRuns = await client.query<{ run_id: string }>(
-      `SELECT DISTINCT message.run_id
-       FROM messages AS message
-       WHERE NOT EXISTS (
-         SELECT 1
-         FROM message_consumptions AS consumption
-         WHERE consumption.message_id = message.id
-       )
-       ORDER BY message.run_id
+    const candidateRuns = await client.query<{
+      run_id: string;
+      next_sequence_number: string;
+    }>(
+      `SELECT consumer.run_id, consumer.next_sequence_number
+       FROM message_consumer_runs AS consumer
+       JOIN messages AS message
+         ON message.run_id = consumer.run_id
+        AND message.sequence_number = consumer.next_sequence_number
+       JOIN message_enqueues AS enqueue ON enqueue.message_id = message.id
+       ORDER BY consumer.last_consumed_at ASC NULLS FIRST, consumer.run_id
        LIMIT $1`,
       [CANDIDATE_RUN_LIMIT],
     );
@@ -333,15 +358,10 @@ export async function consumeNextMessage(
         `SELECT message.*
          FROM messages AS message
          WHERE message.run_id = $1
-           AND NOT EXISTS (
-             SELECT 1
-             FROM message_consumptions AS consumption
-             WHERE consumption.message_id = message.id
-           )
-         ORDER BY message.sequence_number
+           AND message.sequence_number = $2
          FOR UPDATE OF message
          LIMIT 1`,
-        [candidate.run_id],
+        [candidate.run_id, candidate.next_sequence_number],
       );
       if (messageResult.rowCount === 1) {
         message = messageFromRow(messageResult.rows[0]);
@@ -367,6 +387,27 @@ export async function consumeNextMessage(
        RETURNING message_id, consumer_id, consumed_at`,
       [message.id, consumerId],
     );
+    const advanced = await client.query(
+      `UPDATE message_consumer_runs
+       SET next_sequence_number = next_sequence_number + 1,
+           last_consumed_at = clock_timestamp()
+       WHERE run_id = $1
+         AND next_sequence_number = $2
+       RETURNING run_id`,
+      [message.runId, message.sequenceNumber],
+    );
+    if (advanced.rowCount !== 1) {
+      throw new Error("message consumer run cursor changed inside its advisory lock");
+    }
+    const dequeued = await client.query(
+      `DELETE FROM message_enqueues
+       WHERE message_id = $1
+       RETURNING message_id`,
+      [message.id],
+    );
+    if (dequeued.rowCount !== 1) {
+      throw new Error("pending message disappeared inside its advisory lock");
+    }
 
     await client.query("COMMIT");
     transactionOpen = false;
@@ -379,10 +420,22 @@ export async function consumeNextMessage(
       },
     };
   } catch (error) {
-    if (transactionOpen) return rollbackAfterFailure(client, error);
+    if (transactionOpen) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        client.release(true);
+        clientReleased = true;
+        throw new AggregateError(
+          [error, rollbackError],
+          "message routing failed and its transaction could not confirm rollback",
+          { cause: error },
+        );
+      }
+    }
     throw error;
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 }
 
