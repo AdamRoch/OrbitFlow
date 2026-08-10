@@ -15,3 +15,11 @@
 - [ ] OpenClaw and the coding CLI are runnable by the evaluator with no manual setup beyond `.env` (containerized, or one documented fallback command).
 - [ ] All secrets/config via env vars (`.env.example` provided) — API keys only, no interactive auth.
 - [ ] Restart is idempotent (no re-migration failures, no orphaned state).
+
+## Implementation status
+
+In progress: local implementation and lifecycle proof are complete. The stack
+builds the app, PostgreSQL, ordered migration step, dedicated OpenClaw gateway,
+and engine-owned OpenCode runtime; it has retained configuration, health,
+restart, and teardown proof in `docs/fact-7-docker-compose.md`. Firstmate owns
+independent exact-head review, merge, and tracker completion.
