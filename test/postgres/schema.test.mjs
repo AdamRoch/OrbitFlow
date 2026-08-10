@@ -113,6 +113,14 @@ const expectedColumns = {
     "created_at",
     "updated_at",
   ],
+  message_consumer_runs: [
+    "run_id",
+    "next_sequence_number",
+    "last_consumed_at",
+  ],
+  message_enqueues: ["message_id", "enqueued_at"],
+  message_ready_runs: ["run_id", "message_id", "ready_at"],
+  message_consumptions: ["message_id", "consumer_id", "consumed_at"],
   schedules: [
     "id",
     "cron_expression",
@@ -178,6 +186,9 @@ const requiredConstraints = [
   "messages_sequence_positive",
   "messages_token_usage_nonnegative",
   "messages_token_usage_object",
+  "message_consumer_runs_sequence_positive",
+  "message_consumptions_consumer_not_blank",
+  "message_ready_runs_state_complete",
   "schedules_exactly_one_target",
   "ticket_labels_ticket_label_unique",
   "tickets_priority_range",
@@ -195,6 +206,8 @@ const requiredIndexes = [
   "idx_dependencies_blocker",
   "idx_messages_run_conversation",
   "idx_messages_ticket",
+  "idx_message_ready_runs_fair",
+  "idx_message_consumptions_consumed_at",
   "idx_schedules_agent",
   "idx_schedules_enabled",
   "idx_schedules_workflow",
@@ -269,13 +282,14 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         "0001-control-plane.sql",
         "0002-tickets.sql",
         "0003-message-plane.sql",
+        "0004-message-consumption.sql",
       ]);
-      assert.equal(firstLog.length, 3);
+      assert.equal(firstLog.length, 4);
 
       const journalBefore = await client.query(
         "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
       );
-      assert.equal(journalBefore.rowCount, 3);
+      assert.equal(journalBefore.rowCount, 4);
       for (const row of journalBefore.rows) {
         assert.match(row.checksum, /^[a-f0-9]{64}$/);
       }
@@ -494,6 +508,16 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         dependencies_project_id_fkey: "REFERENCES projects(id) ON DELETE RESTRICT",
         messages_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         messages_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE SET NULL",
+        message_consumer_runs_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE CASCADE",
+        message_enqueues_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        message_ready_runs_run_id_fkey:
+          "REFERENCES message_consumer_runs(run_id) ON DELETE CASCADE",
+        message_ready_runs_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        message_consumptions_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
         schedules_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         schedules_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",
         ticket_labels_label_id_fkey: "REFERENCES labels(id) ON DELETE CASCADE",
@@ -532,7 +556,10 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           "messages_05_preserve_order",
           "messages_10_enforce_ticket_run",
           "messages_20_assign_sequence",
+          "messages_30_track_consumption",
+          "messages_40_refresh_ready_run",
           "tickets_10_enforce_message_runs",
+          "workflow_runs_30_initialize_message_consumer",
         ],
       );
     });
