@@ -1,6 +1,6 @@
 -- FACT-10 needs durable dispatch/outbox state that cannot be reconstructed
--- safely from workflow_runs.spec or the message receipt cursor. FACT-12 owns
--- ordinal 0005, so the workflow engine intentionally reserves 0006.
+-- safely from workflow_runs.spec or the message receipt cursor. It lands as
+-- 0011 after main's existing chain (0001-0004, 0009, 0010).
 
 CREATE TYPE workflow_dispatch_status AS ENUM (
   'pending',
