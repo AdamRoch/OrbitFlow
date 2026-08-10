@@ -54,6 +54,8 @@ function safeGitEnv(home) {
     GCM_INTERACTIVE: "Never",
     GIT_PAGER: "cat",
     GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
     LC_ALL: "C",
   };
   if (process.platform === "win32") {

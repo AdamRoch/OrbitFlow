@@ -7,13 +7,15 @@
 //   OPENROUTER_API_KEY=<key> npm run prove -- ["task text"]
 
 import { execFileSync } from "node:child_process";
-import { rm } from "node:fs/promises";
 import {
   createOpenCodeAdapter,
   OPEN_CODE_BINARY,
   OPEN_CODE_VERSION,
 } from "../src/openCodeAdapter.js";
-import { createIsolatedGitWorkspace } from "../src/workspace.js";
+import {
+  createIsolatedGitWorkspace,
+  removeIsolatedGitWorkspace,
+} from "../src/workspace.js";
 
 const TASK =
   process.argv[2] ||
@@ -40,7 +42,7 @@ async function main() {
     console.log("\n--- log (bounded, tail) ---");
     console.log(log);
   } finally {
-    await rm(workspace, { recursive: true, force: true });
+    await removeIsolatedGitWorkspace(workspace);
   }
 }
 

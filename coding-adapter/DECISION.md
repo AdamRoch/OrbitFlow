@@ -74,29 +74,34 @@ implementing `delegate_coding_task(task, workspace) -> {diff, log, usage}`
 per PRD §5. Plurality is deferred (PRD §5, §6 stretch) -- the factory
 function shape (`spawn`, `apiKeyEnvVar`, `model`, `binary` all injectable)
 exists so a second adapter can be added later without reworking this one,
-without building a plugin framework now.
+without building a plugin framework now. The workspace must come from
+`createIsolatedGitWorkspace()`, which registers a canonical temporary root and
+an ownership marker before the CLI can receive the provider credential.
 
 ## Structured failures (`src/errors.js`)
 
 - `MissingCredentialsError` -- required env var absent, checked before
   spawning (no wasted process/network call).
-- `CliFailureError` -- nonzero exit or spawn error; carries bounded
-  stderr/stdout tails.
+- `CliFailureError` -- unowned workspace, nonzero exit, spawn error, or failed
+  inspection; carries bounded stderr/stdout tails when available.
 - `TimeoutError` -- process exceeded `timeoutMs`, killed (`SIGTERM` then
   `SIGKILL` after 2s if still alive).
 - `MalformedOutputError` -- exit 0 but stdout didn't parse as the expected
   NDJSON event stream, has invalid usage, or lacks a terminal completed step.
-- `CredentialExposureError` -- the evaluator key appeared in CLI output or
-  changed workspace content. No affected output is returned.
+- `CredentialExposureError` -- the evaluator key or a reversible Base64, hex,
+  or URL encoding appeared in CLI output or workspace state. No affected
+  output is returned.
 
 The protocol stream is parsed in full while the presentation log remains
 bounded. Returned logs, diffs, error messages, and error details are redacted,
-and diff generation does not stage changes or write Git blobs. The adapter
-snapshots the pre-run commit, scans raw bytes from every changed working-tree
-file and affected base blob before Git can encode a binary patch, and removes
-the isolated workspace if it detects the credential. Every Git subprocess uses
-a secret-free environment with host configuration, prompting, hooks, external
-diffs, text conversion, pagers, and fsmonitor disabled.
+and diff generation does not stage changes or write Git blobs. Before success,
+the adapter scans literal and reversible credential forms across every file,
+ignored path, symlink, and decoded Git object in the complete owned workspace.
+Credential exposure removes only the registered adapter-owned temporary root;
+an unregistered caller path is rejected before OpenCode starts. Every Git
+subprocess uses a secret-free environment with host configuration, prompting,
+hooks, external diffs, text conversion, pagers, lazy fetching, replacement
+objects, and fsmonitor disabled.
 
 ## Proof
 
@@ -110,5 +115,6 @@ workspace. Run without the key to see the missing-credential failure path.
 `npm test` in `coding-adapter/` uses only fakes and makes no live provider calls.
 It covers pure command construction, minimal environment containment, state
 cleanup, complete streaming usage parsing, bounded/redacted output, unstaged
-diffs, binary credential detection, isolated Git behavior, protocol validation,
-timeouts, and structured failure mapping.
+diffs, encoded credential detection across ignored and Git state, owned-root
+deletion, caller-workspace preservation, isolated Git behavior, protocol
+validation, timeouts, and structured failure mapping.

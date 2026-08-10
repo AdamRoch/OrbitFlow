@@ -5,12 +5,13 @@
 // See ../DECISION.md for why opencode was picked over claude/codex.
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSafeGit } from "./git.js";
+import { getOwnedWorkspace, removeOwnedWorkspace } from "./workspace.js";
 import {
   MissingCredentialsError,
   CliFailureError,
@@ -34,6 +35,7 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_STDERR_CHARS = 4_000;
 const MAX_DIFF_BYTES = 10 * 1024 * 1024;
+const MAX_WORKSPACE_SCAN_BYTES = 50 * 1024 * 1024;
 const EVENT_TYPES = new Set(["step_start", "step_finish", "text", "reasoning", "tool_use", "error"]);
 
 export function createOpenCodeAdapter({
@@ -50,9 +52,19 @@ export function createOpenCodeAdapter({
       throw new MissingCredentialsError(apiKeyEnvVar);
     }
 
+    const ownership = getOwnedWorkspace(workspace);
+    if (!ownership) {
+      throw new CliFailureError(
+        "workspace must be created by createIsolatedGitWorkspace in this process"
+      );
+    }
+    workspace = ownership.workspace;
+    const secrets = secretVariants(credential);
     const isolatedState = await createIsolatedState(apiKeyEnvVar, credential, env.PATH);
     try {
       const baseCommit = resolveBaseCommit(workspace, isolatedState.root);
+      await assertWorkspaceSafe(ownership, secrets, isolatedState.root);
+
       const args = [
         "--pure",
         "run",
@@ -65,34 +77,26 @@ export function createOpenCodeAdapter({
         workspace,
         "--auto",
       ];
-      const result = await runProcess(spawn, binary, args, {
-        cwd: workspace,
-        env: isolatedState.env,
-        timeoutMs,
-        secrets: [credential],
-      });
-
-      let changedContentExposed;
+      let result;
       try {
-        changedContentExposed = changedContentContainsSecret(
-          workspace,
-          baseCommit,
-          credential,
-          isolatedState.root
-        );
-      } catch {
-        await removeContaminatedWorkspace(workspace);
-        throw new CliFailureError("failed to inspect workspace for credential exposure");
+        result = await runProcess(spawn, binary, args, {
+          cwd: workspace,
+          env: isolatedState.env,
+          timeoutMs,
+          secrets,
+        });
+      } catch (err) {
+        await assertWorkspaceSafe(ownership, secrets, isolatedState.root);
+        throw err;
       }
 
-      if (result.secretExposed || changedContentExposed) {
-        await removeContaminatedWorkspace(workspace);
-        throw new CredentialExposureError("credential exposure detected; workspace removed");
-      }
+      await assertWorkspaceSafe(ownership, secrets, isolatedState.root, result.secretExposed);
 
       if (result.timedOut) {
         throw new TimeoutError(timeoutMs);
       }
+
+      if (result.processError) throw result.processError;
 
       if (result.exitCode !== 0) {
         throw new CliFailureError(`${binary} exited with code ${result.exitCode}`, {
@@ -105,14 +109,14 @@ export function createOpenCodeAdapter({
 
       const usage = result.protocol.result(binary);
       const rawDiff = computeDiff(workspace, baseCommit, isolatedState.root);
-      if (containsSecret(rawDiff, [credential])) {
-        await removeContaminatedWorkspace(workspace);
+      if (containsSecret(rawDiff, secrets)) {
+        await discardOwnedWorkspace(ownership);
         throw new CredentialExposureError("credential exposure detected; workspace removed");
       }
 
       return {
-        diff: redact(rawDiff, [credential]),
-        log: boundedRedacted(result.stdoutLog, [credential], MAX_LOG_CHARS),
+        diff: redact(rawDiff, secrets),
+        log: boundedRedacted(result.stdoutLog, secrets, MAX_LOG_CHARS),
         usage,
       };
     } finally {
@@ -172,7 +176,7 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
     const stderrScanner = createSecretScanner(secrets);
     const overlap = longestSecret(secrets);
 
-    const finish = (exitCode, signal) => {
+    const finish = (exitCode, signal, processError = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
@@ -186,6 +190,7 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
         signal,
         timedOut,
         protocol,
+        processError,
         secretExposed: stdoutScanner.found() || stderrScanner.found(),
       });
     };
@@ -222,12 +227,11 @@ function runProcess(spawn, binary, args, { cwd, env, timeoutMs, secrets }) {
     });
 
     child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      clearTimeout(forceKillTimer);
-      clearTimeout(settleTimer);
-      reject(new CliFailureError(`${binary} process error: ${redact(errorMessage(err), secrets)}`));
+      finish(
+        null,
+        null,
+        new CliFailureError(`${binary} process error: ${redact(errorMessage(err), secrets)}`)
+      );
     });
 
     child.on("close", finish);
@@ -244,6 +248,30 @@ function appendBounded(current, chunk, maxChars) {
 
 function boundedRedacted(value, secrets, maxChars) {
   return appendBounded("", redact(value, secrets), maxChars);
+}
+
+function secretVariants(credential) {
+  const bytes = Buffer.from(credential);
+  const base64 = bytes.toString("base64");
+  const percentEncoded = [...bytes]
+    .map((byte) => `%${byte.toString(16).padStart(2, "0")}`)
+    .join("");
+  const variants = new Set([
+    credential,
+    base64,
+    base64.replace(/=+$/, ""),
+    base64.replaceAll("+", "-").replaceAll("/", "_"),
+    base64.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""),
+    bytes.toString("hex"),
+    bytes.toString("hex").toUpperCase(),
+    percentEncoded,
+    percentEncoded.toUpperCase(),
+  ]);
+  try {
+    variants.add(encodeURIComponent(credential));
+    variants.add(new URLSearchParams({ credential }).toString().slice("credential=".length));
+  } catch {}
+  return [...variants].filter(Boolean).sort((left, right) => right.length - left.length);
 }
 
 function redact(value, secrets) {
@@ -470,107 +498,118 @@ function resolveBaseCommit(workspace, gitHome) {
   }
 }
 
-function changedContentContainsSecret(workspace, baseCommit, credential, gitHome) {
-  const secret = Buffer.from(credential);
-  const changedPaths = new Set([
-    ...nulPaths(
-      runSafeGit(
-        [
-          "diff",
-          "--name-only",
-          "-z",
-          "--no-ext-diff",
-          "--no-textconv",
-          "--no-renames",
-          baseCommit,
-          "--",
-        ],
-        { cwd: workspace, home: gitHome, maxBuffer: MAX_DIFF_BYTES }
-      )
-    ),
-    ...nulPaths(
-      runSafeGit(["ls-files", "--others", "--exclude-standard", "-z"], {
-        cwd: workspace,
-        home: gitHome,
-        maxBuffer: MAX_DIFF_BYTES,
-      })
-    ),
-  ]);
-  const baseEntries = baseTreeEntries(workspace, baseCommit, gitHome);
+function inspectWorkspaceState(workspace, secrets, gitHome) {
+  const secretBuffers = secrets.map((secret) => Buffer.from(secret));
+  let scannedBytes = 0;
+  let exposed = false;
+  let failed = false;
 
-  for (const file of changedPaths) {
-    if (Buffer.from(file).includes(secret)) return true;
+  const inspect = (content) => {
+    scannedBytes += content.length;
+    if (scannedBytes > MAX_WORKSPACE_SCAN_BYTES) throw new Error("workspace scan limit exceeded");
+    exposed ||= secretBuffers.some((secret) => content.includes(secret));
+  };
 
-    const baseEntry = baseEntries.get(file);
-    if (baseEntry?.type === "blob") {
-      const baseContent = runSafeGit(["cat-file", "blob", baseEntry.oid], {
-        cwd: workspace,
-        home: gitHome,
-        maxBuffer: MAX_DIFF_BYTES,
-      });
-      if (baseContent.includes(secret)) return true;
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      inspect(Buffer.from(path.relative(workspace, target)));
+      const stat = lstatSync(target);
+      if (stat.isSymbolicLink()) {
+        inspect(Buffer.from(readlinkSync(target)));
+      } else if (stat.isDirectory()) {
+        walk(target);
+      } else if (stat.isFile()) {
+        if (stat.size > MAX_WORKSPACE_SCAN_BYTES - scannedBytes) {
+          throw new Error("workspace scan limit exceeded");
+        }
+        inspect(readFileSync(target));
+      } else {
+        throw new Error("workspace contains an unsupported file type");
+      }
     }
+  };
 
-    const currentContent = readCurrentContent(workspace, file);
-    if (currentContent?.includes(secret)) return true;
-  }
-  return false;
-}
-
-function baseTreeEntries(workspace, baseCommit, gitHome) {
-  const entries = new Map();
-  const output = runSafeGit(["ls-tree", "-r", "-z", baseCommit, "--"], {
-    cwd: workspace,
-    home: gitHome,
-    maxBuffer: MAX_DIFF_BYTES,
-  }).toString();
-  for (const record of output.split("\0")) {
-    if (!record) continue;
-    const tab = record.indexOf("\t");
-    if (tab === -1) throw new Error("malformed Git tree entry");
-    const [mode, type, oid] = record.slice(0, tab).split(" ");
-    if (!mode || !type || !/^[0-9a-f]{40,64}$/.test(oid)) {
-      throw new Error("malformed Git tree entry");
-    }
-    entries.set(record.slice(tab + 1), { mode, type, oid });
-  }
-  return entries;
-}
-
-function readCurrentContent(workspace, file) {
-  const root = path.resolve(workspace);
-  const target = path.resolve(root, file);
-  const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("changed path escaped workspace");
-  }
-
-  let stat;
   try {
-    stat = lstatSync(target);
-  } catch (err) {
-    if (err?.code === "ENOENT") return null;
-    throw err;
+    walk(workspace);
+  } catch {
+    failed = true;
   }
-  if (stat.isSymbolicLink()) return Buffer.from(readlinkSync(target));
-  if (stat.isDirectory()) return null;
-  if (!stat.isFile() || stat.size > MAX_DIFF_BYTES) {
-    throw new Error("unsupported changed file");
+
+  try {
+    const alternates = path.join(workspace, ".git", "objects", "info", "alternates");
+    try {
+      lstatSync(alternates);
+      throw new Error("Git object alternates are not supported");
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+
+    const objects = runSafeGit(
+      [
+        "cat-file",
+        "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        "--batch-all-objects",
+      ],
+      { cwd: workspace, home: gitHome, maxBuffer: MAX_DIFF_BYTES }
+    )
+      .toString()
+      .trim();
+    for (const line of objects ? objects.split("\n") : []) {
+      const [oid, type, sizeText] = line.split(" ");
+      const size = Number(sizeText);
+      if (
+        !/^[0-9a-f]{40,64}$/.test(oid) ||
+        !["blob", "commit", "tag", "tree"].includes(type) ||
+        !Number.isSafeInteger(size) ||
+        size < 0 ||
+        size > MAX_WORKSPACE_SCAN_BYTES
+      ) {
+        throw new Error("malformed Git object metadata");
+      }
+      inspect(
+        runSafeGit(["cat-file", type, oid], {
+          cwd: workspace,
+          home: gitHome,
+          maxBuffer: size + 1024,
+        })
+      );
+    }
+  } catch {
+    failed = true;
   }
-  return readFileSync(target);
+
+  return { exposed, failed };
 }
 
 function nulPaths(output) {
   return output.toString().split("\0").filter(Boolean);
 }
 
-async function removeContaminatedWorkspace(workspace) {
-  const target = path.resolve(workspace);
-  if (target === path.parse(target).root || target === process.cwd()) {
-    throw new CliFailureError("refusing to remove unsafe workspace path");
+async function assertWorkspaceSafe(ownership, secrets, gitHome, outputExposed = false) {
+  if (outputExposed) {
+    await discardOwnedWorkspace(ownership);
+    throw new CredentialExposureError("credential exposure detected; workspace removed");
   }
+  if (getOwnedWorkspace(ownership.workspace) !== ownership) {
+    await discardOwnedWorkspace(ownership);
+    throw new CliFailureError("workspace ownership changed during CLI execution");
+  }
+
+  const inspection = inspectWorkspaceState(ownership.workspace, secrets, gitHome);
+  if (inspection.exposed) {
+    await discardOwnedWorkspace(ownership);
+    throw new CredentialExposureError("credential exposure detected; workspace removed");
+  }
+  if (inspection.failed) {
+    await discardOwnedWorkspace(ownership);
+    throw new CliFailureError("failed to inspect workspace for credential exposure");
+  }
+}
+
+async function discardOwnedWorkspace(ownership) {
   try {
-    await rm(target, { recursive: true, force: true });
+    if (!(await removeOwnedWorkspace(ownership))) throw new Error("workspace ownership changed");
   } catch {
     throw new CliFailureError("failed to remove contaminated workspace");
   }

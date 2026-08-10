@@ -1,8 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { access, writeFile } from "node:fs/promises";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { createOpenCodeAdapter } from "../src/openCodeAdapter.js";
+import { runSafeGit } from "../src/git.js";
 import { createIsolatedGitWorkspace } from "../src/workspace.js";
 import { makeFakeChild } from "./fakeChild.js";
 import {
@@ -147,6 +150,19 @@ test("credential in CLI output fails without exposing the credential", async () 
   await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
 });
 
+test("encoded credential in CLI output fails without exposing it", async () => {
+  const workspace = await createIsolatedGitWorkspace();
+  const credential = "top-secret-test-key";
+  const encoded = Buffer.from(credential).toString("base64");
+  const adapter = adapterForOutput(ndjson([stepStart(), textEvent(encoded), stepFinish()]), credential);
+
+  await assert.rejects(
+    () => adapter.delegate_coding_task("task", workspace),
+    (err) => err.code === "credential_exposure" && !JSON.stringify(err).includes(encoded)
+  );
+  await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
+});
+
 test("credential in workspace content fails and removes the workspace", async () => {
   const workspace = await createIsolatedGitWorkspace();
   const credential = "top-secret-test-key";
@@ -176,6 +192,99 @@ test("credential in binary workspace content is detected before diff encoding", 
   await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
 });
 
+test("encoded credentials in ignored and Git state remove the owned workspace", async () => {
+  const workspace = await createIsolatedGitWorkspace();
+  const credential = "top-secret-test-key";
+  const adapter = createOpenCodeAdapter({
+    spawn() {
+      writeFileSync(path.join(workspace, ".gitignore"), "ignored.txt\n");
+      writeFileSync(
+        path.join(workspace, "ignored.txt"),
+        Buffer.from(credential).toString("base64")
+      );
+      writeFileSync(
+        path.join(workspace, ".git", "provider-state"),
+        Buffer.from(credential).toString("hex")
+      );
+      return successfulChild();
+    },
+    env: { OPENROUTER_API_KEY: credential },
+  });
+
+  await assert.rejects(
+    () => adapter.delegate_coding_task("task", workspace),
+    (err) => err.code === "credential_exposure"
+  );
+  await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
+});
+
+test("encoded credential in deleted committed content is detected", async () => {
+  const workspace = await createIsolatedGitWorkspace();
+  const credential = "top/secret+test:key";
+  const encoded = encodeURIComponent(credential);
+  const gitHome = path.join(workspace, ".git", "test-home");
+  const commit = (message) =>
+    runSafeGit(
+      [
+        "-c",
+        "user.email=test@orbitflow.local",
+        "-c",
+        "user.name=orbitflow-test",
+        "commit",
+        "-q",
+        "-m",
+        message,
+      ],
+      { cwd: workspace, home: gitHome }
+    );
+  const adapter = createOpenCodeAdapter({
+    spawn() {
+      const leaked = path.join(workspace, "deleted.txt");
+      writeFileSync(leaked, encoded);
+      runSafeGit(["add", "-A"], { cwd: workspace, home: gitHome });
+      commit("add encoded content");
+      unlinkSync(leaked);
+      runSafeGit(["add", "-A"], { cwd: workspace, home: gitHome });
+      commit("remove encoded content");
+      return successfulChild();
+    },
+    env: { OPENROUTER_API_KEY: credential },
+  });
+
+  await assert.rejects(
+    () => adapter.delegate_coding_task("task", workspace),
+    (err) => err.code === "credential_exposure"
+  );
+  await assert.rejects(access(workspace), (err) => err.code === "ENOENT");
+});
+
+test("caller-owned workspace is rejected without spawning or deletion", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "coding-adapter-caller-"));
+  const gitHome = path.join(workspace, "git-home");
+  runSafeGit(["init", "-q"], { cwd: workspace, home: gitHome });
+  const sentinel = path.join(workspace, "keep.txt");
+  await writeFile(sentinel, "caller data\n");
+  let spawned = false;
+  const adapter = createOpenCodeAdapter({
+    spawn() {
+      spawned = true;
+      return successfulChild();
+    },
+    env: { OPENROUTER_API_KEY: TEST_CREDENTIAL },
+  });
+
+  try {
+    await assert.rejects(
+      () => adapter.delegate_coding_task("task", workspace),
+      (err) => err.code === "cli_failure" && err.message.includes("createIsolatedGitWorkspace")
+    );
+    assert.equal(spawned, false);
+    await access(sentinel);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 function adapterForOutput(output, credential = TEST_CREDENTIAL) {
   return createOpenCodeAdapter({
     spawn() {
@@ -188,4 +297,13 @@ function adapterForOutput(output, credential = TEST_CREDENTIAL) {
     },
     env: { OPENROUTER_API_KEY: credential },
   });
+}
+
+function successfulChild() {
+  const child = makeFakeChild();
+  queueMicrotask(() => {
+    child.stdout.emit("data", successfulRun());
+    child.emit("close", 0);
+  });
+  return child;
 }
