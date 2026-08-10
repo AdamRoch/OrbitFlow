@@ -1,40 +1,40 @@
 {
   "payloads": [
     {
-      "text": "{\"artifact\":{\"agent\":\"Mira\",\"persona\":\"skeptical systems scout\",\"memory_fact\":\"amber-lattice\",\"observation\":\"Agent is named Mira, themed as a skeptical systems scout, with durable launch phrase 'amber-lattice' in memory.\"},\"handoff_brief\":\"Identified agent Mira and reported durable phrase 'amber-lattice' from memory, per workflow instructions.\",\"events\":[]}",
+      "text": "{\"artifact\":{\"agent\":\"Mira\",\"persona\":\"skeptical systems scout\",\"memory_fact\":\"amber-lattice\",\"observation\":\"The durable phrase 'amber-lattice' was found in workspace memory under Durable memory.\"},\"handoff_brief\":\"Confirmed agent identity, persona, and durable phrase per workspace memory without tool use or invention.\",\"events\":[]}",
       "mediaUrl": null
     }
   ],
   "meta": {
-    "durationMs": 10437,
+    "durationMs": 15773,
     "agentMeta": {
-      "sessionId": "8618f13d-9e4e-479f-9cd6-4842723d6d08",
+      "sessionId": "74cd7420-49d6-4131-aaa7-b6d7dc1c520f",
       "provider": "openrouter",
       "model": "openai/gpt-4.1-mini",
       "usage": {
-        "input": 301,
-        "output": 81,
-        "cacheRead": 3840,
-        "total": 4222
+        "input": 2575,
+        "output": 72,
+        "cacheRead": 1792,
+        "total": 4439
       },
       "lastCallUsage": {
-        "input": 301,
-        "output": 81,
-        "cacheRead": 3840,
+        "input": 2575,
+        "output": 72,
+        "cacheRead": 1792,
         "cacheWrite": 0,
-        "total": 4222
+        "total": 4439
       },
-      "promptTokens": 4141
+      "promptTokens": 4367
     },
     "aborted": false,
     "systemPromptReport": {
       "source": "run",
-      "generatedAt": 1786313888212,
-      "sessionId": "8618f13d-9e4e-479f-9cd6-4842723d6d08",
+      "generatedAt": 1786326620037,
+      "sessionId": "74cd7420-49d6-4131-aaa7-b6d7dc1c520f",
       "sessionKey": "agent:fact-scout:main",
       "provider": "openrouter",
       "model": "openai/gpt-4.1-mini",
-      "workspaceDir": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout",
+      "workspaceDir": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout",
       "bootstrapMaxChars": 12000,
       "bootstrapTotalMaxChars": 60000,
       "bootstrapTruncation": {
@@ -49,14 +49,14 @@
         "sandboxed": false
       },
       "systemPrompt": {
-        "chars": 14744,
-        "projectContextChars": 1520,
-        "nonProjectContextChars": 13224
+        "chars": 15157,
+        "projectContextChars": 1832,
+        "nonProjectContextChars": 13325
       },
       "injectedWorkspaceFiles": [
         {
           "name": "AGENTS.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/AGENTS.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/AGENTS.md",
           "missing": false,
           "rawChars": 101,
           "injectedChars": 101,
@@ -64,7 +64,7 @@
         },
         {
           "name": "SOUL.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/SOUL.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/SOUL.md",
           "missing": false,
           "rawChars": 121,
           "injectedChars": 121,
@@ -72,7 +72,7 @@
         },
         {
           "name": "TOOLS.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/TOOLS.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/TOOLS.md",
           "missing": false,
           "rawChars": 44,
           "injectedChars": 44,
@@ -80,7 +80,7 @@
         },
         {
           "name": "IDENTITY.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/IDENTITY.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/IDENTITY.md",
           "missing": false,
           "rawChars": 65,
           "injectedChars": 65,
@@ -88,7 +88,7 @@
         },
         {
           "name": "USER.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/USER.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/USER.md",
           "missing": false,
           "rawChars": 60,
           "injectedChars": 60,
@@ -96,7 +96,7 @@
         },
         {
           "name": "HEARTBEAT.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/HEARTBEAT.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/HEARTBEAT.md",
           "missing": false,
           "rawChars": 31,
           "injectedChars": 31,
@@ -104,15 +104,15 @@
         },
         {
           "name": "BOOTSTRAP.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/BOOTSTRAP.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/BOOTSTRAP.md",
           "missing": true,
           "rawChars": 0,
-          "injectedChars": 124,
+          "injectedChars": 163,
           "truncated": false
         },
         {
           "name": "MEMORY.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout/MEMORY.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout/MEMORY.md",
           "missing": false,
           "rawChars": 61,
           "injectedChars": 61,
@@ -290,8 +290,8 @@
       }
     },
     "finalPromptText": "# Workflow context\nOrbitFlow is testing whether OpenClaw can execute deterministic workflow nodes.\n\n# Assigned task\nIdentify yourself as Mira, describe your configured persona in one short phrase, and report the durable phrase from your workspace memory.\nDo not use tools. Do not invent a phrase that is absent from memory.\n\n# Upstream handoff brief\nThis is an isolated runtime proof. Separate direct evidence from inference.\n\n# Output contract\nReturn only one JSON object with this exact shape:\n{\"artifact\":{\"agent\":\"string\",\"persona\":\"string\",\"memory_fact\":\"string\",\"observation\":\"string\"},\"handoff_brief\":\"string\",\"events\":[]}\nDo not wrap the JSON in Markdown fences.",
-    "finalAssistantVisibleText": "{\"artifact\":{\"agent\":\"Mira\",\"persona\":\"skeptical systems scout\",\"memory_fact\":\"amber-lattice\",\"observation\":\"Agent is named Mira, themed as a skeptical systems scout, with durable launch phrase 'amber-lattice' in memory.\"},\"handoff_brief\":\"Identified agent Mira and reported durable phrase 'amber-lattice' from memory, per workflow instructions.\",\"events\":[]}",
-    "finalAssistantRawText": "{\"artifact\":{\"agent\":\"Mira\",\"persona\":\"skeptical systems scout\",\"memory_fact\":\"amber-lattice\",\"observation\":\"Agent is named Mira, themed as a skeptical systems scout, with durable launch phrase 'amber-lattice' in memory.\"},\"handoff_brief\":\"Identified agent Mira and reported durable phrase 'amber-lattice' from memory, per workflow instructions.\",\"events\":[]}",
+    "finalAssistantVisibleText": "{\"artifact\":{\"agent\":\"Mira\",\"persona\":\"skeptical systems scout\",\"memory_fact\":\"amber-lattice\",\"observation\":\"The durable phrase 'amber-lattice' was found in workspace memory under Durable memory.\"},\"handoff_brief\":\"Confirmed agent identity, persona, and durable phrase per workspace memory without tool use or invention.\",\"events\":[]}",
+    "finalAssistantRawText": "{\"artifact\":{\"agent\":\"Mira\",\"persona\":\"skeptical systems scout\",\"memory_fact\":\"amber-lattice\",\"observation\":\"The durable phrase 'amber-lattice' was found in workspace memory under Durable memory.\"},\"handoff_brief\":\"Confirmed agent identity, persona, and durable phrase per workspace memory without tool use or invention.\",\"events\":[]}",
     "replayInvalid": false,
     "livenessState": "working",
     "stopReason": "stop",

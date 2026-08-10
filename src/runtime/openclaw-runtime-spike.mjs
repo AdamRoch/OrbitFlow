@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const OPENCLAW_MODEL = "openrouter/openai/gpt-4.1-mini";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+export const OPENROUTER_MODEL = "openai/gpt-4.1-mini";
+
+const GENERATED_OPENROUTER_BASE_URL = "https://openrouter.ai/v1";
+const DIAGNOSTIC_PROMPT = "Reply with exactly OK. Do not use tools.";
+const DIAGNOSTIC_SESSION_ID = "fact-1-openrouter-diagnostic";
+const FAILED_DIAGNOSTIC_CAPTURE_TIMEOUT_MS = 150_000;
 
 export const AGENT_DEFINITIONS = [
   {
@@ -101,6 +107,38 @@ export function parseOutputContract(text) {
     throw new OpenClawContractError("Agent output events must be an array");
   }
   return output;
+}
+
+function expectedMemoryPhrase(agent) {
+  return agent.memoryFact
+    .replace(/^The durable (?:launch|safety) phrase is /, "")
+    .replace(/\.$/, "");
+}
+
+export function validateAgentProof({ agent, output, injectedWorkspaceFiles }) {
+  const expectedFiles = ["IDENTITY.md", "MEMORY.md", "SOUL.md"];
+  const validation = {
+    agentIdentity: output.artifact.agent === agent.name,
+    personaTheme: output.artifact.persona === agent.theme,
+    persistentMemory: output.artifact.memory_fact === expectedMemoryPhrase(agent),
+    completeWorkspaceInjection: expectedFiles.every((name) => {
+      const file = injectedWorkspaceFiles.find((candidate) => candidate.name === name);
+      return (
+        file?.missing === false &&
+        file.truncated === false &&
+        Number.isInteger(file.rawChars) &&
+        file.rawChars > 0 &&
+        file.injectedChars === file.rawChars
+      );
+    }),
+  };
+  const failed = Object.entries(validation).filter(([, passed]) => !passed);
+  if (failed.length > 0) {
+    throw new OpenClawContractError(
+      `${agent.id} failed agent proof: ${failed.map(([name]) => name).join(", ")}`,
+    );
+  }
+  return validation;
 }
 
 export function normalizeUsage(rawUsage) {
@@ -211,20 +249,35 @@ export function composePrompt(agent) {
 }
 
 export async function runProcess(command, args, options = {}) {
-  const { cwd = process.cwd(), env = process.env, timeoutMs = 180_000 } = options;
+  const {
+    cwd = process.cwd(),
+    env = process.env,
+    timeoutMs = 180_000,
+    stopWhen,
+  } = options;
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let stoppedEarly = false;
     let forceKillTimer;
+    const stopIfMatched = () => {
+      if (!stoppedEarly && stopWhen?.({ stdout, stderr })) {
+        stoppedEarly = true;
+        child.kill("SIGTERM");
+        forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      }
+    };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
+      stopIfMatched();
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
+      stopIfMatched();
     });
     child.on("error", reject);
     const timer = setTimeout(() => {
@@ -235,15 +288,19 @@ export async function runProcess(command, args, options = {}) {
     child.on("close", (exitCode, signal) => {
       clearTimeout(timer);
       clearTimeout(forceKillTimer);
-      resolve({ exitCode, signal, timedOut, stdout, stderr });
+      resolve({ exitCode, signal, timedOut, stoppedEarly, stdout, stderr });
     });
   });
 }
 
-export async function runOpenClaw(args, { stateDir, timeoutMs = 180_000 } = {}) {
+export async function runOpenClaw(
+  args,
+  { stateDir, timeoutMs = 180_000, env: envOverrides = {}, stopWhen } = {},
+) {
   const result = await runProcess("openclaw", ["--no-color", ...args], {
-    env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+    env: { ...process.env, ...envOverrides, OPENCLAW_STATE_DIR: stateDir },
     timeoutMs,
+    stopWhen,
   });
   return result;
 }
@@ -302,6 +359,24 @@ async function setConfig(stateDir, configPath, value) {
   }
 }
 
+function openRouterProviderConfig(baseUrl) {
+  return {
+    baseUrl,
+    api: "openai-completions",
+    models: [
+      {
+        id: OPENROUTER_MODEL,
+        name: "OpenAI GPT-4.1 Mini",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_047_576,
+        maxTokens: 32_768,
+      },
+    ],
+  };
+}
+
 async function initializeOpenClaw(runtimeDir) {
   if (!process.env.OPENROUTER_API_KEY) {
     throw new OpenClawContractError("Missing required credential source: OPENROUTER_API_KEY");
@@ -338,24 +413,24 @@ async function initializeOpenClaw(runtimeDir) {
 
   await setConfig(stateDir, "agents.defaults.model.primary", OPENCLAW_MODEL);
   await setConfig(stateDir, `agents.defaults.models[${OPENCLAW_MODEL}]`, {});
-  await setConfig(stateDir, "models.mode", "replace");
-  await setConfig(stateDir, "models.providers.openrouter", {
-    baseUrl: OPENROUTER_BASE_URL,
-    api: "openai-completions",
-    models: [
-      {
-        id: "openai/gpt-4.1-mini",
-        name: "OpenAI GPT-4.1 Mini",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1_047_576,
-        maxTokens: 32_768,
-      },
-    ],
+  await requireSuccessfulJsonCommand(["models", "status", "--agent", "main", "--json"], {
+    stateDir,
+    timeoutMs: 30_000,
   });
+  const generatedOpenRouterBaseUrl = await readGeneratedOpenRouterBaseUrl(stateDir);
+  if (generatedOpenRouterBaseUrl !== GENERATED_OPENROUTER_BASE_URL) {
+    throw new OpenClawContractError(
+      `Installed OpenClaw did not reproduce the expected generated OpenRouter base URL: ${generatedOpenRouterBaseUrl}`,
+    );
+  }
+  await setConfig(stateDir, "models.mode", "replace");
+  await setConfig(
+    stateDir,
+    "models.providers.openrouter",
+    openRouterProviderConfig(generatedOpenRouterBaseUrl),
+  );
   await setConfig(stateDir, "tools.profile", "minimal");
-  return { stateDir, onboard: onboard.json };
+  return { stateDir, onboard: onboard.json, generatedOpenRouterBaseUrl };
 }
 
 async function listFiles(rootDir, currentDir = rootDir) {
@@ -367,6 +442,433 @@ async function listFiles(rootDir, currentDir = rootDir) {
     else files.push(path.relative(rootDir, absolute));
   }
   return files.sort();
+}
+
+async function hashDirectory(rootDir) {
+  const hash = createHash("sha256");
+  for (const file of await listFiles(rootDir)) {
+    hash.update(file);
+    hash.update("\0");
+    hash.update(await readFile(path.join(rootDir, file)));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+async function readGeneratedOpenRouterBaseUrl(stateDir) {
+  const modelFiles = (await listFiles(stateDir)).filter((file) => file.endsWith("models.json"));
+  for (const file of modelFiles) {
+    const contents = JSON.parse(await readFile(path.join(stateDir, file), "utf8"));
+    const baseUrl = contents.providers?.openrouter?.baseUrl;
+    if (typeof baseUrl === "string" && baseUrl.length > 0) return baseUrl;
+  }
+  throw new OpenClawContractError("OpenClaw did not generate an OpenRouter models.json entry");
+}
+
+export function parseOpenAiRequestLog(result) {
+  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const pattern =
+    /\]\s+(post)\s+(https:\/\/[^\s]+)\s+(succeeded|failed)\s+with status\s+(\d{3})/gi;
+  const matches = [...combined.matchAll(pattern)]
+    .map((match) => {
+      const url = new URL(match[2]);
+      return {
+        method: match[1].toUpperCase(),
+        origin: url.origin,
+        path: `${url.pathname}${url.search}`,
+        httpStatus: Number(match[4]),
+        outcome: match[3],
+      };
+    })
+    .filter((request) => request.origin === "https://openrouter.ai");
+  if (matches.length === 0) {
+    throw new OpenClawContractError("OpenClaw did not emit an authoritative OpenAI SDK request log");
+  }
+  return matches.at(-1);
+}
+
+function parseFailedOpenClawDiagnosticProbe(result, { configuration, authProfile }) {
+  if (result.timedOut || !result.stoppedEarly) {
+    throw new OpenClawContractError("OpenClaw failure request was not captured within its bound");
+  }
+  const request = parseOpenAiRequestLog(result);
+  const expectedRequest = new URL(
+    "chat/completions",
+    `${configuration.baseUrl.replace(/\/$/, "")}/`,
+  );
+  if (
+    request.method !== "POST" ||
+    request.origin !== expectedRequest.origin ||
+    request.path !== `${expectedRequest.pathname}${expectedRequest.search}` ||
+    request.httpStatus !== 404
+  ) {
+    throw new OpenClawContractError("Uncorrected OpenClaw request did not reproduce the 404", {
+      capturedRequest: request,
+    });
+  }
+  return {
+    configuration,
+    request,
+    runtime: {
+      provider: "openrouter",
+      model: OPENROUTER_MODEL,
+      authMode: "auth-profile",
+      authProfile,
+    },
+    result: {
+      exitCode: result.exitCode,
+      signal: result.signal,
+      completed: false,
+      stoppedAfterAuthoritativeRequestCapture: true,
+      output: null,
+    },
+  };
+}
+
+function parseOpenClawDiagnosticProbe(result, { configuration, authProfile, expectedSuccess }) {
+  if (result.timedOut) {
+    throw new OpenClawContractError("OpenClaw endpoint diagnostic timed out");
+  }
+  const envelope = parseCommandJson(result);
+  const meta = envelope.meta ?? {};
+  const agentMeta = meta.agentMeta ?? {};
+  const lastAttempt = meta.executionTrace?.attempts?.at(-1) ?? {};
+  const request = parseOpenAiRequestLog(result);
+  const expectedRequest = new URL(
+    "chat/completions",
+    `${configuration.baseUrl.replace(/\/$/, "")}/`,
+  );
+  const provider = envelope.provider ?? agentMeta.provider ?? lastAttempt.provider ?? null;
+  const model = envelope.model ?? agentMeta.model ?? lastAttempt.model ?? null;
+  const stopReason = envelope.status ?? meta.stopReason ?? meta.completion?.finishReason ?? null;
+  const output = envelope.final ?? envelope.payloads?.[0]?.text ?? null;
+  const succeeded =
+    result.exitCode === 0 &&
+    envelope.ok !== false &&
+    !meta.error &&
+    meta.aborted !== true &&
+    meta.livenessState !== "blocked" &&
+    (stopReason === "ok" || stopReason === "stop") &&
+    request.httpStatus === 200;
+
+  if (
+    request.method !== "POST" ||
+    request.origin !== expectedRequest.origin ||
+    request.path !== `${expectedRequest.pathname}${expectedRequest.search}`
+  ) {
+    throw new OpenClawContractError("OpenClaw request path did not match its configured base URL", {
+      configuredBaseUrl: configuration.baseUrl,
+      capturedRequest: request,
+    });
+  }
+  if (provider !== "openrouter" || model !== OPENROUTER_MODEL) {
+    throw new OpenClawContractError("OpenClaw endpoint diagnostic used the wrong provider or model", {
+      provider,
+      model,
+    });
+  }
+  if (expectedSuccess && (!succeeded || String(output).trim() !== "OK")) {
+    throw new OpenClawContractError("Corrected OpenClaw endpoint did not complete real inference");
+  }
+  if (!expectedSuccess && (succeeded || request.httpStatus !== 404)) {
+    throw new OpenClawContractError("Uncorrected OpenClaw endpoint did not reproduce the 404");
+  }
+
+  return {
+    configuration,
+    request,
+    runtime: {
+      provider,
+      model,
+      authMode: meta.requestShaping?.authMode ?? null,
+      authProfile,
+    },
+    result: {
+      exitCode: result.exitCode,
+      completed: succeeded,
+      stopReason,
+      livenessState: meta.livenessState ?? null,
+      errorKind: meta.error?.kind ?? null,
+      output: expectedSuccess ? String(output).trim() : null,
+    },
+  };
+}
+
+export function parseOpenRouterAuthProof(status) {
+  if (status.resolvedDefault !== OPENCLAW_MODEL) {
+    throw new OpenClawContractError("OpenClaw resolved the wrong diagnostic model");
+  }
+  const openrouter = status.auth?.providers?.find((provider) => provider.provider === "openrouter");
+  const match = openrouter?.profiles?.labels
+    ?.map((label) => label.match(/^([^=]+)=ref\(env:OPENROUTER_API_KEY\)$/))
+    .find(Boolean);
+  if (!match) {
+    throw new OpenClawContractError(
+      "OpenClaw did not resolve its OpenRouter auth profile from OPENROUTER_API_KEY",
+    );
+  }
+  return {
+    provider: "openrouter",
+    profileId: match[1],
+    credentialSource: "OPENROUTER_API_KEY",
+    credentialStorage: "env SecretRef",
+  };
+}
+
+async function readOpenRouterExperimentConfiguration(stateDir) {
+  const command = await requireSuccessfulJsonCommand(["config", "get", "models", "--json"], {
+    stateDir,
+    timeoutMs: 30_000,
+  });
+  const models = command.json;
+  const provider = models.providers?.openrouter;
+  if (
+    models.mode !== "replace" ||
+    provider?.api !== "openai-completions" ||
+    typeof provider.baseUrl !== "string" ||
+    !Array.isArray(provider.models)
+  ) {
+    throw new OpenClawContractError("OpenClaw endpoint experiment configuration is incomplete");
+  }
+  return {
+    modelsMode: models.mode,
+    provider: "openrouter",
+    api: provider.api,
+    baseUrl: provider.baseUrl,
+    models: provider.models.map(
+      ({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
+        id,
+        name,
+        reasoning,
+        input,
+        cost,
+        contextWindow,
+        maxTokens,
+      }),
+    ),
+  };
+}
+
+async function runDirectOpenRouterDiagnostic() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  let response;
+  try {
+    response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [{ role: "user", content: DIAGNOSTIC_PROMPT }],
+        max_tokens: 8,
+        temperature: 0,
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = await response.json().catch(() => null);
+  const content = body?.choices?.[0]?.message?.content?.trim();
+  const finishReason = body?.choices?.[0]?.finish_reason ?? null;
+  const usage = {
+    promptTokens: Number(body?.usage?.prompt_tokens ?? 0),
+    completionTokens: Number(body?.usage?.completion_tokens ?? 0),
+    totalTokens: Number(body?.usage?.total_tokens ?? 0),
+  };
+  if (
+    response.status !== 200 ||
+    !contentType.includes("application/json") ||
+    content !== "OK" ||
+    finishReason !== "stop" ||
+    usage.totalTokens <= 0
+  ) {
+    throw new OpenClawContractError("Direct OpenRouter diagnostic did not complete real inference", {
+      httpStatus: response.status,
+      contentType,
+      finishReason,
+      totalTokens: usage.totalTokens,
+    });
+  }
+  return {
+    method: "POST",
+    origin: new URL(OPENROUTER_BASE_URL).origin,
+    path: `${new URL(OPENROUTER_BASE_URL).pathname}/chat/completions`,
+    requestedModel: OPENROUTER_MODEL,
+    responseModel: body.model ?? null,
+    httpStatus: response.status,
+    contentType,
+    output: content,
+    finishReason,
+    usage,
+  };
+}
+
+export function evaluateOpenRouterDiagnostic(diagnostic) {
+  const beforeConfiguration = { ...diagnostic.openClawBeforeCorrection.configuration };
+  const afterConfiguration = { ...diagnostic.openClawAfterCorrection.configuration };
+  delete beforeConfiguration.baseUrl;
+  delete afterConfiguration.baseUrl;
+  const checks = {
+    directOfficialEndpointRealInference:
+      diagnostic.directProviderRequest.origin === "https://openrouter.ai" &&
+      diagnostic.directProviderRequest.path === "/api/v1/chat/completions" &&
+      diagnostic.directProviderRequest.requestedModel === OPENROUTER_MODEL &&
+      diagnostic.directProviderRequest.responseModel === OPENROUTER_MODEL &&
+      diagnostic.directProviderRequest.httpStatus === 200 &&
+      diagnostic.directProviderRequest.output === "OK" &&
+      diagnostic.directProviderRequest.usage.totalTokens > 0,
+    oneChangedCondition:
+      JSON.stringify(beforeConfiguration) === JSON.stringify(afterConfiguration) &&
+      diagnostic.openClawBeforeCorrection.configuration.baseUrl ===
+        diagnostic.observedGeneratedBaseUrl &&
+      diagnostic.openClawAfterCorrection.configuration.baseUrl === OPENROUTER_BASE_URL &&
+      typeof diagnostic.controlledComparison.startingStateSha256 === "string" &&
+      diagnostic.controlledComparison.startingStateSha256.length === 64,
+    authoritativeOpenClawRequestPaths:
+      diagnostic.openClawBeforeCorrection.request.path === "/v1/chat/completions" &&
+      diagnostic.openClawBeforeCorrection.request.httpStatus === 404 &&
+      diagnostic.openClawAfterCorrection.request.path === "/api/v1/chat/completions" &&
+      diagnostic.openClawAfterCorrection.request.httpStatus === 200,
+    sameOpenClawModelAndAuth:
+      diagnostic.openClawBeforeCorrection.runtime.provider === "openrouter" &&
+      diagnostic.openClawAfterCorrection.runtime.provider === "openrouter" &&
+      diagnostic.openClawBeforeCorrection.runtime.model === OPENROUTER_MODEL &&
+      diagnostic.openClawAfterCorrection.runtime.model === OPENROUTER_MODEL &&
+      diagnostic.openClawBeforeCorrection.runtime.authMode === "auth-profile" &&
+      diagnostic.openClawAfterCorrection.runtime.authMode === "auth-profile" &&
+      JSON.stringify(diagnostic.openClawBeforeCorrection.runtime.authProfile) ===
+        JSON.stringify(diagnostic.openClawAfterCorrection.runtime.authProfile) &&
+      diagnostic.openClawAfterCorrection.runtime.authProfile.credentialSource ===
+        "OPENROUTER_API_KEY",
+    correctedOpenClawRealInference:
+      diagnostic.openClawAfterCorrection.result.completed === true &&
+      diagnostic.openClawAfterCorrection.result.output === "OK",
+    credentialRedaction:
+      diagnostic.credentialSource === "OPENROUTER_API_KEY" &&
+      diagnostic.credentialValueRetained === false,
+  };
+  return checks;
+}
+
+async function runOpenRouterDiagnostic({ stateDir, generatedOpenRouterBaseUrl, openclawVersion }) {
+  const beforeAuthStatus = await requireSuccessfulJsonCommand(
+    ["models", "status", "--agent", "main", "--json"],
+    { stateDir, timeoutMs: 30_000 },
+  );
+  const beforeAuthProfile = parseOpenRouterAuthProof(beforeAuthStatus.json);
+  const beforeConfiguration = await readOpenRouterExperimentConfiguration(stateDir);
+  const beforeStateDir = path.join(path.dirname(stateDir), "diagnostic-before-state");
+  await cp(stateDir, beforeStateDir, { recursive: true, errorOnExist: true, force: false });
+  const startingStateSha256 = await hashDirectory(stateDir);
+  if ((await hashDirectory(beforeStateDir)) !== startingStateSha256) {
+    throw new OpenClawContractError("OpenClaw diagnostic state snapshot was not identical");
+  }
+  const beforeResult = await runOpenClaw(
+    [
+      "agent",
+      "--local",
+      "--agent",
+      "main",
+      "--session-id",
+      DIAGNOSTIC_SESSION_ID,
+      "--message",
+      DIAGNOSTIC_PROMPT,
+      "--timeout",
+      "60",
+      "--json",
+    ],
+    {
+      stateDir: beforeStateDir,
+      timeoutMs: FAILED_DIAGNOSTIC_CAPTURE_TIMEOUT_MS,
+      env: { OPENAI_LOG: "info" },
+      stopWhen: (partialResult) => {
+        try {
+          return parseOpenAiRequestLog(partialResult).httpStatus === 404;
+        } catch {
+          return false;
+        }
+      },
+    },
+  );
+  const openClawBeforeCorrection = parseFailedOpenClawDiagnosticProbe(beforeResult, {
+    configuration: beforeConfiguration,
+    authProfile: beforeAuthProfile,
+  });
+
+  await setConfig(stateDir, "models.providers.openrouter.baseUrl", OPENROUTER_BASE_URL);
+  const afterAuthStatus = await requireSuccessfulJsonCommand(
+    ["models", "status", "--agent", "main", "--json"],
+    { stateDir, timeoutMs: 30_000 },
+  );
+  const afterAuthProfile = parseOpenRouterAuthProof(afterAuthStatus.json);
+  const afterConfiguration = await readOpenRouterExperimentConfiguration(stateDir);
+  const afterResult = await runOpenClaw(
+    [
+      "agent",
+      "--local",
+      "--agent",
+      "main",
+      "--session-id",
+      DIAGNOSTIC_SESSION_ID,
+      "--message",
+      DIAGNOSTIC_PROMPT,
+      "--timeout",
+      "60",
+      "--json",
+    ],
+    { stateDir, timeoutMs: 90_000, env: { OPENAI_LOG: "info" } },
+  );
+  const openClawAfterCorrection = parseOpenClawDiagnosticProbe(afterResult, {
+    configuration: afterConfiguration,
+    authProfile: afterAuthProfile,
+    expectedSuccess: true,
+  });
+  const directProviderRequest = await runDirectOpenRouterDiagnostic();
+  const diagnostic = {
+    schemaVersion: 2,
+    credentialSource: "OPENROUTER_API_KEY",
+    credentialValueRetained: false,
+    openclawVersion,
+    observedGeneratedBaseUrl: generatedOpenRouterBaseUrl,
+    officialBaseUrl: OPENROUTER_BASE_URL,
+    controlledComparison: {
+      changedCondition: "models.providers.openrouter.baseUrl",
+      keptConstant: [
+        "models.mode=replace",
+        `model=${OPENROUTER_MODEL}`,
+        `authProfile=${beforeAuthProfile.profileId}`,
+        `prompt=${DIAGNOSTIC_PROMPT}`,
+        `sessionId=${DIAGNOSTIC_SESSION_ID}`,
+      ],
+      requestCapture: "OpenAI SDK info log emitted inside the OpenClaw process",
+      failedRequestCaptureTimeoutMs: FAILED_DIAGNOSTIC_CAPTURE_TIMEOUT_MS,
+      stateIsolation:
+        "Both conditions started from the same state snapshot; the failing request ran in a clone and only the corrected state's baseUrl changed.",
+      startingStateSha256,
+    },
+    directProviderRequest,
+    openClawBeforeCorrection,
+    openClawAfterCorrection,
+    conclusion:
+      "Changing only the OpenRouter base URL moved OpenClaw from /v1/chat/completions 404 to successful real inference at /api/v1/chat/completions.",
+  };
+  const acceptanceCriteria = evaluateOpenRouterDiagnostic(diagnostic);
+  const failed = Object.entries(acceptanceCriteria).filter(([, passed]) => !passed);
+  if (failed.length > 0) {
+    throw new OpenClawContractError(
+      `OpenRouter diagnostic failed: ${failed.map(([name]) => name).join(", ")}`,
+    );
+  }
+  const serialized = JSON.stringify(diagnostic);
+  if (serialized.includes(process.env.OPENROUTER_API_KEY)) {
+    throw new OpenClawContractError("OpenRouter diagnostic retained the credential value");
+  }
+  return { ...diagnostic, acceptanceCriteria };
 }
 
 async function writeChecksums(evidenceDir) {
@@ -384,9 +886,18 @@ export async function runSpike({ runtimeDir, evidenceDir }) {
   await mkdir(runtimeDir, { recursive: false });
   await mkdir(path.dirname(evidenceDir), { recursive: true });
   await mkdir(evidenceDir, { recursive: false });
-  const { stateDir, onboard } = await initializeOpenClaw(runtimeDir);
+  const { stateDir, onboard, generatedOpenRouterBaseUrl } = await initializeOpenClaw(runtimeDir);
   const versionResult = await runOpenClaw(["--version"], { stateDir, timeoutMs: 10_000 });
   const openclawVersion = versionResult.stdout.trim();
+  const diagnostic = await runOpenRouterDiagnostic({
+    stateDir,
+    generatedOpenRouterBaseUrl,
+    openclawVersion,
+  });
+  await writeFile(
+    path.join(evidenceDir, "diagnostic-openrouter.json"),
+    `${JSON.stringify(diagnostic, null, 2)}\n`,
+  );
 
   const creationRecords = [];
   const workspaceFiles = {};
@@ -439,16 +950,12 @@ export async function runSpike({ runtimeDir, evidenceDir }) {
       { stateDir, timeoutMs: 210_000 },
     );
     const parsed = parseTurnResult(commandResult);
-    const expectedPhrase = agent.memoryFact.replace(/^The durable (?:launch|safety) phrase is /, "").replace(/\.$/, "");
-    if (!parsed.output.artifact.memory_fact.includes(expectedPhrase)) {
-      throw new OpenClawContractError(`${agent.id} did not recall its persisted memory phrase`);
-    }
     const injectedFiles = parsed.envelope.meta?.systemPromptReport?.injectedWorkspaceFiles ?? [];
-    const memoryInjection = injectedFiles.find((file) => file.name === "MEMORY.md");
-    const soulInjection = injectedFiles.find((file) => file.name === "SOUL.md");
-    if (!memoryInjection || memoryInjection.missing || !soulInjection || soulInjection.missing) {
-      throw new OpenClawContractError(`${agent.id} did not receive its persona and memory workspace files`);
-    }
+    const contractValidation = validateAgentProof({
+      agent,
+      output: parsed.output,
+      injectedWorkspaceFiles: injectedFiles,
+    });
 
     const normalized = {
       agentId: agent.id,
@@ -456,6 +963,7 @@ export async function runSpike({ runtimeDir, evidenceDir }) {
       usage: parsed.usage,
       completion: parsed.completion,
       runtime: parsed.runtime,
+      contractValidation,
       injectedWorkspaceFiles: injectedFiles
         .filter((file) => ["IDENTITY.md", "MEMORY.md", "SOUL.md"].includes(file.name))
         .map(({ name, missing, rawChars, injectedChars, truncated }) => ({
@@ -534,13 +1042,15 @@ export async function runSpike({ runtimeDir, evidenceDir }) {
       },
       distinctPersonasAndPersistentMemory: {
         passed:
-          new Set(turns.map((turn) => turn.output.artifact.persona)).size === 2 &&
-          turns.every((turn) =>
-            turn.injectedWorkspaceFiles.some(
-              (file) => file.name === "MEMORY.md" && !file.missing && !file.truncated,
-            ),
-          ),
+          turns.length === AGENT_DEFINITIONS.length &&
+          new Set(turns.map((turn) => turn.output.artifact.persona)).size ===
+            AGENT_DEFINITIONS.length &&
+          turns.every((turn) => Object.values(turn.contractValidation).every(Boolean)),
         evidence: "workspaces/* and turns/*-normalized.json",
+      },
+      directOpenRouterAndOpenClawEndpointDiagnostic: {
+        passed: Object.values(diagnostic.acceptanceCriteria).every(Boolean),
+        evidence: "diagnostic-openrouter.json",
       },
       headlessComposeDecision: {
         passed: true,

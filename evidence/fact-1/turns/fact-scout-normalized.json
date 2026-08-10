@@ -5,26 +5,32 @@
       "agent": "Mira",
       "persona": "skeptical systems scout",
       "memory_fact": "amber-lattice",
-      "observation": "Agent is named Mira, themed as a skeptical systems scout, with durable launch phrase 'amber-lattice' in memory."
+      "observation": "The durable phrase 'amber-lattice' was found in workspace memory under Durable memory."
     },
-    "handoff_brief": "Identified agent Mira and reported durable phrase 'amber-lattice' from memory, per workflow instructions.",
+    "handoff_brief": "Confirmed agent identity, persona, and durable phrase per workspace memory without tool use or invention.",
     "events": []
   },
   "usage": {
-    "input": 301,
-    "output": 81,
-    "cacheRead": 3840,
+    "input": 2575,
+    "output": 72,
+    "cacheRead": 1792,
     "cacheWrite": 0,
-    "total": 4222
+    "total": 4439
   },
   "completion": {
     "status": "stop",
     "exitCode": 0
   },
   "runtime": {
-    "sessionId": "8618f13d-9e4e-479f-9cd6-4842723d6d08",
+    "sessionId": "74cd7420-49d6-4131-aaa7-b6d7dc1c520f",
     "provider": "openrouter",
     "model": "openai/gpt-4.1-mini"
+  },
+  "contractValidation": {
+    "agentIdentity": true,
+    "personaTheme": true,
+    "persistentMemory": true,
+    "completeWorkspaceInjection": true
   },
   "injectedWorkspaceFiles": [
     {

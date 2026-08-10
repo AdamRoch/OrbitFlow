@@ -1,40 +1,40 @@
 {
   "payloads": [
     {
-      "text": "{\"artifact\":{\"agent\":\"Rowan\",\"persona\":\"calm reliability reviewer\",\"memory_fact\":\"cobalt-anchor\",\"observation\":\"The durable safety phrase stored in workspace memory is 'cobalt-anchor'.\"},\"handoff_brief\":\"Identified self as Rowan with a calm reliability reviewer persona; reported durable safety phrase from memory without invention.\",\"events\":[]}",
+      "text": "{\"artifact\":{\"agent\":\"Rowan\",\"persona\":\"calm reliability reviewer\",\"memory_fact\":\"cobalt-anchor\",\"observation\":\"The durable phrase 'cobalt-anchor' was retrieved exactly from workspace memory, matching the requirement of no invention.\"},\"handoff_brief\":\"Confirmed agent identity, persona description, and durable memory phrase as requested without tool usage or inference.\",\"events\":[]}",
       "mediaUrl": null
     }
   ],
   "meta": {
-    "durationMs": 8113,
+    "durationMs": 21090,
     "agentMeta": {
-      "sessionId": "9eb09c72-4b12-4fe4-94bf-3cf2c49a0b1d",
+      "sessionId": "6352de2d-26ea-43d5-9da5-4642cd03a3a3",
       "provider": "openrouter",
       "model": "openai/gpt-4.1-mini",
       "usage": {
-        "input": 2350,
-        "output": 72,
+        "input": 2576,
+        "output": 77,
         "cacheRead": 1792,
-        "total": 4214
+        "total": 4445
       },
       "lastCallUsage": {
-        "input": 2350,
-        "output": 72,
+        "input": 2576,
+        "output": 77,
         "cacheRead": 1792,
         "cacheWrite": 0,
-        "total": 4214
+        "total": 4445
       },
-      "promptTokens": 4142
+      "promptTokens": 4368
     },
     "aborted": false,
     "systemPromptReport": {
       "source": "run",
-      "generatedAt": 1786313906296,
-      "sessionId": "9eb09c72-4b12-4fe4-94bf-3cf2c49a0b1d",
+      "generatedAt": 1786326660113,
+      "sessionId": "6352de2d-26ea-43d5-9da5-4642cd03a3a3",
       "sessionKey": "agent:fact-reviewer:main",
       "provider": "openrouter",
       "model": "openai/gpt-4.1-mini",
-      "workspaceDir": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer",
+      "workspaceDir": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer",
       "bootstrapMaxChars": 12000,
       "bootstrapTotalMaxChars": 60000,
       "bootstrapTruncation": {
@@ -49,14 +49,14 @@
         "sandboxed": false
       },
       "systemPrompt": {
-        "chars": 14794,
-        "projectContextChars": 1561,
-        "nonProjectContextChars": 13233
+        "chars": 15207,
+        "projectContextChars": 1873,
+        "nonProjectContextChars": 13334
       },
       "injectedWorkspaceFiles": [
         {
           "name": "AGENTS.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/AGENTS.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/AGENTS.md",
           "missing": false,
           "rawChars": 101,
           "injectedChars": 101,
@@ -64,7 +64,7 @@
         },
         {
           "name": "SOUL.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/SOUL.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/SOUL.md",
           "missing": false,
           "rawChars": 134,
           "injectedChars": 134,
@@ -72,7 +72,7 @@
         },
         {
           "name": "TOOLS.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/TOOLS.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/TOOLS.md",
           "missing": false,
           "rawChars": 44,
           "injectedChars": 44,
@@ -80,7 +80,7 @@
         },
         {
           "name": "IDENTITY.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/IDENTITY.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/IDENTITY.md",
           "missing": false,
           "rawChars": 69,
           "injectedChars": 69,
@@ -88,7 +88,7 @@
         },
         {
           "name": "USER.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/USER.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/USER.md",
           "missing": false,
           "rawChars": 60,
           "injectedChars": 60,
@@ -96,7 +96,7 @@
         },
         {
           "name": "HEARTBEAT.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/HEARTBEAT.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/HEARTBEAT.md",
           "missing": false,
           "rawChars": 31,
           "injectedChars": 31,
@@ -104,15 +104,15 @@
         },
         {
           "name": "BOOTSTRAP.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/BOOTSTRAP.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/BOOTSTRAP.md",
           "missing": true,
           "rawChars": 0,
-          "injectedChars": 127,
+          "injectedChars": 166,
           "truncated": false
         },
         {
           "name": "MEMORY.md",
-          "path": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer/MEMORY.md",
+          "path": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer/MEMORY.md",
           "missing": false,
           "rawChars": 61,
           "injectedChars": 61,
@@ -290,8 +290,8 @@
       }
     },
     "finalPromptText": "# Workflow context\nOrbitFlow is testing whether OpenClaw can execute deterministic workflow nodes.\n\n# Assigned task\nIdentify yourself as Rowan, describe your configured persona in one short phrase, and report the durable phrase from your workspace memory.\nDo not use tools. Do not invent a phrase that is absent from memory.\n\n# Upstream handoff brief\nThis is an isolated runtime proof. Separate direct evidence from inference.\n\n# Output contract\nReturn only one JSON object with this exact shape:\n{\"artifact\":{\"agent\":\"string\",\"persona\":\"string\",\"memory_fact\":\"string\",\"observation\":\"string\"},\"handoff_brief\":\"string\",\"events\":[]}\nDo not wrap the JSON in Markdown fences.",
-    "finalAssistantVisibleText": "{\"artifact\":{\"agent\":\"Rowan\",\"persona\":\"calm reliability reviewer\",\"memory_fact\":\"cobalt-anchor\",\"observation\":\"The durable safety phrase stored in workspace memory is 'cobalt-anchor'.\"},\"handoff_brief\":\"Identified self as Rowan with a calm reliability reviewer persona; reported durable safety phrase from memory without invention.\",\"events\":[]}",
-    "finalAssistantRawText": "{\"artifact\":{\"agent\":\"Rowan\",\"persona\":\"calm reliability reviewer\",\"memory_fact\":\"cobalt-anchor\",\"observation\":\"The durable safety phrase stored in workspace memory is 'cobalt-anchor'.\"},\"handoff_brief\":\"Identified self as Rowan with a calm reliability reviewer persona; reported durable safety phrase from memory without invention.\",\"events\":[]}",
+    "finalAssistantVisibleText": "{\"artifact\":{\"agent\":\"Rowan\",\"persona\":\"calm reliability reviewer\",\"memory_fact\":\"cobalt-anchor\",\"observation\":\"The durable phrase 'cobalt-anchor' was retrieved exactly from workspace memory, matching the requirement of no invention.\"},\"handoff_brief\":\"Confirmed agent identity, persona description, and durable memory phrase as requested without tool usage or inference.\",\"events\":[]}",
+    "finalAssistantRawText": "{\"artifact\":{\"agent\":\"Rowan\",\"persona\":\"calm reliability reviewer\",\"memory_fact\":\"cobalt-anchor\",\"observation\":\"The durable phrase 'cobalt-anchor' was retrieved exactly from workspace memory, matching the requirement of no invention.\"},\"handoff_brief\":\"Confirmed agent identity, persona description, and durable memory phrase as requested without tool usage or inference.\",\"events\":[]}",
     "replayInvalid": false,
     "livenessState": "working",
     "stopReason": "stop",

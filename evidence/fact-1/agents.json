@@ -5,8 +5,8 @@
     "identityName": "Mira",
     "identityEmoji": "🔎",
     "identitySource": "identity",
-    "workspace": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-scout",
-    "agentDir": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/state/agents/fact-scout/agent",
+    "workspace": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-scout",
+    "agentDir": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/state/agents/fact-scout/agent",
     "model": "openrouter/openai/gpt-4.1-mini",
     "bindings": 0,
     "isDefault": false
@@ -17,8 +17,8 @@
     "identityName": "Rowan",
     "identityEmoji": "🧭",
     "identitySource": "identity",
-    "workspace": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/workspaces/fact-reviewer",
-    "agentDir": "/Users/adam/.treehouse/orbitflow-b83ab6/1/orbitflow/.fact1-runtime/state/agents/fact-reviewer/agent",
+    "workspace": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/workspaces/fact-reviewer",
+    "agentDir": "/Users/adam/.no-mistakes/worktrees/7589e0bbc033/01KZMJZCMARPSCXH8GXXG478SM/.fact1-openrouter-diag.review3/state/agents/fact-reviewer/agent",
     "model": "openrouter/openai/gpt-4.1-mini",
     "bindings": 0,
     "isDefault": false

@@ -5,26 +5,32 @@
       "agent": "Rowan",
       "persona": "calm reliability reviewer",
       "memory_fact": "cobalt-anchor",
-      "observation": "The durable safety phrase stored in workspace memory is 'cobalt-anchor'."
+      "observation": "The durable phrase 'cobalt-anchor' was retrieved exactly from workspace memory, matching the requirement of no invention."
     },
-    "handoff_brief": "Identified self as Rowan with a calm reliability reviewer persona; reported durable safety phrase from memory without invention.",
+    "handoff_brief": "Confirmed agent identity, persona description, and durable memory phrase as requested without tool usage or inference.",
     "events": []
   },
   "usage": {
-    "input": 2350,
-    "output": 72,
+    "input": 2576,
+    "output": 77,
     "cacheRead": 1792,
     "cacheWrite": 0,
-    "total": 4214
+    "total": 4445
   },
   "completion": {
     "status": "stop",
     "exitCode": 0
   },
   "runtime": {
-    "sessionId": "9eb09c72-4b12-4fe4-94bf-3cf2c49a0b1d",
+    "sessionId": "6352de2d-26ea-43d5-9da5-4642cd03a3a3",
     "provider": "openrouter",
     "model": "openai/gpt-4.1-mini"
+  },
+  "contractValidation": {
+    "agentIdentity": true,
+    "personaTheme": true,
+    "persistentMemory": true,
+    "completeWorkspaceInjection": true
   },
   "injectedWorkspaceFiles": [
     {
