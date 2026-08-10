@@ -14,6 +14,23 @@ export function createCostEventStore({ pool } = {}) {
     throw new PersistenceError("a PostgreSQL pool is required for cost attribution");
   }
 
+  async function verifyAttribution({ runId, agentId }) {
+    const normalizedRunId = normalizeId(runId);
+    const normalizedAgentId = normalizeId(agentId);
+    try {
+      const result = await pool.query(
+        `SELECT 1
+         FROM workflow_runs AS run
+         CROSS JOIN agents AS agent
+         WHERE run.id = $1 AND agent.id = $2`,
+        [normalizedRunId, normalizedAgentId],
+      );
+      if (result.rowCount !== 1) throw new Error("attribution target is missing");
+    } catch {
+      throw new PersistenceError("coding-tool run or agent does not exist");
+    }
+  }
+
   async function recordDelegation({ runId, agentId, model, usage }) {
     const normalizedRunId = normalizeId(runId);
     const normalizedAgentId = normalizeId(agentId);
@@ -53,7 +70,7 @@ export function createCostEventStore({ pool } = {}) {
     }
   }
 
-  return { recordDelegation };
+  return { verifyAttribution, recordDelegation };
 }
 
 function validateUsage(usage) {

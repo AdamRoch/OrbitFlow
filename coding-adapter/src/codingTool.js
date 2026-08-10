@@ -15,7 +15,11 @@ export function createCodingTool({
   if (!workspaceService || typeof workspaceService.authorityForRun !== "function") {
     throw new InvalidRequestError("workspace service is required");
   }
-  if (!costEventStore || typeof costEventStore.recordDelegation !== "function") {
+  if (
+    !costEventStore ||
+    typeof costEventStore.verifyAttribution !== "function" ||
+    typeof costEventStore.recordDelegation !== "function"
+  ) {
     throw new InvalidRequestError("cost event store is required");
   }
   const model = adapterOptions.model ?? OPEN_CODE_DEFAULT_MODEL;
@@ -33,6 +37,7 @@ export function createCodingTool({
       throw new InvalidRequestError("workspace must be a non-empty string");
     }
 
+    await costEventStore.verifyAttribution({ runId, agentId });
     const result = await adapter.delegate_coding_task(task, workspace);
     await costEventStore.recordDelegation({
       runId,

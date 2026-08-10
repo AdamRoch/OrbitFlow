@@ -33,11 +33,12 @@ export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
   }
 
   async function startRunWorkspace(runIdValue) {
-    const runId = normalizeId(runIdValue, "runId");
-    const root = await initialize();
-    const client = await pool.connect();
+    let client;
     let inTransaction = false;
     try {
+      const runId = normalizeId(runIdValue, "runId");
+      const root = await initialize();
+      client = await pool.connect();
       await client.query("BEGIN");
       inTransaction = true;
       await client.query(
@@ -66,25 +67,29 @@ export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
       }
       throw asWorkspaceError(error);
     } finally {
-      client.release();
+      client?.release();
     }
   }
 
   async function resolveWorkspace(runIdValue, workspaceValue) {
-    const runId = normalizeId(runIdValue, "runId");
-    if (typeof workspaceValue !== "string" || !path.isAbsolute(workspaceValue)) {
-      throw new WorkspaceError("workspace must be an absolute path");
+    try {
+      const runId = normalizeId(runIdValue, "runId");
+      if (typeof workspaceValue !== "string" || !path.isAbsolute(workspaceValue)) {
+        throw new WorkspaceError("workspace must be an absolute path");
+      }
+      const root = await initialize();
+      await requireRun(pool, runId);
+      await assertRootCurrent(root);
+      const workspace = expectedWorkspace(root, runId);
+      if (path.resolve(workspaceValue) !== workspace) {
+        throw new WorkspaceError("workspace is not the configured path for this run");
+      }
+      const record = await readRecordIfPresent(root, runId);
+      if (!record) throw new WorkspaceError("run workspace has no ownership record");
+      return validateRecord(root, runId, workspace, record);
+    } catch (error) {
+      throw asWorkspaceError(error);
     }
-    const root = await initialize();
-    await requireRun(pool, runId);
-    await assertRootCurrent(root);
-    const workspace = expectedWorkspace(root, runId);
-    if (path.resolve(workspaceValue) !== workspace) {
-      throw new WorkspaceError("workspace is not the configured path for this run");
-    }
-    const record = await readRecordIfPresent(root, runId);
-    if (!record) throw new WorkspaceError("run workspace has no ownership record");
-    return validateRecord(root, runId, workspace, record);
   }
 
   async function assertHandleCurrent(handle) {

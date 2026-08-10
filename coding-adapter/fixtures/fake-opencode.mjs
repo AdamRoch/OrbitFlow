@@ -15,6 +15,10 @@ if (task === "crash-with-credential") {
   process.stderr.write(`failure ${process.env.OPENROUTER_API_KEY ?? "missing"}\n`);
   process.exit(7);
 }
+if (task === "crash") {
+  process.stderr.write("deterministic crash\n");
+  process.exit(7);
+}
 if (task === "malformed-output") {
   process.stdout.write("not-json\n");
   process.exit(0);
@@ -66,14 +70,14 @@ const events = [
       id: "finish",
       type: "step-finish",
       reason: "stop",
-      cost: task === "first task" ? 0.125 : 0.25,
+      ...(task === "unknown usage" ? {} : { cost: task === "first task" ? 0.125 : 0.25 }),
       tokens: {
-        input: task === "first task" ? 10 : 7,
-        output: task === "first task" ? 5 : 3,
-        reasoning: 1,
+        ...(task === "unknown usage" ? {} : { input: task === "first task" ? 10 : 7 }),
+        output: task === "unknown usage" ? 0 : task === "first task" ? 5 : 3,
+        reasoning: task === "unknown usage" ? 0 : 1,
         cache: {
-          read: task === "first task" ? 4 : 2,
-          write: task === "first task" ? 2 : 1,
+          ...(task === "unknown usage" ? {} : { read: task === "first task" ? 4 : 2 }),
+          write: task === "unknown usage" ? 0 : task === "first task" ? 2 : 1,
         },
       },
     },

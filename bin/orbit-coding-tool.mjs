@@ -24,7 +24,9 @@ try {
     requireExactKeys(request, ["command", "runId"]);
     result = { workspace: await workspaceService.startRunWorkspace(request.runId) };
   } else if (request.command === "delegate_coding_task") {
-    requireExactKeys(request, ["agentId", "command", "runId", "task", "workspace"]);
+    requireExactKeys(request, ["command", "task", "workspace"]);
+    const runId = requiredEnv("ORBITFLOW_RUN_ID");
+    const agentId = requiredEnv("ORBITFLOW_AGENT_ID");
     const costEventStore = createCostEventStore({ pool });
     const timeoutMs = optionalPositiveInteger(
       process.env.ORBITFLOW_CODING_TIMEOUT_MS,
@@ -41,8 +43,8 @@ try {
       ...(timeoutMs ? { timeoutMs } : {}),
     };
     const tool = createCodingTool({
-      runId: request.runId,
-      agentId: request.agentId,
+      runId,
+      agentId,
       workspaceService,
       costEventStore,
       adapterOptions,
@@ -121,6 +123,31 @@ function structuredError(error) {
 function writeResponse(value) {
   let serialized = JSON.stringify(value);
   const credential = process.env.OPENROUTER_API_KEY;
-  if (credential) serialized = serialized.split(credential).join("[REDACTED]");
+  for (const secret of credentialVariants(credential)) {
+    serialized = serialized.split(secret).join("[REDACTED]");
+  }
   process.stdout.write(`${serialized}\n`);
+}
+
+function credentialVariants(credential) {
+  if (!credential) return [];
+  const bytes = Buffer.from(credential);
+  const base64 = bytes.toString("base64");
+  const percentEncoded = [...bytes]
+    .map((byte) => `%${byte.toString(16).padStart(2, "0")}`)
+    .join("");
+  const variants = new Set([
+    credential,
+    base64,
+    base64.replace(/=+$/, ""),
+    base64.replaceAll("+", "-").replaceAll("/", "_"),
+    base64.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""),
+    bytes.toString("hex"),
+    bytes.toString("hex").toUpperCase(),
+    percentEncoded,
+    percentEncoded.toUpperCase(),
+    encodeURIComponent(credential),
+    new URLSearchParams({ credential }).toString().slice("credential=".length),
+  ]);
+  return [...variants].filter(Boolean).sort((left, right) => right.length - left.length);
 }

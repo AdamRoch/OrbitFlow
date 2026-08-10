@@ -37,6 +37,7 @@ const DEFAULT_KILL_GRACE_MS = 2_000;
 const DEFAULT_KILL_WAIT_MS = 1_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_STDERR_CHARS = 4_000;
+const MAX_PROTOCOL_LINE_CHARS = 1024 * 1024;
 const MAX_DIFF_BYTES = 10 * 1024 * 1024;
 const MAX_WORKSPACE_SCAN_BYTES = 50 * 1024 * 1024;
 const EVENT_TYPES = new Set(["step_start", "step_finish", "text", "reasoning", "tool_use", "error"]);
@@ -229,11 +230,13 @@ function runProcess(
       timedOut = true;
       void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
         .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL"))
-        .catch(() =>
+        .catch((error) =>
           finish(
             closeState.exitCode,
             closeState.signal,
-            new CliFailureError("failed to terminate coding CLI process group"),
+            new CliFailureError(
+              `failed to terminate coding CLI process group: ${redact(errorMessage(error), secrets)}`,
+            ),
           ),
         );
     }, timeoutMs);
@@ -474,11 +477,22 @@ function createProtocolAccumulator(secrets) {
 
   return {
     write(chunk) {
+      if (failure) return;
       pending += chunk;
+      if (pending.length > MAX_PROTOCOL_LINE_CHARS && !pending.includes("\n")) {
+        failure = malformed("opencode output line exceeded the protocol limit");
+        pending = "";
+        return;
+      }
       let newline;
       while ((newline = pending.indexOf("\n")) !== -1) {
-        consume(pending.slice(0, newline));
+        const line = pending.slice(0, newline);
         pending = pending.slice(newline + 1);
+        if (line.length > MAX_PROTOCOL_LINE_CHARS) {
+          failure = malformed("opencode output line exceeded the protocol limit");
+          return;
+        }
+        consume(line);
       }
     },
     end() {

@@ -61,6 +61,19 @@ test("exit zero with empty stdout maps to MalformedOutputError", async () => {
   );
 });
 
+test("an oversized protocol line maps to a bounded MalformedOutputError", async () => {
+  const workspace = await createIsolatedGitWorkspace();
+  const adapter = adapterForOutput("x".repeat(1024 * 1024 + 1));
+
+  await assert.rejects(
+    () => adapter.delegate_coding_task("task", workspace),
+    (err) =>
+      err.code === "malformed_output" &&
+      err.message.includes("protocol limit") &&
+      err.rawTail.length <= 500,
+  );
+});
+
 test("spawn throwing synchronously maps to CliFailureError", async () => {
   const workspace = await createIsolatedGitWorkspace();
   const adapter = createOpenCodeAdapter({

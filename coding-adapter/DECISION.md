@@ -84,21 +84,22 @@ an ownership marker before the CLI can receive the provider credential.
   spawning (no wasted process/network call).
 - `CliFailureError` -- unowned workspace, nonzero exit, spawn error, or failed
   inspection; carries bounded stderr/stdout tails when available.
-- `TimeoutError` -- process exceeded `timeoutMs`, killed (`SIGTERM` then
-  `SIGKILL` after 2s if still alive).
+- `TimeoutError` -- process exceeded `timeoutMs`; the complete POSIX process
+  group is terminated (`SIGTERM`, then `SIGKILL` after the grace period).
 - `MalformedOutputError` -- exit 0 but stdout didn't parse as the expected
   NDJSON event stream, has invalid usage, or lacks a terminal completed step.
 - `CredentialExposureError` -- the evaluator key or a reversible Base64, hex,
   or URL encoding appeared in CLI output or workspace state. No affected
-  output is returned.
+  output is returned. Temporary proof workspaces are removed; durable run
+  workspaces are retained in quarantine.
 
 The protocol stream is parsed in full while the presentation log remains
 bounded. Returned logs, diffs, error messages, and error details are redacted,
 and diff generation does not stage changes or write Git blobs. Before success,
 the adapter scans literal and reversible credential forms across every file,
 ignored path, symlink, and decoded Git object in the complete owned workspace.
-Credential exposure removes only the registered adapter-owned temporary root;
-an unregistered caller path is rejected before OpenCode starts. Every Git
+Credential exposure containment acts only through the registered workspace
+authority; an unregistered caller path is rejected before OpenCode starts. Every Git
 subprocess uses a secret-free environment with host configuration, prompting,
 hooks, external diffs, text conversion, pagers, lazy fetching, replacement
 objects, and fsmonitor disabled.
@@ -109,12 +110,13 @@ renamed or substituted path produces a structured failure and is left intact.
 
 ## Trust boundary
 
-This Phase 0 proof assumes evaluator-authored tasks and every program they
-invoke are trusted, and it accepts only an adapter-created temporary workspace.
-It is not a sandbox for hostile task code, tool subprocesses, or detached
-descendants, and it makes no production or untrusted code containment claim.
-Such use requires operating system sandboxing and process tree supervision
-outside this tracer bullet adapter.
+The production adapter retains the Phase 0 trust boundary: it assumes
+evaluator-authored tasks and every program they invoke are trusted. FACT-12
+also accepts a durable workspace created by the run workspace service, with its
+authority revalidated at each use. It is not a sandbox for hostile task code.
+Production timeout handling supervises the complete child process group;
+hostile execution still requires an operating-system sandbox outside this
+adapter. See `../docs/coding-tool-adapter.md` for the production runbook.
 
 ## Proof
 
