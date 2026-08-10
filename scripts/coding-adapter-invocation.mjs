@@ -5,6 +5,7 @@ import {
 } from "../coding-adapter/src/workspace.js";
 
 const [task] = process.argv.slice(2);
+const binary = process.env.ORBITFACTORY_CODING_ADAPTER_BINARY;
 
 if (typeof task !== "string" || task.length === 0) {
   throw new Error("usage: docker compose --profile coding-adapter run --rm coding-adapter '<task>'");
@@ -16,6 +17,7 @@ if (typeof task !== "string" || task.length === 0) {
 const workspace = await createIsolatedGitWorkspace({ prefix: "orbitflow-compose-adapter-" });
 try {
   const adapter = createOpenCodeAdapter({
+    ...(typeof binary === "string" && binary.length > 0 ? { binary } : {}),
     env: {
       OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
       PATH: process.env.PATH,

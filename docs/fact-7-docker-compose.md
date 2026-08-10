@@ -56,7 +56,8 @@ readiness process has no provider credential.
 The opt-in `coding-adapter` Compose profile is the only coding-runtime service
 given the evaluator key. It is an ephemeral one-shot boundary, not part of
 `docker compose up`; invoke it with the already-created `.env` and no other
-setup:
+setup. The task is always passed to the committed adapter wrapper; it cannot
+replace that wrapper's command:
 
 ```sh
 docker compose --profile coding-adapter run --rm coding-adapter 'create hello.txt containing hello'
@@ -98,6 +99,8 @@ and health, UI, and PostgreSQL-backed `GET /api/agents` reachability
 before and after restart, the exact migration history, gateway and OpenCode executables, the
 credential-free FACT-3 adapter contract, and a fake OpenCode child that proves
 the scoped adapter key and minimal child environment without a provider call.
+That fake runs through the literal documented `docker compose ... run ...
+coding-adapter '<task>'` shape, not by invoking an internal script directly.
 It then verifies a no-op migration rerun, restart, and teardown. The proof uses
 a per-run Compose project name and fake key only because no provider request is
 made; its trap removes and verifies precisely the containers, networks,

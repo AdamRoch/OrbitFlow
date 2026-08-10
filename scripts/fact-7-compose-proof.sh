@@ -17,6 +17,7 @@ OPENROUTER_API_KEY=not-a-real-key-for-structural-compose-proof
 ORBITFACTORY_APP_PORT=$app_port
 ORBITFACTORY_ENGINE_HOST_PORT=$engine_host_port
 ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db
+ORBITFACTORY_CODING_ADAPTER_BINARY=/app/scripts/fact-7-fake-opencode.mjs
 EOF
 
 docker_compose() {
@@ -102,19 +103,20 @@ rendered_config="$(POSTGRES_DB=ambient-compose-value \
   ORBITFACTORY_APP_PORT=49999 \
   ORBITFACTORY_ENGINE_HOST_PORT=49998 \
   ORBITFACTORY_DB_PATH=/ambient-compose-value \
-  compose config)"
+  ORBITFACTORY_CODING_ADAPTER_BINARY=/ambient-compose-value \
+  compose --profile coding-adapter config)"
 if [[ "$rendered_config" == *"ambient-compose-value"* || "$rendered_config" == *"49999"* || "$rendered_config" == *"49998"* ]]; then
   echo "FACT-7 proof allowed ambient Compose interpolation" >&2
   exit 1
 fi
-for expected in orbitfactory_proof fact7-proof-password not-a-real-key-for-structural-compose-proof "$app_port" "$engine_host_port" /app/data/orbitfactory.db; do
+for expected in orbitfactory_proof fact7-proof-password not-a-real-key-for-structural-compose-proof "$app_port" "$engine_host_port" /app/data/orbitfactory.db /app/scripts/fact-7-fake-opencode.mjs; do
   if [[ "$rendered_config" != *"$expected"* ]]; then
     echo "FACT-7 proof did not render expected controlled configuration" >&2
     exit 1
   fi
 done
 
-compose config --quiet
+compose --profile coding-adapter config --quiet
 
 missing_env_file="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact7-missing-env.XXXXXX")"
 if docker_compose "$project-missing-config" "$missing_env_file" config --quiet >/dev/null 2>&1; then
@@ -184,7 +186,12 @@ compose exec -T openclaw node -e "fetch('http://127.0.0.1:18789/readyz').then((r
 compose exec -T engine opencode --version | grep -Fx "1.18.4" >/dev/null
 compose exec -T engine node -e "if ('OPENROUTER_API_KEY' in process.env) throw new Error('engine readiness process received a provider credential')"
 compose exec -T engine node scripts/opencode-structural-proof.mjs | grep -Fx "OpenCode adapter missing-credential contract verified" >/dev/null
-compose --profile coding-adapter run --rm --no-deps coding-adapter node scripts/opencode-scoped-adapter-proof.mjs | grep -Fx "Scoped OpenCode adapter child credential proof verified" >/dev/null
+
+# This is the literal evaluator command from the runbook. The hermetic proof
+# env selects a fake OpenCode executable, which asserts it receives only the
+# FACT-3 minimal child environment and spends no provider credits.
+adapter_output="$(compose --profile coding-adapter run --rm coding-adapter "create hello.txt containing hello")"
+node -e 'const result = JSON.parse(process.argv[1]); if (result.usage?.costUsd !== 0) throw new Error("fake adapter child reported nonzero cost");' "$adapter_output"
 
 no_op_output="$(compose run --rm migrate 2>&1)"
 if [[ "$no_op_output" != *"No migrations to apply."* ]]; then

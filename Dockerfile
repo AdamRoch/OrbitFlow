@@ -18,8 +18,9 @@ WORKDIR /app
 
 COPY --from=build --chown=node:node /app ./
 COPY --chown=root:root docker/app-entrypoint.sh /usr/local/bin/orbitflow-app-entrypoint
+COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitflow-coding-adapter-entrypoint
 
-RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint
+RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-app-entrypoint"]
 CMD ["npm", "run", "start"]
