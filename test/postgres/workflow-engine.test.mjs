@@ -19,21 +19,39 @@ import {
 const { Client, Pool } = pg;
 
 class DeterministicRuntimeAdapter {
-  constructor({ failNodeId = null } = {}) {
+  constructor({ failNodeId = null, ambiguousNodeId = null } = {}) {
     this.failNodeId = failNodeId;
+    this.ambiguousNodeId = ambiguousNodeId;
     this.calls = [];
+    this.reconcileCalls = [];
     this.sessions = new Map();
+    this.ambiguousKeys = new Set();
   }
 
   async startSession(request) {
     this.calls.push(request);
-    if (request.nodeId === this.failNodeId) throw new Error("deterministic runtime failure");
+    if (request.nodeId === this.failNodeId) {
+      return { kind: "confirmed_failure", reason: "deterministic runtime failure" };
+    }
     let sessionId = this.sessions.get(request.idempotencyKey);
     if (!sessionId) {
       sessionId = `mock-session-${this.sessions.size + 1}`;
       this.sessions.set(request.idempotencyKey, sessionId);
     }
-    return { sessionId };
+    if (
+      request.nodeId === this.ambiguousNodeId &&
+      !this.ambiguousKeys.has(request.idempotencyKey)
+    ) {
+      this.ambiguousKeys.add(request.idempotencyKey);
+      throw new Error("provider reply lost after start");
+    }
+    return { kind: "started", sessionId };
+  }
+
+  async reconcileSession(request) {
+    this.reconcileCalls.push(request);
+    const sessionId = this.sessions.get(request.idempotencyKey);
+    return sessionId ? { kind: "started", sessionId } : { kind: "absent" };
   }
 }
 
@@ -144,6 +162,7 @@ test("FACT-10 durable workflow engine", async (t) => {
         type: "output",
         payload: {
           dispatchId: dispatch.id,
+          dispatchGeneration: dispatch.runtime_generation,
           sessionId: dispatch.runtime_session_id,
           output,
         },
@@ -213,6 +232,7 @@ test("FACT-10 durable workflow engine", async (t) => {
         type: "output",
         payload: {
           dispatchId: implementOne.id,
+          dispatchGeneration: implementOne.runtime_generation,
           sessionId: implementOne.runtime_session_id,
           output: { artifact: "first" },
         },
@@ -257,6 +277,7 @@ test("FACT-10 durable workflow engine", async (t) => {
         type: "output",
         payload: {
           dispatchId: approvedDispatch.id,
+          dispatchGeneration: approvedDispatch.runtime_generation,
           sessionId: approvedDispatch.runtime_session_id,
           output: { verdict: "approved" },
         },
@@ -295,6 +316,18 @@ test("FACT-10 durable workflow engine", async (t) => {
       };
       const { run, ticketIds } = await createRun(graph, 3);
       const runtime = new DeterministicRuntimeAdapter();
+      const initialFanout = await client.query(
+        `SELECT
+           (SELECT count(*)::int FROM workflow_fanout_members AS member
+            JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
+            WHERE fanout.run_id = $1) AS members,
+           (SELECT count(*)::int FROM workflow_dispatches WHERE run_id = $1) AS dispatches`,
+        [run.id],
+      );
+      assert.deepEqual(initialFanout.rows[0], {
+        members: 3,
+        dispatches: 2,
+      }, "the ticket snapshot is durable while only max N work is runnable");
       await pauseWorkflowThread(pool, run.id, ticketIds[0], "waiting for one answer");
       const pausedThread = (await listWorkflowThreadStates(pool, run.id)).find(
         (thread) => thread.ticketId === ticketIds[0],
@@ -337,7 +370,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       );
       assert.deepEqual(
         Object.fromEntries(statuses.rows.map((row) => [row.status, row.count])),
-        { pending: 1, active: 2 },
+        { active: 2 },
       );
 
       const active = await client.query(
@@ -376,42 +409,90 @@ test("FACT-10 durable workflow engine", async (t) => {
       assert.equal(statuses.rows[0].count, 0);
     });
 
-    await t.test("recovers an ambiguous expired claim with one stable runtime session", async () => {
+    await t.test("reconciles an ambiguous provider start without replaying it", async () => {
       const graph = {
         nodes: [{ id: "worker", agentId: agents.worker, config: { entry: true } }],
         edges: [],
       };
       const { run } = await createRun(graph);
-      const dispatch = await dispatchFor(run.id, "worker");
-      await client.query(
-        `UPDATE workflow_dispatches
-         SET status = 'dispatching', lease_owner = 'crashed-process',
-             lease_expires_at = clock_timestamp() - interval '1 second',
-             attempt_count = attempt_count + 1
-         WHERE id = $1`,
-        [dispatch.id],
-      );
+      const runtime = new DeterministicRuntimeAdapter({ ambiguousNodeId: "worker" });
+      await dispatchNextWorkflowNode(pool, runtime, { workerId: "crashed-process" });
+      const uncertain = await dispatchFor(run.id, "worker");
+      assert.equal(uncertain.status, "reconciling");
+      assert.match(uncertain.reconciliation_reason, /provider reply lost/);
+      assert.equal((await getWorkflowRun(pool, run.id)).status, "running");
 
-      const runtime = new DeterministicRuntimeAdapter();
-      const request = {
-        idempotencyKey: dispatch.idempotency_key,
-        runId: dispatch.run_id,
-        dispatchId: dispatch.id,
-        nodeId: dispatch.node_id,
-        agentId: dispatch.agent_id,
-        model: dispatch.agent_model,
-        ticketId: dispatch.ticket_id,
-        ephemeral: false,
-        input: dispatch.input,
-      };
-      const ambiguous = await runtime.startSession(request);
       await dispatchNextWorkflowNode(pool, runtime, { workerId: "restarted-process" });
       const recovered = await dispatchFor(run.id, "worker");
       assert.equal(recovered.status, "active");
-      assert.equal(recovered.runtime_session_id, ambiguous.sessionId);
+      assert.equal(recovered.runtime_session_id, "mock-session-1");
       assert.equal(recovered.attempt_count, 2);
-      assert.equal(runtime.calls.length, 2, "the ambiguous provider call was retried");
-      assert.equal(runtime.sessions.size, 1, "the stable key prevents a second session");
+      assert.equal(runtime.calls.length, 1, "restart never blindly replays provider start");
+      assert.equal(runtime.reconcileCalls.length, 1);
+      assert.equal(runtime.sessions.size, 1);
+    });
+
+    await t.test("fences stale worker success and failure after lease reclaim", async () => {
+      const graph = {
+        nodes: [{ id: "worker", agentId: agents.worker, config: { entry: true } }],
+        edges: [],
+      };
+
+      for (const staleOutcome of [
+        { kind: "started", sessionId: "stale-session" },
+        { kind: "confirmed_failure", reason: "stale failure" },
+      ]) {
+        const { run } = await createRun(graph);
+        let releaseStale;
+        let announceStale;
+        const staleCalled = new Promise((resolve) => {
+          announceStale = resolve;
+        });
+        const staleResult = new Promise((resolve) => {
+          releaseStale = resolve;
+        });
+        const staleRuntime = {
+          async startSession(request) {
+            announceStale(request);
+            return staleResult;
+          },
+          async reconcileSession() {
+            return { kind: "absent" };
+          },
+        };
+        const staleWorker = dispatchNextWorkflowNode(pool, staleRuntime, {
+          workerId: "reused-worker-name",
+          leaseMs: 10,
+        });
+        const staleRequest = await staleCalled;
+        const originallyClaimed = await dispatchFor(run.id, "worker");
+        assert.equal(staleRequest.generation, originallyClaimed.runtime_generation);
+        await client.query(
+          `UPDATE workflow_dispatches
+           SET lease_expires_at = clock_timestamp() - interval '1 second'
+           WHERE id = $1`,
+          [originallyClaimed.id],
+        );
+
+        const currentRuntime = new DeterministicRuntimeAdapter();
+        await dispatchNextWorkflowNode(pool, currentRuntime, {
+          workerId: "reused-worker-name",
+        });
+        assert.equal((await dispatchFor(run.id, "worker")).status, "pending");
+        await dispatchNextWorkflowNode(pool, currentRuntime, {
+          workerId: "reused-worker-name",
+        });
+        const current = await dispatchFor(run.id, "worker");
+        assert.equal(current.status, "active");
+        assert.notEqual(current.runtime_generation, staleRequest.generation);
+
+        releaseStale(staleOutcome);
+        await staleWorker;
+        const fenced = await dispatchFor(run.id, "worker");
+        assert.equal(fenced.status, "active");
+        assert.equal(fenced.runtime_session_id, current.runtime_session_id);
+        assert.equal((await getWorkflowRun(pool, run.id)).status, "running");
+      }
     });
 
     await t.test("shares one hard cap across overlapping fan-out cycle activations", async () => {
@@ -449,10 +530,16 @@ test("FACT-10 durable workflow engine", async (t) => {
         null,
       );
       const active = await client.query(
-        "SELECT count(*)::int AS count FROM workflow_dispatches WHERE run_id = $1 AND status = 'active'",
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'reconciling', 'active')`,
         [run.id],
       );
-      assert.equal(active.rows[0].count, 2, "overlapping groups cannot multiply max N");
+      assert.equal(
+        active.rows[0].count,
+        2,
+        "overlapping groups cannot multiply materialized or active work beyond max N",
+      );
       await client.query(
         "UPDATE workflow_runs SET status = 'canceled', ended_at = clock_timestamp() WHERE id = $1",
         [run.id],
@@ -466,25 +553,30 @@ test("FACT-10 durable workflow engine", async (t) => {
       };
       const { run } = await createRun(graph);
       const dispatch = await dispatchFor(run.id, "worker");
-      await client.query(
+      const claimed = await client.query(
         `UPDATE workflow_dispatches
          SET status = 'dispatching', lease_owner = 'fast-worker',
              lease_expires_at = clock_timestamp() + interval '5 minutes',
-             attempt_count = attempt_count + 1
-         WHERE id = $1`,
+             attempt_count = attempt_count + 1,
+             lease_generation = lease_generation + 1,
+             runtime_generation = lease_generation + 1
+         WHERE id = $1
+         RETURNING *`,
         [dispatch.id],
       );
+      const inFlight = claimed.rows[0];
       const runtime = new DeterministicRuntimeAdapter();
       const started = await runtime.startSession({
-        idempotencyKey: dispatch.idempotency_key,
-        runId: dispatch.run_id,
-        dispatchId: dispatch.id,
-        nodeId: dispatch.node_id,
-        agentId: dispatch.agent_id,
-        model: dispatch.agent_model,
+        idempotencyKey: inFlight.idempotency_key,
+        generation: inFlight.runtime_generation,
+        runId: inFlight.run_id,
+        dispatchId: inFlight.id,
+        nodeId: inFlight.node_id,
+        agentId: inFlight.agent_id,
+        model: inFlight.agent_model,
         ticketId: null,
         ephemeral: false,
-        input: dispatch.input,
+        input: inFlight.input,
       });
       const output = await insertMessage(pool, {
         runId: run.id,
@@ -493,6 +585,7 @@ test("FACT-10 durable workflow engine", async (t) => {
         type: "output",
         payload: {
           dispatchId: dispatch.id,
+          dispatchGeneration: inFlight.runtime_generation,
           sessionId: started.sessionId,
           output: { artifact: "instant" },
         },
@@ -527,6 +620,7 @@ test("FACT-10 durable workflow engine", async (t) => {
         type: "output",
         payload: {
           dispatchId: dispatch.id,
+          dispatchGeneration: dispatch.runtime_generation,
           sessionId: dispatch.runtime_session_id,
         },
         handoffBrief: "malformed output proof",

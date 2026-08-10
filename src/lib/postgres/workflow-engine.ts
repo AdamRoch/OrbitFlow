@@ -50,6 +50,7 @@ export interface WorkflowThreadState {
 
 export interface RuntimeDispatchRequest {
   idempotencyKey: string;
+  generation: string;
   runId: string;
   dispatchId: string;
   nodeId: string;
@@ -60,13 +61,19 @@ export interface RuntimeDispatchRequest {
   input: JsonObject;
 }
 
-export interface RuntimeDispatchResult {
-  sessionId: string;
-}
+export type RuntimeStartResult =
+  | { kind: "started"; sessionId: string }
+  | { kind: "confirmed_failure"; reason: string };
+
+export type RuntimeReconciliationResult =
+  | RuntimeStartResult
+  | { kind: "absent" }
+  | { kind: "pending"; reason: string };
 
 /** FACT-11 supplies the real implementation. FACT-10 depends only on this seam. */
 export interface RuntimeAdapter {
-  startSession(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResult>;
+  startSession(request: RuntimeDispatchRequest): Promise<RuntimeStartResult>;
+  reconcileSession(request: RuntimeDispatchRequest): Promise<RuntimeReconciliationResult>;
 }
 
 export interface WorkflowEngineWorker {
@@ -237,13 +244,13 @@ async function insertDispatch(
     spec: JsonObject;
     node: WorkflowNode;
     agentModel: string;
-    sourceMessage: MessageRow | null;
+    sourceMessageId: string | null;
+    sourceHandoffBrief: string | null;
     sourceOutput: JsonObject | null;
     ticketId: string | null;
     fanoutGroupId: string | null;
   },
 ): Promise<number> {
-  const sourceMessageId = input.sourceMessage?.id ?? null;
   const ticket = await ticketInput(transaction, input.ticketId);
   await transaction.query(
     `INSERT INTO workflow_thread_states (run_id, ticket_id)
@@ -254,11 +261,11 @@ async function insertDispatch(
   const dispatchInput: JsonObject = {
     runSpec: input.spec,
     nodeConfig: input.node.config,
-    upstream: input.sourceMessage
+    upstream: input.sourceMessageId
       ? {
-          messageId: input.sourceMessage.id,
+          messageId: input.sourceMessageId,
           output: input.sourceOutput!,
-          handoffBrief: input.sourceMessage.handoffBrief,
+          handoffBrief: input.sourceHandoffBrief,
         }
       : null,
     ticket,
@@ -276,13 +283,93 @@ async function insertDispatch(
       input.node.agentId,
       input.agentModel,
       input.ticketId,
-      sourceMessageId,
+      input.sourceMessageId,
       input.fanoutGroupId,
       dispatchInput,
-      dispatchKey(input.runId, sourceMessageId, input.node.id, input.ticketId),
+      dispatchKey(input.runId, input.sourceMessageId, input.node.id, input.ticketId),
     ],
   );
   return result.rowCount ?? 0;
+}
+
+async function materializeFanoutCapacity(
+  transaction: PoolClient,
+  runId: string,
+  nodeId: string,
+): Promise<number> {
+  const groups = await transaction.query(
+    `SELECT fanout.*, run.spec,
+            message.payload -> 'output' AS source_output,
+            message.handoff_brief AS source_handoff_brief
+     FROM workflow_fanout_groups AS fanout
+     JOIN workflow_runs AS run ON run.id = fanout.run_id
+     LEFT JOIN messages AS message ON message.id = fanout.source_message_id
+     WHERE fanout.run_id = $1 AND fanout.node_id = $2
+     ORDER BY fanout.id
+     FOR UPDATE OF fanout`,
+    [runId, nodeId],
+  );
+  if (groups.rowCount === 0) return 0;
+
+  const maxConcurrency = Math.min(
+    ...groups.rows.map((group) => Number(group.max_concurrency)),
+  );
+  const materialized = await transaction.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+     FROM workflow_dispatches
+     WHERE run_id = $1 AND node_id = $2
+       AND status IN ('pending', 'dispatching', 'reconciling', 'active')`,
+    [runId, nodeId],
+  );
+  const available = maxConcurrency - materialized.rows[0].count;
+  if (available <= 0) return 0;
+
+  const members = await transaction.query(
+    `SELECT member.fanout_group_id, member.ticket_id, fanout.node_id,
+            fanout.agent_id, fanout.agent_model, fanout.node_config,
+            fanout.source_message_id, run.spec,
+            message.payload -> 'output' AS source_output,
+            message.handoff_brief AS source_handoff_brief
+     FROM workflow_fanout_members AS member
+     JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
+     JOIN workflow_runs AS run ON run.id = fanout.run_id
+     LEFT JOIN messages AS message ON message.id = fanout.source_message_id
+     LEFT JOIN workflow_dispatches AS dispatch
+       ON dispatch.fanout_group_id = member.fanout_group_id
+      AND dispatch.ticket_id = member.ticket_id
+     LEFT JOIN workflow_thread_states AS thread
+       ON thread.run_id = fanout.run_id AND thread.ticket_id = member.ticket_id
+     WHERE fanout.run_id = $1 AND fanout.node_id = $2
+       AND dispatch.id IS NULL
+       AND COALESCE(thread.status::text, 'running') = 'running'
+     ORDER BY fanout.id, member.position
+     LIMIT $3
+     FOR UPDATE OF member`,
+    [runId, nodeId, available],
+  );
+
+  let inserted = 0;
+  for (const member of members.rows) {
+    inserted += await insertDispatch(transaction, {
+      runId,
+      spec: asJsonObject(member.spec, "workflow run spec"),
+      node: {
+        id: member.node_id,
+        agentId: member.agent_id,
+        config: member.node_config as WorkflowNode["config"],
+      },
+      agentModel: member.agent_model,
+      sourceMessageId: member.source_message_id,
+      sourceHandoffBrief: member.source_handoff_brief,
+      sourceOutput:
+        member.source_message_id === null
+          ? null
+          : asJsonObject(member.source_output, "fan-out source output"),
+      ticketId: member.ticket_id,
+      fanoutGroupId: member.fanout_group_id,
+    });
+  }
+  return inserted;
 }
 
 async function enqueueNode(
@@ -309,6 +396,8 @@ async function enqueueNode(
     return insertDispatch(transaction, {
       ...input,
       agentModel,
+      sourceMessageId: input.sourceMessage?.id ?? null,
+      sourceHandoffBrief: input.sourceMessage?.handoffBrief ?? null,
       ticketId: input.inheritedTicketId,
       fanoutGroupId: null,
     });
@@ -316,31 +405,31 @@ async function enqueueNode(
 
   const group = await transaction.query<{ id: string }>(
     `INSERT INTO workflow_fanout_groups (
-       run_id, source_message_id, node_id, max_concurrency
-     ) VALUES ($1, $2, $3, $4)
+       run_id, source_message_id, node_id, agent_id, agent_model,
+       node_config, max_concurrency
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT ON CONSTRAINT workflow_fanout_groups_activation_unique
      DO UPDATE SET updated_at = workflow_fanout_groups.updated_at
      RETURNING id`,
-    [input.runId, input.sourceMessage?.id ?? null, input.node.id, maxConcurrency],
+    [
+      input.runId,
+      input.sourceMessage?.id ?? null,
+      input.node.id,
+      input.node.agentId,
+      agentModel,
+      input.node.config,
+      maxConcurrency,
+    ],
   );
-  const tickets = await transaction.query<{ id: string }>(
-    `SELECT id
+  await transaction.query(
+    `INSERT INTO workflow_fanout_members (fanout_group_id, position, ticket_id)
+     SELECT $2, row_number() OVER (ORDER BY priority DESC, created_at, id)::integer - 1, id
      FROM tickets
      WHERE run_id = $1 AND status IN ('todo', 'in_progress')
-     ORDER BY priority DESC, created_at, id
-     FOR SHARE`,
-    [input.runId],
+     ON CONFLICT ON CONSTRAINT workflow_fanout_members_ticket_unique DO NOTHING`,
+    [input.runId, group.rows[0].id],
   );
-  let inserted = 0;
-  for (const ticket of tickets.rows) {
-    inserted += await insertDispatch(transaction, {
-      ...input,
-      agentModel,
-      ticketId: ticket.id,
-      fanoutGroupId: group.rows[0].id,
-    });
-  }
-  return inserted;
+  return materializeFanoutCapacity(transaction, input.runId, input.node.id);
 }
 
 function boundedReason(error: unknown): string {
@@ -358,8 +447,9 @@ async function failRun(
   await transaction.query(
     `UPDATE workflow_dispatches
      SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
-         output_message_id = NULL, failure_reason = $2, updated_at = clock_timestamp()
-     WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'active')`,
+         output_message_id = NULL, reconciliation_reason = NULL,
+         failure_reason = $2, updated_at = clock_timestamp()
+     WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'reconciling', 'active')`,
     [runId, bounded],
   );
   const changed = await transaction.query(
@@ -530,6 +620,27 @@ async function setWorkflowThreadState(
        RETURNING *`,
       [runId, ticketId, status, pauseReason],
     );
+    if (ticketId) {
+      if (status === "paused") {
+        await transaction.query(
+          `DELETE FROM workflow_dispatches
+           WHERE run_id = $1 AND ticket_id = $2
+             AND fanout_group_id IS NOT NULL AND status = 'pending'`,
+          [runId, ticketId],
+        );
+      }
+      const nodes = await transaction.query<{ node_id: string }>(
+        `SELECT DISTINCT fanout.node_id
+         FROM workflow_fanout_members AS member
+         JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
+         WHERE fanout.run_id = $1 AND member.ticket_id = $2
+         ORDER BY fanout.node_id`,
+        [runId, ticketId],
+      );
+      for (const node of nodes.rows) {
+        await materializeFanoutCapacity(transaction, runId, node.node_id);
+      }
+    }
     return threadFromRow(changed.rows[0]);
   });
 }
@@ -574,6 +685,9 @@ interface ClaimedDispatch {
   input: JsonObject;
   idempotencyKey: string;
   leaseOwner: string;
+  leaseGeneration: string;
+  runtimeGeneration: string;
+  phase: "start" | "reconcile";
 }
 
 async function claimDispatch(
@@ -600,6 +714,13 @@ async function claimDispatch(
            OR (
              dispatch.status = 'dispatching'
              AND dispatch.lease_expires_at <= clock_timestamp()
+           )
+           OR (
+             dispatch.status = 'reconciling'
+             AND (
+               dispatch.lease_owner IS NULL
+               OR dispatch.lease_expires_at <= clock_timestamp()
+             )
            )
        )
        ORDER BY dispatch.created_at, dispatch.id
@@ -634,59 +755,42 @@ async function claimDispatch(
                dispatch.status = 'dispatching'
                AND dispatch.lease_expires_at <= clock_timestamp()
              )
+             OR (
+               dispatch.status = 'reconciling'
+               AND (
+                 dispatch.lease_owner IS NULL
+                 OR dispatch.lease_expires_at <= clock_timestamp()
+               )
+             )
            )
          FOR UPDATE OF dispatch SKIP LOCKED`,
         [candidate.id],
       );
       if (!locked.rows[0]) continue;
       const dispatch = locked.rows[0];
-      if (dispatch.fanout_group_id !== null) {
-        await transaction.query(
-          "SELECT id FROM workflow_fanout_groups WHERE id = $1 FOR UPDATE",
-          [dispatch.fanout_group_id],
-        );
-        const capacity = await transaction.query<{
-          active_count: number;
-          max_concurrency: number;
-        }>(
-          `SELECT
-             count(member.id) FILTER (
-               WHERE member.id <> $2
-                 AND (
-                   member.status = 'active'
-                   OR (
-                     member.status = 'dispatching'
-                     AND member.lease_expires_at > clock_timestamp()
-                   )
-                 )
-             )::int AS active_count,
-             current_group.max_concurrency
-           FROM workflow_fanout_groups AS current_group
-           JOIN workflow_fanout_groups AS sibling_group
-             ON sibling_group.run_id = current_group.run_id
-            AND sibling_group.node_id = current_group.node_id
-           LEFT JOIN workflow_dispatches AS member
-             ON member.fanout_group_id = sibling_group.id
-           WHERE current_group.id = $1
-           GROUP BY current_group.max_concurrency`,
-          [dispatch.fanout_group_id, dispatch.id],
-        );
-        if (
-          !capacity.rows[0] ||
-          capacity.rows[0].active_count >= capacity.rows[0].max_concurrency
-        ) {
-          continue;
-        }
-      }
+      const phase = dispatch.status === "pending" ? "start" : "reconcile";
 
       const claimed = await transaction.query(
         `UPDATE workflow_dispatches
-         SET status = 'dispatching', lease_owner = $2,
+         SET status = $4::workflow_dispatch_status, lease_owner = $2,
              lease_expires_at = clock_timestamp() + ($3::integer * interval '1 millisecond'),
-             attempt_count = attempt_count + 1, updated_at = clock_timestamp()
+             attempt_count = attempt_count + 1,
+             lease_generation = lease_generation + 1,
+             runtime_generation = CASE
+               WHEN $4 = 'dispatching' THEN lease_generation + 1
+               ELSE runtime_generation
+             END,
+             reconciliation_reason = CASE
+               WHEN $4 = 'reconciling' THEN COALESCE(
+                 reconciliation_reason,
+                 'provider outcome unknown after dispatch lease expired'
+               )
+               ELSE NULL
+             END,
+             updated_at = clock_timestamp()
          WHERE id = $1
          RETURNING *`,
-        [dispatch.id, workerId, leaseMs],
+        [dispatch.id, workerId, leaseMs, phase === "start" ? "dispatching" : "reconciling"],
       );
       const row = claimed.rows[0];
       return {
@@ -699,6 +803,9 @@ async function claimDispatch(
         input: row.input,
         idempotencyKey: row.idempotency_key,
         leaseOwner: row.lease_owner,
+        leaseGeneration: row.lease_generation,
+        runtimeGeneration: row.runtime_generation,
+        phase,
       };
     }
     return null;
@@ -716,6 +823,7 @@ export async function dispatchNextWorkflowNode(
   if (!claimed) return null;
   const request: RuntimeDispatchRequest = {
     idempotencyKey: claimed.idempotencyKey,
+    generation: claimed.runtimeGeneration,
     runId: claimed.runId,
     dispatchId: claimed.id,
     nodeId: claimed.nodeId,
@@ -726,11 +834,30 @@ export async function dispatchNextWorkflowNode(
     input: claimed.input,
   };
 
-  let sessionId: string;
-  try {
-    const result = await runtime.startSession(request);
-    sessionId = nonBlank(result?.sessionId, "runtime sessionId");
-  } catch (error) {
+  const persistUncertainty = async (reason: unknown) => {
+    await pool.query(
+      `UPDATE workflow_dispatches
+       SET status = 'reconciling', lease_owner = NULL, lease_expires_at = NULL,
+           reconciliation_reason = $4, updated_at = clock_timestamp()
+       WHERE id = $1 AND status IN ('dispatching', 'reconciling')
+         AND lease_owner = $2 AND lease_generation = $3`,
+      [claimed.id, claimed.leaseOwner, claimed.leaseGeneration, boundedReason(reason)],
+    );
+  };
+  const persistStarted = async (sessionIdValue: unknown) => {
+    const sessionId = nonBlank(sessionIdValue, "runtime sessionId");
+    await pool.query(
+      `UPDATE workflow_dispatches
+       SET status = 'active', runtime_session_id = $4,
+           lease_owner = NULL, lease_expires_at = NULL,
+           reconciliation_reason = NULL, updated_at = clock_timestamp()
+       WHERE id = $1 AND status IN ('dispatching', 'reconciling')
+         AND lease_owner = $2 AND lease_generation = $3`,
+      [claimed.id, claimed.leaseOwner, claimed.leaseGeneration, sessionId],
+    );
+  };
+  const persistConfirmedFailure = async (reasonValue: unknown) => {
+    const reason = boundedReason(nonBlank(reasonValue, "runtime failure reason"));
     await inTransaction(pool, async (transaction) => {
       await transaction.query("SELECT id FROM workflow_runs WHERE id = $1 FOR UPDATE", [
         claimed.runId,
@@ -738,49 +865,80 @@ export async function dispatchNextWorkflowNode(
       const failed = await transaction.query(
         `UPDATE workflow_dispatches
          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
-             failure_reason = $3, updated_at = clock_timestamp()
-         WHERE id = $1 AND status = 'dispatching' AND lease_owner = $2
+             reconciliation_reason = NULL, failure_reason = $4,
+             updated_at = clock_timestamp()
+         WHERE id = $1 AND status IN ('dispatching', 'reconciling')
+           AND lease_owner = $2 AND lease_generation = $3
          RETURNING run_id`,
-        [claimed.id, claimed.leaseOwner, boundedReason(error)],
+        [claimed.id, claimed.leaseOwner, claimed.leaseGeneration, reason],
       );
       if (failed.rows[0]) {
-        await failRun(
-          transaction,
-          failed.rows[0].run_id,
-          "runtime_dispatch_failed",
-          boundedReason(error),
-        );
+        await failRun(transaction, failed.rows[0].run_id, "runtime_dispatch_failed", reason);
       }
     });
+  };
+
+  if (claimed.phase === "start") {
+    try {
+      const result = await runtime.startSession(request);
+      if (result?.kind === "started") {
+        await persistStarted(result.sessionId);
+      } else if (result?.kind === "confirmed_failure") {
+        await persistConfirmedFailure(result.reason);
+      } else {
+        throw new TypeError("runtime start returned an invalid result");
+      }
+    } catch (error) {
+      await persistUncertainty(error);
+    }
     return request;
   }
-  // A database error after the provider succeeds is response-ambiguous. Do not
-  // turn it into a confirmed run failure: leave the lease to expire, then retry
-  // this same persisted idempotency key and recover the same runtime session.
-  await pool.query(
-    `UPDATE workflow_dispatches
-     SET status = 'active', runtime_session_id = $3,
-         lease_owner = NULL, lease_expires_at = NULL,
-         updated_at = clock_timestamp()
-     WHERE id = $1 AND status = 'dispatching' AND lease_owner = $2`,
-    [claimed.id, claimed.leaseOwner, sessionId],
-  );
+
+  try {
+    const result = await runtime.reconcileSession(request);
+    if (result?.kind === "started") {
+      await persistStarted(result.sessionId);
+    } else if (result?.kind === "absent") {
+      await pool.query(
+        `UPDATE workflow_dispatches
+         SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+             runtime_generation = NULL, reconciliation_reason = NULL,
+             updated_at = clock_timestamp()
+         WHERE id = $1 AND status = 'reconciling'
+           AND lease_owner = $2 AND lease_generation = $3`,
+        [claimed.id, claimed.leaseOwner, claimed.leaseGeneration],
+      );
+    } else if (result?.kind === "pending") {
+      await persistUncertainty(nonBlank(result.reason, "runtime reconciliation reason"));
+    } else if (result?.kind === "confirmed_failure") {
+      await persistConfirmedFailure(result.reason);
+    } else {
+      throw new TypeError("runtime reconciliation returned an invalid result");
+    }
+  } catch (error) {
+    await persistUncertainty(error);
+  }
   return request;
 }
 
 function parseOutputMessage(message: MessageRow): {
   dispatchId: string;
+  dispatchGeneration: string;
   sessionId: string;
   output: JsonObject;
 } {
   const payload = asJsonObject(message.payload, "output message payload");
   const dispatchId = positiveId(payload.dispatchId as DatabaseId, "payload.dispatchId");
+  const dispatchGeneration = positiveId(
+    payload.dispatchGeneration as DatabaseId,
+    "payload.dispatchGeneration",
+  );
   const sessionId = nonBlank(payload.sessionId, "payload.sessionId");
   const output = asJsonObject(payload.output, "payload.output");
   if (typeof message.handoffBrief !== "string" || message.handoffBrief.trim() === "") {
     throw new WorkflowGraphError("output message handoffBrief must be non-blank");
   }
-  return { dispatchId, sessionId, output };
+  return { dispatchId, dispatchGeneration, sessionId, output };
 }
 
 function parseUsage(value: MessageJsonObject | null): {
@@ -816,9 +974,23 @@ function parseUsage(value: MessageJsonObject | null): {
 
 async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<void> {
   const outstanding = await transaction.query<{ count: string }>(
-    `SELECT count(*)
-     FROM workflow_dispatches
-     WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'active')`,
+    `SELECT (
+       SELECT count(*)
+       FROM workflow_dispatches
+       WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'reconciling', 'active')
+     ) + (
+       SELECT count(*)
+       FROM workflow_fanout_members AS member
+       JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
+       WHERE fanout.run_id = $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM workflow_dispatches AS dispatch
+           WHERE dispatch.fanout_group_id = member.fanout_group_id
+             AND dispatch.ticket_id = member.ticket_id
+             AND dispatch.status = 'completed'
+         )
+     ) AS count`,
     [runId],
   );
   if (outstanding.rows[0].count === "0") {
@@ -853,7 +1025,12 @@ export async function routeWorkflowMessage(
   const run = runResult.rows[0];
   if (["completed", "failed", "canceled"].includes(run.status)) return;
 
-  let parsed: { dispatchId: string; sessionId: string; output: JsonObject };
+  let parsed: {
+    dispatchId: string;
+    dispatchGeneration: string;
+    sessionId: string;
+    output: JsonObject;
+  };
   try {
     parsed = parseOutputMessage(message);
   } catch (error) {
@@ -892,6 +1069,11 @@ export async function routeWorkflowMessage(
     );
     return;
   }
+  if (parsed.dispatchGeneration !== dispatch.runtime_generation) {
+    // Reconciliation proved the old attempt absent and a newer provider start
+    // now owns this dispatch. A late output from the old attempt is harmless.
+    return;
+  }
   if (dispatch.status === "completed") {
     if (dispatch.runtime_session_id === parsed.sessionId) return;
     await failRun(
@@ -902,7 +1084,7 @@ export async function routeWorkflowMessage(
     );
     return;
   }
-  if (!(["dispatching", "active"] as string[]).includes(dispatch.status)) {
+  if (!(["dispatching", "reconciling", "active"] as string[]).includes(dispatch.status)) {
     await failRun(
       transaction,
       message.runId,
@@ -958,10 +1140,13 @@ export async function routeWorkflowMessage(
        SET status = 'completed', runtime_session_id = $2,
            lease_owner = NULL, lease_expires_at = NULL,
            output_message_id = $3,
+           reconciliation_reason = NULL,
            updated_at = clock_timestamp()
-       WHERE id = $1`,
-      [dispatch.id, parsed.sessionId, message.id],
+       WHERE id = $1 AND runtime_generation = $4
+         AND status IN ('dispatching', 'reconciling', 'active')`,
+      [dispatch.id, parsed.sessionId, message.id, parsed.dispatchGeneration],
     );
+    await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);
     if (evaluation.kind === "dispatch") {
       await enqueueNode(transaction, {
         runId: message.runId,

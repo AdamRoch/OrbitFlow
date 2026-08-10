@@ -52,16 +52,19 @@ transaction. An output message has this routing envelope:
 ```json
 {
   "dispatchId": "42",
+  "dispatchGeneration": "1",
   "sessionId": "runtime-session-42",
   "output": { "verdict": "rejected" }
 }
 ```
 
-The runtime producer copies its session identifier into this internal envelope.
-That closes the race where a very fast agent finishes before the dispatcher can
-persist the adapter response: the output transaction can safely promote the
-leased dispatch straight to completed, and the delayed finalizer becomes a
-no-op. The message also requires a non-blank `handoff_brief`; fan-out output must carry
+The runtime producer copies its provider-attempt generation and session
+identifier into this internal envelope. The generation changes only after
+reconciliation proves an earlier start absent and the engine authorizes a new
+provider start. A fast agent can finish before the dispatcher persists the
+adapter response, while a late worker from an older, reclaimed attempt cannot
+complete or fail the current attempt. The message also requires a non-blank
+`handoff_brief`; fan-out output must carry
 the same `ticket_id` as its dispatch. The handler validates the active dispatch,
 records usage in `cost_events`, increments run totals, evaluates one edge, and
 inserts the next dispatch. Those mutations, the FACT-9 receipt, and the cursor
@@ -77,20 +80,30 @@ and deployment ordering must therefore land FACT-12's `0005` first when both
 changes are pending.
 
 `workflow_dispatches` is the transactional dispatch outbox. A dispatcher claims
-one row with a lease, calls the injected `RuntimeAdapter`, then records the
-session. Each dispatch also snapshots the agent model used for runtime and cost
-attribution. The stable persisted idempotency key survives process death. FACT-11's
-adapter must honor that key and return the same session when a call succeeded
-but its response or database update was interrupted. The database guarantee is
-exactly-once routing and one active dispatch record, not magic exactly-once I/O
-to a provider that ignores idempotency.
+one row with a monotonically increasing lease generation, calls the injected
+`RuntimeAdapter`, then records success or confirmed failure only if that
+generation still owns the row. This fence works even if two processes reuse the
+same worker name.
 
-Fan-out snapshots the run's `todo` and `in_progress` tickets when the fan-out
-node is entered. It creates one pending ephemeral dispatch per ticket. Claimers
-serialize briefly on the fan-out group and count active or unexpired leased
-members across every activation of that node in the run before starting another
-session, enforcing the configured hard maximum even if graph cycles overlap. An
-output completes that ticket dispatch and releases one slot.
+The adapter has separate `startSession` and `reconcileSession` operations. A
+confirmed provider rejection is explicit. An exception or invalid response is
+ambiguous and moves the dispatch to durable `reconciling` state without failing
+the run. After restart, the engine reconciles the persisted idempotency key. It
+may activate a found session, keep waiting, record a confirmed failure, or return
+the row to `pending` only after the provider authoritatively reports that no
+session exists. It never blindly repeats an uncertain external start. FACT-11's
+adapter must implement that contract against OpenClaw. The database guarantee is
+exactly-once routing and fenced ownership, not magic exactly-once I/O from a
+provider that cannot reconcile an idempotency key.
+
+Fan-out snapshots the run's `todo` and `in_progress` tickets into durable
+`workflow_fanout_members` when the node is entered. It materializes at most
+`maxConcurrency` runnable dispatch rows across every overlapping activation of
+that node in the run. Pending rows count against the cap, so one transaction
+cannot build an unbounded runnable queue before workers start claiming it. A
+completion releases one slot and materializes the next snapshotted ticket in
+stable group and ticket order. Each materialized ticket still receives one
+ephemeral runtime session.
 
 ## Lifecycle seams
 
@@ -124,8 +137,9 @@ port, applies the clean migration chain, and removes that exact container. It
 handles whole-run and one-ticket pause/resume, a rejection cycle, terminal
 completion, aggregate usage,
 two FACT-9 consumers racing one output, semantic duplicate output, three-ticket
-fan-out saturation and release at max two, one mock session per ticket, an
+fan-out materialization and release at max two, one mock session per ticket, an
 overlapping fan-out cycle that cannot multiply max N, a start-time graph
-snapshot, an expired ambiguous claim recovered with the same session key,
-malformed output, and confirmed runtime failure. The runtime is deterministic
-and in-memory; it does not implement FACT-11 or FACT-12.
+snapshot, ambiguous-start reconciliation without replay, stale-worker success
+and failure attacks after reclaim, fast output before finalization, malformed
+output, and confirmed runtime failure. The runtime is deterministic and
+in-memory; it does not implement FACT-11 or FACT-12.
