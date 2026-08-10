@@ -137,7 +137,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     await rm(runtimeRoot, { recursive: true, force: true });
   });
 
-  await t.test("sets up only the existing FACT-6 schema", async () => {
+  await t.test("sets up only the inherited PostgreSQL schema", async () => {
     const project = await pool.query(
       `INSERT INTO projects (key, name, next_number)
        VALUES ('RUN', 'Runtime proof', 20) RETURNING id::text`,
@@ -174,6 +174,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
         "0002-tickets.sql",
         "0003-message-plane.sql",
         "0004-message-consumption.sql",
+        "0009-state-stream-notify.sql",
       ],
     );
   });
