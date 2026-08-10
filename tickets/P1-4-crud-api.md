@@ -13,7 +13,6 @@ REST CRUD on the control plane for `agents` (all §4 fields incl. guardrails, in
 
 ## Implementation status
 
-**in_progress** — PostgreSQL repository, REST adapters, and the disposable
-database proof are complete locally. Final inherited gates and direct-PR
-publication are pending; Firstmate owns independent review, merge, and tracker
-completion.
+**in_progress** — PostgreSQL repository, REST adapters, and disposable
+database proof are complete. Direct PR #7 is open; Firstmate owns independent
+exact-head review, merge, and tracker completion.
