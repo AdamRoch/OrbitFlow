@@ -53,12 +53,14 @@ assert_empty() {
 remove_project_images() {
   local project_name="$1"
   local image_ids
+  local removal_failed="false"
   image_ids="$(docker image ls -aq --filter "label=com.docker.compose.project=$project_name" | sort -u)"
   if [[ -n "$image_ids" ]] && ! docker image rm $image_ids >/dev/null; then
     echo "FACT-7 proof could not remove images for $project_name" >&2
-    return 1
+    removal_failed="true"
   fi
-  assert_empty "images" "$(docker image ls -aq --filter "label=com.docker.compose.project=$project_name")"
+  assert_empty "images" "$(docker image ls -aq --filter "label=com.docker.compose.project=$project_name")" || return 1
+  [[ "$removal_failed" == "false" ]]
 }
 
 cleanup() {
