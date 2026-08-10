@@ -5,48 +5,109 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
 
 const { Client } = pg;
-const MIGRATION_DIRECTORY = join(
+const DEFAULT_MIGRATION_DIRECTORY = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "db",
   "migrations",
 );
-const MIGRATION_FILE = /^\d{4}-[a-z0-9-]+\.sql$/;
-const LOCK_NAME = "orbitfactory-schema-migrations-v1";
+const MIGRATION_FILE = /^(\d{4})-[a-z0-9-]+\.sql$/;
+export const MIGRATION_LOCK_NAME = "orbitfactory-schema-migrations-v1";
 
-async function loadMigrations() {
-  const names = (await readdir(MIGRATION_DIRECTORY))
+async function loadMigrations(migrationDirectory) {
+  const names = (await readdir(migrationDirectory))
     .filter((name) => MIGRATION_FILE.test(name))
     .sort();
 
   if (names.length === 0) {
-    throw new Error(`no migrations found in ${MIGRATION_DIRECTORY}`);
+    throw new Error(`no migrations found in ${migrationDirectory}`);
   }
 
-  return Promise.all(
+  const migrations = await Promise.all(
     names.map(async (version) => {
-      const sql = await readFile(join(MIGRATION_DIRECTORY, version), "utf8");
+      const match = MIGRATION_FILE.exec(version);
+      const ordinal = Number(match[1]);
+      const sql = await readFile(join(migrationDirectory, version), "utf8");
       const checksum = createHash("sha256").update(sql).digest("hex");
-      return { version, checksum, sql };
+      return { version, ordinal, checksum, sql };
     }),
   );
+
+  const ordinals = new Set();
+  for (const migration of migrations) {
+    if (ordinals.has(migration.ordinal)) {
+      throw new Error(
+        `migration ordinal ${String(migration.ordinal).padStart(4, "0")} is duplicated`,
+      );
+    }
+    ordinals.add(migration.ordinal);
+  }
+
+  return migrations.sort(
+    (left, right) => left.ordinal - right.ordinal || left.version.localeCompare(right.version),
+  );
+}
+
+function validateAppliedHistory(migrations, applied) {
+  const migrationsByVersion = new Map(
+    migrations.map((migration) => [migration.version, migration]),
+  );
+
+  for (const version of applied.keys()) {
+    if (!migrationsByVersion.has(version)) {
+      throw new Error(
+        `applied migration ${version} is missing from the committed migration directory`,
+      );
+    }
+  }
+
+  let firstPending = null;
+  for (const migration of migrations) {
+    const recordedChecksum = applied.get(migration.version);
+    if (!recordedChecksum) {
+      firstPending ??= migration;
+      continue;
+    }
+
+    if (recordedChecksum !== migration.checksum) {
+      throw new Error(
+        `applied migration ${migration.version} does not match its committed checksum`,
+      );
+    }
+
+    if (firstPending) {
+      throw new Error(
+        `unapplied migration ${firstPending.version} was introduced before already-applied ${migration.version}`,
+      );
+    }
+  }
 }
 
 export async function migratePostgres({
   databaseUrl = process.env.DATABASE_URL,
   log = console.log,
+  migrationDirectory = DEFAULT_MIGRATION_DIRECTORY,
 } = {}) {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required to run PostgreSQL migrations");
   }
 
-  const client = new Client({ connectionString: databaseUrl });
-  const migrations = await loadMigrations();
+  const client = new Client({
+    connectionString: databaseUrl,
+    application_name: "orbitfactory-migrator",
+  });
+  const migrations = await loadMigrations(migrationDirectory);
   const appliedNow = [];
+  let connected = false;
+  let lockAcquired = false;
 
-  await client.connect();
   try {
-    await client.query("SELECT pg_advisory_lock(hashtext($1))", [LOCK_NAME]);
+    await client.connect();
+    connected = true;
+    await client.query("SELECT pg_advisory_lock(hashtext($1))", [
+      MIGRATION_LOCK_NAME,
+    ]);
+    lockAcquired = true;
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version TEXT PRIMARY KEY,
@@ -61,17 +122,10 @@ export async function migratePostgres({
     const applied = new Map(
       result.rows.map((row) => [row.version, row.checksum]),
     );
+    validateAppliedHistory(migrations, applied);
 
     for (const migration of migrations) {
-      const recordedChecksum = applied.get(migration.version);
-      if (recordedChecksum) {
-        if (recordedChecksum !== migration.checksum) {
-          throw new Error(
-            `applied migration ${migration.version} does not match its committed checksum`,
-          );
-        }
-        continue;
-      }
+      if (applied.has(migration.version)) continue;
 
       await client.query("BEGIN");
       try {
@@ -94,9 +148,13 @@ export async function migratePostgres({
     return { applied: appliedNow };
   } finally {
     try {
-      await client.query("SELECT pg_advisory_unlock(hashtext($1))", [LOCK_NAME]);
+      if (lockAcquired) {
+        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [
+          MIGRATION_LOCK_NAME,
+        ]);
+      }
     } finally {
-      await client.end();
+      if (connected) await client.end();
     }
   }
 }

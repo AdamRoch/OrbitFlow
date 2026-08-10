@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
+import {
+  MIGRATION_LOCK_NAME,
+  migratePostgres,
+} from "../../scripts/migrate-postgres.mjs";
 
 const { Client } = pg;
+const FAILED_MIGRATION_DIRECTORY = fileURLToPath(
+  new URL("./fixtures/failed-migration", import.meta.url),
+);
 
 const expectedColumns = {
   schema_migrations: ["version", "checksum", "applied_at"],
@@ -95,6 +103,7 @@ const expectedColumns = {
     "id",
     "run_id",
     "ticket_id",
+    "sequence_number",
     "sender",
     "recipient",
     "type",
@@ -165,6 +174,8 @@ const requiredConstraints = [
   "dependencies_edge_unique",
   "dependencies_not_self",
   "messages_payload_object",
+  "messages_run_sequence_unique",
+  "messages_sequence_positive",
   "messages_token_usage_nonnegative",
   "messages_token_usage_object",
   "schedules_exactly_one_target",
@@ -204,6 +215,26 @@ async function rejectWithCode(client, text, values, code) {
       return true;
     },
   );
+}
+
+async function waitForAdvisoryWait(observer, applicationName) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const waiting = await observer.query(
+      `SELECT 1
+       FROM pg_stat_activity
+       WHERE application_name = $1
+         AND wait_event_type = 'Lock'
+         AND wait_event = 'advisory'`,
+      [applicationName],
+    );
+    if (waiting.rowCount > 0) return;
+    await delay(10);
+  }
+  assert.fail(`${applicationName} never waited on the expected advisory lock`);
+}
+
+async function migrateQuietly(options) {
+  return migratePostgres({ ...options, log: () => {} });
 }
 
 test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
@@ -263,6 +294,115 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       assert.deepEqual(journalAfter.rows, journalBefore.rows);
     });
 
+    await t.test("fails closed on migration history drift, lock contention, and failed SQL", async () => {
+      const baseline = await client.query(
+        "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
+      );
+      const baselineByVersion = new Map(
+        baseline.rows.map((row) => [row.version, row]),
+      );
+
+      await client.query(
+        "UPDATE schema_migrations SET checksum = $1 WHERE version = $2",
+        ["0".repeat(64), "0001-control-plane.sql"],
+      );
+      await assert.rejects(
+        () => migrateQuietly({ databaseUrl }),
+        /does not match its committed checksum/,
+      );
+      await client.query(
+        "UPDATE schema_migrations SET checksum = $1 WHERE version = $2",
+        [
+          baselineByVersion.get("0001-control-plane.sql").checksum,
+          "0001-control-plane.sql",
+        ],
+      );
+
+      await client.query(
+        `INSERT INTO schema_migrations (version, checksum)
+         VALUES ('9999-missing.sql', $1)`,
+        ["f".repeat(64)],
+      );
+      await assert.rejects(
+        () => migrateQuietly({ databaseUrl }),
+        /is missing from the committed migration directory/,
+      );
+      await client.query(
+        "DELETE FROM schema_migrations WHERE version = '9999-missing.sql'",
+      );
+
+      const removed = baselineByVersion.get("0002-tickets.sql");
+      await client.query(
+        "DELETE FROM schema_migrations WHERE version = '0002-tickets.sql'",
+      );
+      await assert.rejects(
+        () => migrateQuietly({ databaseUrl }),
+        /was introduced before already-applied 0003-message-plane.sql/,
+      );
+      await client.query(
+        `INSERT INTO schema_migrations (version, checksum, applied_at)
+         VALUES ($1, $2, $3)`,
+        [removed.version, removed.checksum, removed.applied_at],
+      );
+
+      await client.query("SELECT pg_advisory_lock(hashtext($1))", [
+        MIGRATION_LOCK_NAME,
+      ]);
+      const blockedMigration = migrateQuietly({ databaseUrl });
+      let contentionError;
+      try {
+        await waitForAdvisoryWait(client, "orbitfactory-migrator");
+      } catch (error) {
+        contentionError = error;
+      } finally {
+        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [
+          MIGRATION_LOCK_NAME,
+        ]);
+      }
+      const afterContention = await blockedMigration;
+      if (contentionError) throw contentionError;
+      assert.deepEqual(afterContention.applied, []);
+
+      const failedDatabaseName = "orbitfactory_fact6_failed_migration";
+      await client.query(`CREATE DATABASE "${failedDatabaseName}"`);
+      const failedDatabaseUrl = new URL(databaseUrl);
+      failedDatabaseUrl.pathname = `/${failedDatabaseName}`;
+      try {
+        await assert.rejects(
+          () =>
+            migrateQuietly({
+              databaseUrl: failedDatabaseUrl.toString(),
+              migrationDirectory: FAILED_MIGRATION_DIRECTORY,
+            }),
+          /deliberately_missing_table/,
+        );
+
+        const failedClient = new Client({
+          connectionString: failedDatabaseUrl.toString(),
+        });
+        await failedClient.connect();
+        try {
+          const journal = await failedClient.query(
+            "SELECT version FROM schema_migrations",
+          );
+          assert.deepEqual(journal.rows, []);
+          const rolledBack = await failedClient.query(
+            "SELECT to_regclass('public.must_roll_back_with_failed_migration') AS name",
+          );
+          assert.equal(rolledBack.rows[0].name, null);
+        } finally {
+          await failedClient.end();
+        }
+      } finally {
+        await client.query(`DROP DATABASE "${failedDatabaseName}" WITH (FORCE)`);
+      }
+
+      const restored = await client.query(
+        "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version",
+      );
+      assert.deepEqual(restored.rows, baseline.rows);
+    });
+
     await t.test("matches tables, columns, native types, constraints, keys, and indexes", async () => {
       const columns = await client.query(`
         SELECT table_name,
@@ -303,6 +443,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
             ('workflow_runs', 'total_cost'),
             ('tickets', 'run_id'),
             ('messages', 'payload'),
+            ('messages', 'sequence_number'),
             ('messages', 'token_usage'),
             ('cost_events', 'computed_cost')
           )
@@ -314,6 +455,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           ["agents", "guardrails", "jsonb"],
           ["cost_events", "computed_cost", "numeric"],
           ["messages", "payload", "jsonb"],
+          ["messages", "sequence_number", "int8"],
           ["messages", "token_usage", "jsonb"],
           ["tickets", "run_id", "int8"],
           ["workflow_runs", "spec", "jsonb"],
@@ -377,6 +519,22 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       `);
       const indexNames = new Set(indexes.rows.map((row) => row.indexname));
       for (const name of requiredIndexes) assert.ok(indexNames.has(name), name);
+
+      const triggers = await client.query(`
+        SELECT tgname
+        FROM pg_trigger
+        WHERE NOT tgisinternal
+        ORDER BY tgname
+      `);
+      assert.deepEqual(
+        triggers.rows.map((row) => row.tgname),
+        [
+          "messages_05_preserve_order",
+          "messages_10_enforce_ticket_run",
+          "messages_20_assign_sequence",
+          "tickets_10_enforce_message_runs",
+        ],
+      );
     });
 
     let ids;
@@ -411,6 +569,12 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         `INSERT INTO workflow_runs (
            workflow_id, status, trigger_type, spec, started_at
          ) VALUES ($1, 'running', 'ui', '{"task": "Build FACT-6"}', now())
+         RETURNING id`,
+        [workflow.rows[0].id],
+      );
+      const otherRun = await client.query(
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
+         VALUES ($1, 'running', 'cron', '{"task": "Other run"}')
          RETURNING id`,
         [workflow.rows[0].id],
       );
@@ -507,8 +671,41 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         agent: agent.rows[0].id,
         workflow: workflow.rows[0].id,
         run: run.rows[0].id,
+        otherRun: otherRun.rows[0].id,
         ticket: ticketIds["FACT-2"],
+        nullRunTicket: ticketIds["FACT-5"],
       };
+    });
+
+    await t.test("enforces message ticket ownership while allowing null-run tickets", async () => {
+      await rejectWithCode(
+        client,
+        `INSERT INTO messages (
+           run_id, ticket_id, sender, recipient, type, payload
+         ) VALUES ($1, $2, 'system', 'agent:other', 'system', '{}')`,
+        [ids.otherRun, ids.ticket],
+        "23514",
+      );
+
+      const retainedTicketMessage = await client.query(
+        `INSERT INTO messages (
+           run_id, ticket_id, sender, recipient, type, payload
+         ) VALUES ($1, $2, 'system', 'agent:other', 'system',
+           '{"retained_ticket": true}')
+         RETURNING ticket_id, sequence_number`,
+        [ids.otherRun, ids.nullRunTicket],
+      );
+      assert.deepEqual(retainedTicketMessage.rows[0], {
+        ticket_id: ids.nullRunTicket,
+        sequence_number: "1",
+      });
+
+      await rejectWithCode(
+        client,
+        "UPDATE tickets SET run_id = $1 WHERE id = $2",
+        [ids.run, ids.nullRunTicket],
+        "23514",
+      );
     });
 
     await t.test("reconstructs every message field in deterministic run order", async () => {
@@ -548,13 +745,134 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       }
 
       const trail = await client.query(
-        `SELECT ticket_id, sender, recipient, type, payload, handoff_brief, token_usage
+        `SELECT sequence_number, ticket_id, sender, recipient, type, payload,
+                handoff_brief, token_usage
          FROM messages
          WHERE run_id = $1
-         ORDER BY id`,
+         ORDER BY sequence_number`,
         [ids.run],
       );
-      assert.deepEqual(trail.rows, expectedTrail);
+      assert.deepEqual(
+        trail.rows.map(({ sequence_number: sequenceNumber, ...message }, index) => {
+          assert.equal(sequenceNumber, String(index + 1));
+          return message;
+        }),
+        expectedTrail,
+      );
+
+      await rejectWithCode(
+        client,
+        `UPDATE messages
+         SET sequence_number = sequence_number + 1
+         WHERE run_id = $1 AND sequence_number = 1`,
+        [ids.run],
+        "23514",
+      );
+    });
+
+    await t.test("does not let a consumer cursor skip an earlier late commit", async () => {
+      const run = await client.query(
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
+         VALUES ($1, 'running', 'ui', '{"task": "Concurrent append proof"}')
+         RETURNING id`,
+        [ids.workflow],
+      );
+      const runId = run.rows[0].id;
+      const earlierProducer = new Client({ connectionString: databaseUrl });
+      const laterProducer = new Client({ connectionString: databaseUrl });
+      let earlierTransaction = false;
+      let laterTransaction = false;
+      let laterInsert;
+
+      await earlierProducer.connect();
+      await laterProducer.connect();
+      try {
+        await earlierProducer.query("BEGIN");
+        earlierTransaction = true;
+        await laterProducer.query("BEGIN");
+        laterTransaction = true;
+        await laterProducer.query(
+          "SET LOCAL application_name = 'fact6-later-message-producer'",
+        );
+
+        const earlierInsert = await earlierProducer.query(
+          `INSERT INTO messages (run_id, sender, recipient, type, payload)
+           VALUES ($1, 'agent:early', 'agent:next', 'output', '{"order": "early"}')
+           RETURNING sequence_number`,
+          [runId],
+        );
+        assert.equal(earlierInsert.rows[0].sequence_number, "1");
+
+        laterInsert = laterProducer.query(
+          `INSERT INTO messages (run_id, sender, recipient, type, payload)
+           VALUES ($1, 'agent:later', 'agent:next', 'output', '{"order": "later"}')
+           RETURNING sequence_number`,
+          [runId],
+        );
+        await waitForAdvisoryWait(client, "fact6-later-message-producer");
+
+        const beforeEarlierCommit = await client.query(
+          `SELECT sequence_number
+           FROM messages
+           WHERE run_id = $1 AND sequence_number > 0
+           ORDER BY sequence_number`,
+          [runId],
+        );
+        assert.deepEqual(beforeEarlierCommit.rows, []);
+
+        await earlierProducer.query("COMMIT");
+        earlierTransaction = false;
+        const laterResult = await laterInsert;
+        assert.equal(laterResult.rows[0].sequence_number, "2");
+
+        const afterEarlierCommit = await client.query(
+          `SELECT sequence_number, payload
+           FROM messages
+           WHERE run_id = $1 AND sequence_number > 0
+           ORDER BY sequence_number`,
+          [runId],
+        );
+        assert.deepEqual(afterEarlierCommit.rows, [
+          { sequence_number: "1", payload: { order: "early" } },
+        ]);
+
+        await laterProducer.query("COMMIT");
+        laterTransaction = false;
+        const afterLaterCommit = await client.query(
+          `SELECT sequence_number, payload
+           FROM messages
+           WHERE run_id = $1 AND sequence_number > $2
+           ORDER BY sequence_number`,
+          [runId, 1],
+        );
+        assert.deepEqual(afterLaterCommit.rows, [
+          { sequence_number: "2", payload: { order: "later" } },
+        ]);
+
+        const completeTrail = await client.query(
+          `SELECT sequence_number
+           FROM messages
+           WHERE run_id = $1
+           ORDER BY sequence_number`,
+          [runId],
+        );
+        assert.deepEqual(
+          completeTrail.rows.map((row) => row.sequence_number),
+          ["1", "2"],
+        );
+      } finally {
+        if (earlierTransaction) await earlierProducer.query("ROLLBACK");
+        if (laterInsert) {
+          try {
+            await laterInsert;
+          } catch {
+            // The transaction cleanup below is authoritative.
+          }
+        }
+        if (laterTransaction) await laterProducer.query("ROLLBACK");
+        await earlierProducer.end();
+        await laterProducer.end();
+      }
     });
 
     await t.test("rejects invalid, orphaned, negative, and destructive writes", async () => {

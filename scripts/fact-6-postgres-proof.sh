@@ -8,9 +8,29 @@ database_password="fact6-local-proof"
 created_container="false"
 
 cleanup() {
+  test_status=$?
+  cleanup_failed="false"
+  trap - EXIT
+
   if [[ "$created_container" == "true" ]]; then
-    docker rm --force "$container_name" >/dev/null 2>&1 || true
+    if ! docker rm --force "$container_name"; then
+      echo "Failed to remove disposable container: $container_name" >&2
+      cleanup_failed="true"
+    fi
+
+    if docker container inspect "$container_name" >/dev/null 2>&1; then
+      echo "Disposable container still exists after cleanup: $container_name" >&2
+      cleanup_failed="true"
+    fi
   fi
+
+  if [[ "$test_status" -ne 0 ]]; then
+    exit "$test_status"
+  fi
+  if [[ "$cleanup_failed" == "true" ]]; then
+    exit 1
+  fi
+  exit 0
 }
 trap cleanup EXIT
 
