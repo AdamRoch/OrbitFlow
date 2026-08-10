@@ -28,6 +28,9 @@ const { Pool } = pg;
 const FAKE_OPENCODE = fileURLToPath(
   new URL("../../coding-adapter/fixtures/fake-opencode.mjs", import.meta.url),
 );
+const HANGING_OPENCODE = fileURLToPath(
+  new URL("../../coding-adapter/fixtures/hanging-opencode.mjs", import.meta.url),
+);
 const TEST_CREDENTIAL = "fact12-disposable-secret";
 
 test("FACT-12 production coding-tool contract", async (t) => {
@@ -42,7 +45,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT12_PROOF_DATABASE);
     await migratePostgres({ databaseUrl, log: () => {} });
     const root = await realpath(configuredRoot);
-    const fixtures = await seedFixtures(pool, 9);
+    const fixtures = await seedFixtures(pool, 11);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
     const costEventStore = createCostEventStore({ pool });
     const adapterOptions = {
@@ -249,6 +252,39 @@ test("FACT-12 production coding-tool contract", async (t) => {
       await access(malformedWorkspace);
     });
 
+    await t.test("times out and removes the complete CLI process group", async () => {
+      if (process.platform === "win32") return;
+      const runId = fixtures.runIds[9];
+      const workspace = await workspaceService.startRunWorkspace(runId);
+      const pidFile = path.join(workspace, "descendant.pid");
+      const timeoutTool = createCodingTool({
+        runId,
+        agentId: fixtures.agentId,
+        workspaceService,
+        costEventStore,
+        adapterOptions: {
+          binary: HANGING_OPENCODE,
+          env: { OPENROUTER_API_KEY: TEST_CREDENTIAL, PATH: process.env.PATH },
+          timeoutMs: 80,
+          killGraceMs: 40,
+          killWaitMs: 1_000,
+        },
+      });
+
+      await assert.rejects(
+        () => timeoutTool.delegate_coding_task(pidFile, workspace),
+        (error) => error.code === "timeout" && error.timeoutMs === 80,
+      );
+      const descendantPid = Number(await readFile(pidFile, "utf8"));
+      assert.equal(processExists(descendantPid), false);
+      await access(workspace);
+      const persisted = await pool.query(
+        "SELECT count(*)::int AS count FROM cost_events WHERE run_id = $1",
+        [runId],
+      );
+      assert.equal(persisted.rows[0].count, 0);
+    });
+
     await t.test("rejects containment, symlink, deletion, and replacement attacks", async () => {
       const traversalRun = fixtures.runIds[5];
       const traversalWorkspace = await workspaceService.startRunWorkspace(traversalRun);
@@ -283,6 +319,19 @@ test("FACT-12 production coding-tool contract", async (t) => {
         (error) => error.code === "workspace_invalid" && /deleted or replaced/.test(error.message),
       );
       await access(retainedReplacedWorkspace);
+
+      const deletedRun = fixtures.runIds[10];
+      const deletedWorkspace = await workspaceService.startRunWorkspace(deletedRun);
+      await rm(deletedWorkspace, { recursive: true });
+      await assert.rejects(
+        () => workspaceService.resolveWorkspace(deletedRun, deletedWorkspace),
+        (error) => error.code === "workspace_invalid",
+      );
+      await assert.rejects(
+        () => workspaceService.startRunWorkspace(deletedRun),
+        (error) => error.code === "workspace_invalid",
+      );
+      await assert.rejects(access(deletedWorkspace), { code: "ENOENT" });
     });
   } finally {
     await pool.end();
@@ -311,6 +360,16 @@ async function seedFixtures(pool, runCount) {
     runIds.push(run.rows[0].id);
   }
   return { agentId: agent.rows[0].id, runIds };
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 function runCodingToolCli(request, env) {

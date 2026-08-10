@@ -86,7 +86,7 @@ export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
       }
       const record = await readRecordIfPresent(root, runId);
       if (!record) throw new WorkspaceError("run workspace has no ownership record");
-      return validateRecord(root, runId, workspace, record);
+      return await validateRecord(root, runId, workspace, record);
     } catch (error) {
       throw asWorkspaceError(error);
     }
