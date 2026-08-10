@@ -16,12 +16,7 @@ export function getServerDb(): DB {
   return db;
 }
 
-/**
- * Resolve the active project for a server component / action. Mirrors the API's
- * `requireProject` helper: an explicit `key` overrides; absent key falls back
- * to the default project (first by id). Returns null only when an explicit key
- * is given but no project matches.
- */
+/** Return the app's single internal ticket scope (the first project by id). */
 export function getServerProject(db: DB): ProjectRow | null {
   return getDefaultProject(db);
 }

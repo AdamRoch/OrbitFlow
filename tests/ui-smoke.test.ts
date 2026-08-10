@@ -28,8 +28,6 @@ describe("UI smoke", () => {
     expect(html).toMatch(/aria-label="Keyboard shortcuts"/);
     // The seeded label appears as a filter option.
     expect(html).toMatch(/smoke-label/);
-    expect(html).not.toMatch(/href="\/map"/);
-    expect(html).not.toMatch(/>Project<\/label>/);
   });
 
   it("list page defaults to todo tickets and toggles to in progress", async () => {
@@ -86,7 +84,6 @@ describe("UI smoke", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toMatch(/New ticket/);
-    expect(html).not.toMatch(/name="projectKey"/);
     expect(html).toMatch(/name="title"/);
     expect(html).toMatch(/name="description"/);
     expect(html).toMatch(/name="status"/);

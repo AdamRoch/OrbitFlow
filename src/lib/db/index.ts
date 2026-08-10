@@ -54,6 +54,7 @@ export function resetDbCache(): void {
 function configure(raw: Database.Database): void {
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
+  raw.pragma("busy_timeout = 5000");
   raw.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -5,6 +5,7 @@ import {
   eq,
   inArray,
   ne,
+  sql,
 } from "drizzle-orm";
 import type { DB } from "./db";
 import { nextIssueNumber } from "./db";
@@ -325,36 +326,64 @@ export function claimIssue(
   project: ProjectRow,
   idOrIdentifier: string | number,
 ): ClaimResult {
-  const existing = resolveIssue(db, project, idOrIdentifier);
-  if (!existing) return { ok: false, reason: "not_found" };
+  return db.transaction(
+    (tx) => {
+      const existing = resolveIssue(tx, project, idOrIdentifier);
+      if (!existing) return { ok: false, reason: "not_found" };
 
-  if (existing.status === "in_progress") {
-    const updated = db
-      .select()
-      .from(s.issues)
-      .where(eq(s.issues.id, existing.id))
-      .get()!;
-    return { ok: true, issue: toIssueDTO(db, updated) };
-  }
+      if (existing.status === "in_progress") {
+        return { ok: true, issue: toIssueDTO(tx, existing) };
+      }
 
-  if (existing.status === "todo") {
-    if (!isOnFrontier(db, existing.id)) {
-      return { ok: false, reason: "blocked" };
-    }
-    const now = Date.now();
-    db.update(s.issues)
-      .set({ status: "in_progress", updatedAt: now })
-      .where(eq(s.issues.id, existing.id))
-      .run();
-    const updated = db
-      .select()
-      .from(s.issues)
-      .where(eq(s.issues.id, existing.id))
-      .get()!;
-    return { ok: true, issue: toIssueDTO(db, updated) };
-  }
+      if (existing.status !== "todo") {
+        return {
+          ok: false,
+          reason: "not_claimable",
+          status: existing.status,
+        };
+      }
 
-  return { ok: false, reason: "not_claimable", status: existing.status };
+      const transition = tx.run(sql`
+        UPDATE issues AS target
+        SET status = 'in_progress', updated_at = ${Date.now()}
+        WHERE target.id = ${existing.id}
+          AND target.project_id = ${project.id}
+          AND target.status = 'todo'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM dependencies AS dependency
+            INNER JOIN issues AS blocker
+              ON blocker.id = dependency.blocker_issue_id
+            WHERE dependency.blocked_issue_id = target.id
+              AND blocker.status <> 'done'
+          )
+      `);
+
+      if (transition.changes === 0) {
+        const current = resolveIssue(tx, project, existing.id);
+        if (!current) return { ok: false, reason: "not_found" };
+        if (current.status === "in_progress") {
+          return { ok: true, issue: toIssueDTO(tx, current) };
+        }
+        if (current.status !== "todo") {
+          return {
+            ok: false,
+            reason: "not_claimable",
+            status: current.status,
+          };
+        }
+        return { ok: false, reason: "blocked" };
+      }
+
+      const updated = tx
+        .select()
+        .from(s.issues)
+        .where(eq(s.issues.id, existing.id))
+        .get()!;
+      return { ok: true, issue: toIssueDTO(tx, updated) };
+    },
+    { behavior: "immediate" },
+  );
 }
 
 // ----------------------------------------------------------------------------

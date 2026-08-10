@@ -3,11 +3,8 @@ import type { IssueStatus, Priority } from "@/lib/db/schema";
 /**
  * The single source of truth for status + priority colors across the UI.
  *
- * Used by the status/priority badges (issue rows, detail page) and by the
- * graph canvas nodes + minimap. Kept as literal hexes (not CSS vars) because
- * these colors are consumed both as inline `style` (badges, node borders) and
- * as values ReactFlow needs to read at runtime (minimap nodeColor). The design
- * tokens in globals.css are about surface/foreground/accent; these are a
+ * Used by status and priority badges in ticket rows and detail pages. The
+ * tokens in globals.css cover surfaces, foregrounds, and accents; these are a
  * separate semantic palette keyed by enum value.
  */
 
