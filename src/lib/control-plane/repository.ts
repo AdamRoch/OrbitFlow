@@ -15,6 +15,10 @@ import type {
   UpdateSkillInput,
   UpdateWorkflowInput,
   WorkflowDTO,
+  MonitoringAgentDTO,
+  MonitoringFilters,
+  MonitoringMessageDTO,
+  MonitoringSnapshot,
 } from "./types";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
@@ -119,6 +123,42 @@ function scheduleFromRow(row: Row): ScheduleDTO {
     enabled: Boolean(row.enabled),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
+  };
+}
+
+const MONITORING_LIMIT = 200;
+const RUN_LIMIT = 100;
+
+function monitoringMessageFromRow(row: Row): MonitoringMessageDTO {
+  return {
+    id: String(row.id),
+    runId: String(row.run_id),
+    ticketId: row.ticket_id === null ? null : String(row.ticket_id),
+    sequenceNumber: String(row.sequence_number),
+    sender: String(row.sender),
+    recipient: String(row.recipient),
+    type: String(row.type),
+    payload: object(row.payload),
+    handoffBrief: row.handoff_brief === null ? null : String(row.handoff_brief),
+    createdAt: iso(row.created_at),
+  };
+}
+
+function monitoringAgentFromRow(row: Row): MonitoringAgentDTO {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    role: String(row.role),
+    status: String(row.status) as MonitoringAgentDTO["status"],
+    currentTask: row.task_id === null
+      ? null
+      : {
+          id: String(row.task_id),
+          identifier: String(row.task_identifier),
+          title: String(row.task_title),
+          runId: String(row.task_run_id),
+        },
+    logs: (row.logs as Row[]).map(monitoringMessageFromRow),
   };
 }
 
@@ -385,5 +425,172 @@ export class ControlPlaneRepository {
   async deleteWorkflow(id: string): Promise<boolean> {
     const result = await this.pool.query("DELETE FROM workflows WHERE id = $1", [id]);
     return result.rowCount === 1;
+  }
+
+  /**
+   * A single bounded read model for FACT-22. It derives every displayed value
+   * from PostgreSQL tables; notifications only tell the browser to call this
+   * again. Numeric values deliberately remain PostgreSQL strings so costs and
+   * int8 token counts do not lose precision in JavaScript.
+   */
+  async getMonitoringSnapshot(filters: MonitoringFilters): Promise<MonitoringSnapshot> {
+    const runId = filters.runId;
+    const agentId = filters.agentId;
+    const messageType = filters.messageType;
+    const [runs, board, messages, agents, runCosts, agentCosts] = await Promise.all([
+      this.pool.query<Row>(
+        `SELECT run.id, workflow.name AS workflow_name, run.status, run.trigger_type, run.created_at
+         FROM workflow_runs AS run
+         JOIN workflows AS workflow ON workflow.id = run.workflow_id
+         ORDER BY run.created_at DESC, run.id DESC
+         LIMIT $1`,
+        [RUN_LIMIT],
+      ),
+      this.pool.query<Row>(
+        `SELECT ticket.id, ticket.run_id, ticket.identifier, ticket.title, ticket.status,
+                ticket.priority, ticket.assignee_agent_id, agent.name AS assignee_name,
+                ticket.updated_at
+         FROM tickets AS ticket
+         LEFT JOIN agents AS agent ON agent.id = ticket.assignee_agent_id
+         WHERE $1::bigint IS NULL OR ticket.run_id = $1::bigint
+         ORDER BY ticket.priority DESC, ticket.updated_at DESC, ticket.id DESC
+         LIMIT $2`,
+        [runId, MONITORING_LIMIT],
+      ),
+      this.pool.query<Row>(
+        `SELECT message.id, message.run_id, message.ticket_id, message.sequence_number,
+                message.sender, message.recipient, message.type, message.payload,
+                message.handoff_brief, message.created_at
+         FROM messages AS message
+         LEFT JOIN tickets AS ticket ON ticket.id = message.ticket_id
+         WHERE ($1::bigint IS NULL OR message.run_id = $1::bigint)
+           AND ($2::bigint IS NULL
+             OR ticket.assignee_agent_id = $2::bigint
+             OR message.sender = 'agent:' || $2::text
+             OR message.recipient = 'agent:' || $2::text)
+           AND ($3::message_type IS NULL OR message.type = $3::message_type)
+         ORDER BY message.created_at DESC, message.id DESC
+         LIMIT $4`,
+        [runId, agentId, messageType, MONITORING_LIMIT + 1],
+      ),
+      this.pool.query<Row>(
+        `SELECT agent.id, agent.name, agent.role,
+                task.id AS task_id, task.identifier AS task_identifier,
+                task.title AS task_title, task.run_id AS task_run_id,
+                CASE
+                  WHEN unanswered_question.id IS NOT NULL THEN 'waiting-on-question'
+                  WHEN task.id IS NOT NULL AND task.status = 'in_progress'
+                    AND task.run_status = 'running' THEN 'working'
+                  ELSE 'idle'
+                END AS status,
+                COALESCE(logs.messages, '[]'::jsonb) AS logs
+         FROM agents AS agent
+         LEFT JOIN LATERAL (
+           SELECT ticket.id, ticket.identifier, ticket.title, ticket.run_id,
+                  ticket.status, run.status AS run_status
+           FROM tickets AS ticket
+           JOIN workflow_runs AS run ON run.id = ticket.run_id
+           WHERE ticket.assignee_agent_id = agent.id
+             AND ($1::bigint IS NULL OR ticket.run_id = $1::bigint)
+             AND ticket.status IN ('todo', 'in_progress')
+           ORDER BY (ticket.status = 'in_progress') DESC, ticket.updated_at DESC, ticket.id DESC
+           LIMIT 1
+         ) AS task ON true
+         LEFT JOIN LATERAL (
+           SELECT question.id
+           FROM messages AS question
+           WHERE question.ticket_id = task.id AND question.type = 'question'
+             AND question.id = (
+               SELECT latest.id FROM messages AS latest
+               WHERE latest.ticket_id = task.id
+               ORDER BY latest.sequence_number DESC
+               LIMIT 1
+             )
+           LIMIT 1
+         ) AS unanswered_question ON true
+         LEFT JOIN LATERAL (
+           SELECT jsonb_agg(to_jsonb(log_row) ORDER BY log_row.sequence_number DESC) AS messages
+           FROM (
+             SELECT message.id, message.run_id, message.ticket_id, message.sequence_number,
+                    message.sender, message.recipient, message.type, message.payload,
+                    message.handoff_brief, message.created_at
+             FROM messages AS message
+             WHERE message.ticket_id = task.id
+             ORDER BY message.sequence_number DESC
+             LIMIT 3
+           ) AS log_row
+         ) AS logs ON true
+         WHERE $2::bigint IS NULL OR agent.id = $2::bigint
+         ORDER BY agent.name, agent.id
+         LIMIT $3`,
+        [runId, agentId, MONITORING_LIMIT],
+      ),
+      this.pool.query<Row>(
+        `SELECT run.id AS run_id, workflow.name AS workflow_name,
+                COALESCE(SUM(cost.tokens_in), 0)::text AS tokens_in,
+                COALESCE(SUM(cost.tokens_out), 0)::text AS tokens_out,
+                COALESCE(SUM(cost.tokens_in + cost.tokens_out), 0)::text AS total_tokens,
+                COALESCE(SUM(cost.computed_cost), 0)::text AS total_cost
+         FROM workflow_runs AS run
+         JOIN workflows AS workflow ON workflow.id = run.workflow_id
+         LEFT JOIN cost_events AS cost ON cost.run_id = run.id
+         WHERE $1::bigint IS NULL OR run.id = $1::bigint
+         GROUP BY run.id, workflow.name, run.created_at
+         ORDER BY run.created_at DESC, run.id DESC
+         LIMIT $2`,
+        [runId, RUN_LIMIT],
+      ),
+      this.pool.query<Row>(
+        `SELECT cost.run_id, agent.id AS agent_id, agent.name AS agent_name,
+                workflow.name AS workflow_name,
+                SUM(cost.tokens_in)::text AS tokens_in,
+                SUM(cost.tokens_out)::text AS tokens_out,
+                SUM(cost.tokens_in + cost.tokens_out)::text AS total_tokens,
+                SUM(cost.computed_cost)::text AS total_cost,
+                CASE WHEN jsonb_typeof(agent.guardrails -> 'costLimit') = 'number'
+                  THEN agent.guardrails ->> 'costLimit' ELSE NULL END AS cost_limit,
+                CASE WHEN jsonb_typeof(agent.guardrails -> 'costLimit') = 'number'
+                  THEN SUM(cost.computed_cost) > (agent.guardrails ->> 'costLimit')::numeric
+                  ELSE false END AS over_cost_limit
+         FROM cost_events AS cost
+         JOIN agents AS agent ON agent.id = cost.agent_id
+         JOIN workflow_runs AS run ON run.id = cost.run_id
+         JOIN workflows AS workflow ON workflow.id = run.workflow_id
+         WHERE ($1::bigint IS NULL OR cost.run_id = $1::bigint)
+           AND ($2::bigint IS NULL OR cost.agent_id = $2::bigint)
+         GROUP BY cost.run_id, run.created_at, agent.id, agent.name, agent.guardrails, workflow.name
+         ORDER BY run.created_at DESC, cost.run_id DESC, agent.name, agent.id
+         LIMIT $3`,
+        [runId, agentId, MONITORING_LIMIT],
+      ),
+    ]);
+
+    return {
+      filters,
+      runs: runs.rows.map((row) => ({
+        id: String(row.id), workflowName: String(row.workflow_name), status: String(row.status),
+        triggerType: String(row.trigger_type), createdAt: iso(row.created_at),
+      })),
+      board: board.rows.map((row) => ({
+        id: String(row.id), runId: row.run_id === null ? null : String(row.run_id),
+        identifier: String(row.identifier), title: String(row.title), status: String(row.status),
+        priority: Number(row.priority), assigneeAgentId: row.assignee_agent_id === null ? null : String(row.assignee_agent_id),
+        assigneeName: row.assignee_name === null ? null : String(row.assignee_name), updatedAt: iso(row.updated_at),
+      })),
+      trail: messages.rows.slice(0, MONITORING_LIMIT).map(monitoringMessageFromRow),
+      trailTruncated: messages.rows.length > MONITORING_LIMIT,
+      agents: agents.rows.map(monitoringAgentFromRow),
+      runCosts: runCosts.rows.map((row) => ({
+        runId: String(row.run_id), workflowName: String(row.workflow_name), tokensIn: String(row.tokens_in),
+        tokensOut: String(row.tokens_out), totalTokens: String(row.total_tokens), totalCost: String(row.total_cost),
+      })),
+      agentCosts: agentCosts.rows.map((row) => ({
+        runId: String(row.run_id), workflowName: String(row.workflow_name), agentId: String(row.agent_id),
+        agentName: String(row.agent_name), tokensIn: String(row.tokens_in), tokensOut: String(row.tokens_out),
+        totalTokens: String(row.total_tokens), totalCost: String(row.total_cost),
+        costLimit: row.cost_limit === null ? null : String(row.cost_limit),
+        overCostLimit: Boolean(row.over_cost_limit),
+      })),
+    };
   }
 }

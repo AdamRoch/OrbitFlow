@@ -9,6 +9,7 @@ import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
 import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
 import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
 import { DELETE as deleteWorkflow, GET as getWorkflow, PATCH as patchWorkflow } from "@/app/api/workflows/[id]/route";
+import { GET as getMonitoring } from "@/app/api/monitoring/route";
 import {
   ControlPlaneRepository,
   getControlPlaneRepository,
@@ -364,5 +365,70 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       ]);
       expect([first.status, second.status].sort()).toEqual([200, 409]);
     }
+  });
+
+  it("FACT-22 reads bounded board, trail, agent state, and exact costs from PostgreSQL", async () => {
+    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('FACT', 'OrbitFactory', 2) RETURNING id");
+    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Monitoring proof', 'FACT-22', '{}') RETURNING id");
+    const [waitingAgent, workingAgent] = await Promise.all([
+      pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory)
+        VALUES ('Question owner', 'worker', 'Ask when blocked.', 'test', '{"costLimit":0.3}', '{}', '{}') RETURNING id`),
+      pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory)
+        VALUES ('Active owner', 'worker', 'Keep working.', 'test', '{"costLimit":1}', '{}', '{}') RETURNING id`),
+    ]);
+    const run = await pool.query(
+      "INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id",
+      [workflow.rows[0].id],
+    );
+    const [questionTicket, activeTicket] = await Promise.all([
+      pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id)
+        VALUES (1, 'FACT-1', $1, $2, 'Needs an answer', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, waitingAgent.rows[0].id]),
+      pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id)
+        VALUES (2, 'FACT-2', $1, $2, 'Still executing', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, workingAgent.rows[0].id]),
+    ]);
+    await pool.query(
+      `INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload, handoff_brief)
+       VALUES ($1, $2, 'agent:' || $3, 'telegram:adam', 'question', '{"body":"Need a decision"}', 'Handoff before escalation'),
+              ($1, $4, 'agent:' || $5, 'agent:next', 'output', '{"body":"Implementation update"}', 'Continue from this checkpoint'),
+              ($1, NULL, 'telegram:adam', 'agent:' || $3, 'channel_inbound', '{"body":"Telegram reply"}', NULL)`,
+      [run.rows[0].id, questionTicket.rows[0].id, waitingAgent.rows[0].id, activeTicket.rows[0].id, workingAgent.rows[0].id],
+    );
+    await pool.query(
+      `INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost)
+       VALUES ($1, $2, 'test', 101, 11, 0.10000001),
+              ($1, $2, 'test', 202, 22, 0.20000002),
+              ($1, $3, 'test', 9, 3, 0.50000000)`,
+      [run.rows[0].id, waitingAgent.rows[0].id, workingAgent.rows[0].id],
+    );
+
+    const all = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
+    expect(all.status).toBe(200);
+    expect(all.body.board.map((ticket: { identifier: string }) => ticket.identifier).sort()).toEqual(["FACT-1", "FACT-2"]);
+    expect(all.body.trail.map((message: { type: string }) => message.type)).toEqual(["channel_inbound", "output", "question"]);
+    expect(all.body.trail.find((message: { type: string }) => message.type === "question")).toMatchObject({ handoffBrief: "Handoff before escalation" });
+    expect(all.body.agents.map((agent: { name: string; status: string }) => [agent.name, agent.status])).toEqual([
+      ["Active owner", "working"], ["Question owner", "waiting-on-question"],
+    ]);
+    expect(all.body.agentCosts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentName: "Question owner", tokensIn: "303", tokensOut: "33", totalTokens: "336", totalCost: "0.30000003", costLimit: "0.3", overCostLimit: true }),
+      expect.objectContaining({ agentName: "Active owner", totalCost: "0.50000000", costLimit: "1", overCostLimit: false }),
+    ]));
+    expect(all.body.runCosts).toEqual([expect.objectContaining({ runId: String(run.rows[0].id), tokensIn: "312", tokensOut: "36", totalTokens: "348", totalCost: "0.80000003" })]);
+
+    const filtered = await response(await getMonitoring(new Request(
+      `http://orbitfactory.test/api/monitoring?runId=${run.rows[0].id}&agentId=${waitingAgent.rows[0].id}&messageType=question`,
+    )));
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.filters).toEqual({ runId: String(run.rows[0].id), agentId: String(waitingAgent.rows[0].id), messageType: "question" });
+    expect(filtered.body.trail).toEqual([expect.objectContaining({ type: "question", ticketId: String(questionTicket.rows[0].id) })]);
+    expect(filtered.body.agentCosts).toEqual([expect.objectContaining({ agentName: "Question owner", totalCost: "0.30000003" })]);
+    expect((await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring?messageType=nope")))).status).toBe(400);
+
+    await pool.query(
+      "INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload) VALUES ($1, $2, 'telegram:adam', $3, 'answer', '{}')",
+      [run.rows[0].id, questionTicket.rows[0].id, `agent:${waitingAgent.rows[0].id}`],
+    );
+    const resolved = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
+    expect(resolved.body.agents.find((agent: { name: string }) => agent.name === "Question owner")).toMatchObject({ status: "working" });
   });
 });
