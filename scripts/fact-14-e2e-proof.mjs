@@ -114,12 +114,26 @@ async function startGateway(runtimeRoot, port) {
   const modelExit = await new Promise((resolve) => setModel.once("close", resolve));
   if (modelExit !== 0) throw new Error(`models set ${model} exited ${modelExit}`);
 
-  // Bounded output-token budget (pinned OpenClaw agents.defaults.params.maxTokens
-  // passes through to the OpenRouter request) to conserve limited OpenRouter credit.
+  // Bounded output-token budget scoped to the exact selected model. Pinned
+  // OpenClaw extra-params-DFVfEeA7.js resolveExtraParams merges
+  // agents.defaults.models["<provider>/<modelId>"].params and passes a numeric
+  // maxTokens into the provider request; this conserves limited OpenRouter credit.
   const maxOutputTokens = process.env.ORBITFLOW_FACT14_MAX_OUTPUT_TOKENS || "4096";
-  const setBudget = spawn("openclaw", ["config", "set", "agents.defaults.params.maxTokens", maxOutputTokens, "--strict-json"], { env: gwEnv, stdio: "ignore" });
+  const modelCapPath = `agents.defaults.models["${model}"].params.maxTokens`;
+  const setBudget = spawn("openclaw", ["config", "set", modelCapPath, maxOutputTokens, "--strict-json"], { env: gwEnv, stdio: "ignore" });
   const budgetExit = await new Promise((resolve) => setBudget.once("close", resolve));
-  if (budgetExit !== 0) throw new Error(`config set agents.defaults.params.maxTokens exited ${budgetExit}`);
+  if (budgetExit !== 0) throw new Error(`config set ${modelCapPath} exited ${budgetExit}`);
+
+  // Assert the disposable proof HOME resolves the exact model cap before gateway start.
+  const getBudget = spawn("openclaw", ["config", "get", modelCapPath], { env: gwEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let budgetOut = "";
+  getBudget.stdout.setEncoding("utf8");
+  getBudget.stdout.on("data", (d) => { budgetOut += d; });
+  const getBudgetExit = await new Promise((resolve) => getBudget.once("close", resolve));
+  if (getBudgetExit !== 0) throw new Error(`config get ${modelCapPath} exited ${getBudgetExit}`);
+  if (Number(budgetOut.trim()) !== Number(maxOutputTokens)) {
+    throw new Error(`model-scoped maxTokens mismatch: expected ${maxOutputTokens}, config get returned ${budgetOut.trim()}`);
+  }
 
   const diag = [];
   const child = spawn("openclaw", [
