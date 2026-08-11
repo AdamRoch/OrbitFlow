@@ -385,6 +385,47 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     });
   });
 
+  await t.test("reconstructs complete-stream usage from OpenClaw's final-call total", async () => {
+    const runId = await createRun("complete-stream-usage");
+    await createTicket(runId, 89, "complete stream usage");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("complete-stream-usage"),
+        usage: {
+          input: 30,
+          output: 12,
+          cacheRead: 4,
+          cacheWrite: 2,
+          total: 11,
+          cost: { total: "0.0048" },
+        },
+        lastCallUsage: {
+          input: 7,
+          output: 4,
+          total: 11,
+        },
+      },
+    ]);
+
+    const result = await adapter.wakeAgent({
+      runId,
+      agentId,
+      invocationId: "complete-stream-usage",
+      nodeId: "planner",
+      nodeSystemPrompt: "Use tools, then return the fixed output contract.",
+    });
+
+    assert.deepEqual(result.usage, {
+      input: 30,
+      output: 12,
+      cacheRead: 4,
+      cacheWrite: 2,
+      total: 48,
+      computedCost: "0.0048",
+    });
+  });
+
   await t.test("lists blocked actions in the wake prompt when configured, omits when empty", async () => {
     const blocked = await pool.query(
       `INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory)
@@ -470,6 +511,8 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       .filter((request) => request.command === "agent");
     assert.doesNotMatch(retriedRequests[0].message, /Structured-output retry/);
     assert.match(retriedRequests[1].message, /This is the only retry/);
+    assert.match(retriedRequests[1].message, /Do not repeat tool actions/);
+    assert.match(retriedRequests[1].message, /entire response must start with \{ and end with \}/);
     const errors = await pool.query(
       `SELECT count(*)::int AS count FROM messages
        WHERE run_id = $1 AND recipient = 'workflow-engine'`,

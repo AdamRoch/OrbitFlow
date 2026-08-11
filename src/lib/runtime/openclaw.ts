@@ -353,7 +353,7 @@ function decimal(value: unknown): string {
   return normalized;
 }
 
-function normalizeUsage(raw: unknown): RuntimeUsage {
+function normalizeUsage(raw: unknown, rawLastCall: unknown): RuntimeUsage {
   if (!isObject(raw)) {
     throw new RuntimeAdapterError(
       "openclaw_usage_invalid",
@@ -364,8 +364,52 @@ function normalizeUsage(raw: unknown): RuntimeUsage {
   const output = usageInteger(raw.output, "output");
   const cacheRead = usageInteger(raw.cacheRead, "cacheRead", true);
   const cacheWrite = usageInteger(raw.cacheWrite, "cacheWrite", true);
-  const total = usageInteger(raw.total, "total");
-  if (total === 0 || total < input + output) {
+  const reportedTotal = usageInteger(raw.total, "total");
+  const completeStreamTotal = input + output + cacheRead + cacheWrite;
+  if (!Number.isSafeInteger(completeStreamTotal)) {
+    throw new RuntimeAdapterError(
+      "openclaw_usage_invalid",
+      "OpenClaw usage totals exceeded the safe integer range",
+    );
+  }
+  let total = reportedTotal;
+  if (reportedTotal < completeStreamTotal && isObject(rawLastCall)) {
+    const lastInput = usageInteger(rawLastCall.input, "lastCallUsage.input", true);
+    const lastOutput = usageInteger(rawLastCall.output, "lastCallUsage.output", true);
+    const lastCacheRead = usageInteger(
+      rawLastCall.cacheRead,
+      "lastCallUsage.cacheRead",
+      true,
+    );
+    const lastCacheWrite = usageInteger(
+      rawLastCall.cacheWrite,
+      "lastCallUsage.cacheWrite",
+      true,
+    );
+    const lastTotal = usageInteger(rawLastCall.total, "lastCallUsage.total");
+    const lastComponents = lastInput + lastOutput + lastCacheRead + lastCacheWrite;
+    if (!Number.isSafeInteger(lastComponents)) {
+      throw new RuntimeAdapterError(
+        "openclaw_usage_invalid",
+        "OpenClaw last-call usage exceeded the safe integer range",
+      );
+    }
+
+    // OpenClaw 2026.4.15 accumulates the component fields across every model
+    // call, but overwrites usage.total with the final call's total after a
+    // tool-using turn. Accept only that exact, independently checkable shape.
+    if (
+      reportedTotal === lastTotal &&
+      lastTotal >= lastComponents &&
+      input >= lastInput &&
+      output >= lastOutput &&
+      cacheRead >= lastCacheRead &&
+      cacheWrite >= lastCacheWrite
+    ) {
+      total = completeStreamTotal;
+    }
+  }
+  if (total === 0 || total < completeStreamTotal) {
     throw new RuntimeAdapterError(
       "openclaw_usage_invalid",
       "OpenClaw returned inconsistent or zero total tokens",
@@ -539,7 +583,7 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
   }
   return {
     output: parseOutputContract(firstPayload.text, attempt),
-    usage: normalizeUsage(agentMeta.usage),
+    usage: normalizeUsage(agentMeta.usage, agentMeta.lastCallUsage),
     completion: {
       status: "stop",
       exitCode: 0,
@@ -867,7 +911,7 @@ export class OpenClawRuntimeAdapter {
               const deliveredPrompt =
                 attempts === 1
                   ? prompt
-                  : `${prompt}\n\n# Structured-output retry\nYour previous response did not satisfy the fixed output contract. This is the only retry. Return only the required strict JSON object.`;
+                  : `${prompt}\n\n# Structured-output retry\nYour previous response was rejected because it included text or Markdown formatting outside the JSON object. This is the only retry. Do not repeat tool actions already completed in this session. Do not explain, apologize, or claim the previous response was valid. Your entire response must start with { and end with }. Return exactly one strict JSON object matching the fixed output contract.`;
               agentCommandLaunched = true;
               const result = await this.runCommand(
                 [

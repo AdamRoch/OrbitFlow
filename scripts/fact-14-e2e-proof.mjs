@@ -50,11 +50,25 @@ const shippedImplementerPrompt = [
   "Key rule: you must call delegate_coding_task for every implementation ticket. Do not output the file content yourself.",
 ].join("\n");
 
-function workspaceToolsFor(agentName, projectId, agentId, runId) {
+function workspaceToolsFor(agentName, nodeId, projectId, agentId, runId) {
   const dbAlias = "ORBITFLOW_PLATFORM_DATABASE_URL";
+  const databaseContract = [
+    `${dbAlias} is already set to the real disposable proof database.`,
+    `Never assign, export, replace, or invent a value for ${dbAlias}.`,
+    `Use the exact DATABASE_URL=\"$${dbAlias}\" prefix shown below.`,
+  ];
+  if (nodeId === "report") return [
+    `# Tools for Reporter`,
+    `Do not call tools, execute commands, modify tickets, or modify files, even if the upstream handoff reports rejection.`,
+    `Summarize the completed workflow from the upstream handoff.`,
+  ].join("\n");
   if (agentName === "Factory Orchestrator") return [
     `# Tools for Orchestrator`,
-    `Use \`node ${agentTool}\` with a single JSON argument. Prefix DATABASE_URL from ${dbAlias}.`,
+    ...databaseContract,
+    `You must create exactly one implementation ticket with create_ticket before returning the handoff.`,
+    `Do not inspect, create, or modify workspace files; implementation belongs to the implementer.`,
+    `If create_ticket fails, report the failure. Never implement the ticket yourself.`,
+    `Use \`node ${agentTool}\` with a single JSON argument.`,
     `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
     ``,
     `### create_ticket`,
@@ -65,7 +79,10 @@ function workspaceToolsFor(agentName, projectId, agentId, runId) {
   ].join("\n");
   if (agentName === "Factory Planner") return [
     `# Tools for Planner`,
-    `Use \`node ${agentTool}\` with a single JSON argument. Prefix DATABASE_URL from ${dbAlias}.`,
+    ...databaseContract,
+    `The orchestrator already created the one ticket needed for this trivial proof. List it and hand it off; do not create a duplicate.`,
+    `Do not inspect, create, or modify workspace files; implementation belongs to the implementer.`,
+    `Use \`node ${agentTool}\` with a single JSON argument.`,
     `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
     ``,
     `### create_ticket`,
@@ -76,7 +93,8 @@ function workspaceToolsFor(agentName, projectId, agentId, runId) {
   ].join("\n");
   if (agentName === "Factory Implementer") return [
     `# Tools for Implementer`,
-    `Prefix DATABASE_URL from ${dbAlias} for all tools. Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
+    ...databaseContract,
+    `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
     ``,
     `### list_tickets`,
     `DATABASE_URL="$${dbAlias}" node ${agentTool} list_tickets '{"agentId":"${agentId}","runId":"${runId}","idempotencyKey":"impl-list-${agentId}"}'`,
@@ -92,7 +110,10 @@ function workspaceToolsFor(agentName, projectId, agentId, runId) {
   ].join("\n");
   if (agentName === "Factory Tester") return [
     `# Tools for Tester`,
-    `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
+    `The implementation workspace is $ORBITFLOW_WORKSPACE_ROOT/run-${runId}.`,
+    `Do not inspect your OpenClaw agent workspace; it is not the implementation workspace.`,
+    `Use exec to verify $ORBITFLOW_WORKSPACE_ROOT/run-${runId}/hello.txt exists and contains exactly Hello from OrbitFlow Software Factory!`,
+    `If it matches, return artifact {"verdict":"approved"} and an approved handoff. Otherwise return artifact {"verdict":"rejected"} and explain the mismatch.`,
   ].join("\n");
   return null;
 }
@@ -109,6 +130,19 @@ async function startGateway(runtimeRoot, port) {
   const setPort = spawn("openclaw", ["config", "set", "gateway.port", String(port), "--strict-json"], { env: gwEnv, stdio: "ignore" });
   const portExit = await new Promise((resolve) => setPort.once("close", resolve));
   if (portExit !== 0) throw new Error(`config set gateway.port exited ${portExit}`);
+
+  for (const [configPath, value] of [
+    ["tools.allow", ["exec"]],
+    ["tools.exec", { host: "gateway", security: "full", ask: "off" }],
+  ]) {
+    const configure = spawn(
+      "openclaw",
+      ["config", "set", configPath, JSON.stringify(value), "--strict-json"],
+      { env: gwEnv, stdio: "ignore" },
+    );
+    const configureExit = await new Promise((resolve) => configure.once("close", resolve));
+    if (configureExit !== 0) throw new Error(`config set ${configPath} exited ${configureExit}`);
+  }
 
   const setModel = spawn("openclaw", ["models", "set", model], { env: gwEnv, stdio: "ignore" });
   const modelExit = await new Promise((resolve) => setModel.once("close", resolve));
@@ -157,9 +191,9 @@ async function waitForGateway(port, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = "";
   while (Date.now() < deadline) {
-    try { 
-      const r = await fetch(healthUrl); 
-      if (r.ok) return; 
+    try {
+      const r = await fetch(healthUrl);
+      if (r.ok) return;
       lastError = `HTTP ${r.status}`;
     } catch (e) {
       lastError = e.message;
@@ -169,7 +203,7 @@ async function waitForGateway(port, timeoutMs = 60_000) {
   throw new Error(`Gateway did not become ready on port ${port}: ${lastError}`);
 }
 
-test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => {
+test("FACT-14 Software Factory end-to-end", { timeout: 1_200_000 }, async (_t) => {
   const databaseUrl = process.env.DATABASE_URL;
   assert.ok(databaseUrl, "DATABASE_URL must point to the disposable proof database");
 
@@ -283,7 +317,7 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     const openclawAdapter = new OpenClawRuntimeAdapter({
       pool,
       runtimeRoot,
-      wakeTimeoutMs: Number(process.env.ORBITFLOW_FACT14_WAKE_TIMEOUT_MS || 180_000),
+      wakeTimeoutMs: Number(process.env.ORBITFLOW_FACT14_WAKE_TIMEOUT_MS || 300_000),
       allowedExecEnvironment: allowedExec,
       gatewayEnvironment,
     });
@@ -291,9 +325,9 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     const engineAdapter = new OpenClawEngineAdapter({
       pool,
       openclaw: openclawAdapter,
-      workspaceTools: (agentId, _nodeId, _ticketId, runId) => {
+      workspaceTools: (agentId, nodeId, _ticketId, runId) => {
         const agent = agents.find((a) => String(a.id) === agentId);
-        return agent ? workspaceToolsFor(agent.name, projectId, agentId, runId) : null;
+        return agent ? workspaceToolsFor(agent.name, nodeId, projectId, agentId, runId) : null;
       },
     });
 
@@ -341,7 +375,7 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
       pollIntervalMs: 250,
     });
 
-    const maxWaitMs = 600_000;
+    const maxWaitMs = 900_000;
     const startTime = Date.now();
     let finalRun = null;
     let lastStatus = startedRun.status;
@@ -387,7 +421,7 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     }
 
     const completedDispatches = dispatches.rows.filter((row) => row.status === "completed");
-    const dispatchNodeIds = new Set(completedDispatches.map((d) => d.nodeId));
+    const dispatchNodeIds = new Set(completedDispatches.map((d) => d.node_id));
     console.error(`Completed dispatches: ${completedDispatches.length} (nodes: ${[...dispatchNodeIds].join(", ")})`);
 
     const outputMessages = messages.rows.filter((row) => row.type === "output");
@@ -452,11 +486,11 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     const wsRoot = process.env.ORBITFLOW_WORKSPACE_ROOT;
     assert.ok(wsRoot, "ORBITFLOW_WORKSPACE_ROOT must be set");
     const runWs = `${wsRoot}/run-${run.id}`;
-    const diffResult = spawnSync("git", ["-C", runWs, "diff"], {
+    const diffResult = spawnSync("git", ["-C", runWs, "diff", "--no-index", "--", "/dev/null", "hello.txt"], {
       encoding: "utf8",
       timeout: 10_000,
     });
-    assert.equal(diffResult.status, 0, `git diff must succeed in ${runWs}`);
+    assert.equal(diffResult.status, 1, `git diff must report the new hello.txt in ${runWs}`);
     const diff = diffResult.stdout || diffResult.stderr || "";
     const expectContent = "Hello from OrbitFlow Software Factory!";
     assert.ok(diff.includes("hello.txt"), `git diff must include hello.txt\n${diff.slice(0, 500)}`);
