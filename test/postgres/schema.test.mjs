@@ -136,6 +136,11 @@ const expectedColumns = {
   message_consumptions: ["message_id", "consumer_id", "consumed_at"],
   telegram_inbound_updates: ["update_id", "run_id", "message_id", "received_at"],
   telegram_outbound_deliveries: ["message_id", "status", "telegram_message_id", "claimed_at", "sent_at", "failure_reason"],
+  channel_intakes: [
+    "run_id", "workflow_id", "provider", "conversation_key", "status",
+    "last_inbound_message_id", "last_question", "clarification_count",
+    "validated_spec", "created_at", "updated_at",
+  ],
   agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
   agent_wake_events: [
     "id",
@@ -207,6 +212,8 @@ const expectedColumns = {
     "created_at",
     "updated_at",
   ],
+  schedule_ticks: ["id", "schedule_id", "tick_key", "run_id", "message_id", "created_at"],
+  schedule_agent_workflows: ["schedule_id", "workflow_id", "created_at"],
   cost_events: [
     "id",
     "run_id",
@@ -253,6 +260,7 @@ const expectedEnums = {
   ],
   workflow_thread_status: ["running", "paused"],
   telegram_outbound_delivery_status: ["sending", "sent", "indeterminate"],
+  channel_intake_status: ["collecting", "ready", "failed"],
 };
 
 const requiredConstraints = [
@@ -285,7 +293,14 @@ const requiredConstraints = [
   "message_consumptions_consumer_not_blank",
   "message_ready_runs_state_complete",
   "telegram_outbound_deliveries_state_complete",
+  "channel_intakes_clarification_nonnegative",
+  "channel_intakes_conversation_not_blank",
+  "channel_intakes_provider_not_blank",
+  "channel_intakes_spec_object",
+  "channel_intakes_state_complete",
   "schedules_exactly_one_target",
+  "schedule_ticks_key_not_blank",
+  "schedule_ticks_schedule_key_unique",
   "ticket_labels_ticket_label_unique",
   "tickets_priority_range",
   "tickets_project_number_unique",
@@ -331,9 +346,12 @@ const requiredIndexes = [
   "idx_message_consumptions_consumed_at",
   "idx_telegram_inbound_updates_run",
   "idx_telegram_outbound_deliveries_status",
+  "channel_intakes_one_collecting_conversation",
+  "channel_intakes_status_updated",
   "idx_schedules_agent",
   "idx_schedules_enabled",
   "idx_schedules_workflow",
+  "idx_schedule_ticks_schedule_created",
   "idx_ticket_labels_label",
   "idx_tickets_assignee",
   "idx_tickets_project",
@@ -719,8 +737,21 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           "REFERENCES messages(id) ON DELETE RESTRICT",
         telegram_outbound_deliveries_message_id_fkey:
           "REFERENCES messages(id) ON DELETE RESTRICT",
+        channel_intakes_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        channel_intakes_workflow_id_fkey:
+          "REFERENCES workflows(id) ON DELETE RESTRICT",
+        channel_intakes_last_inbound_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
         schedules_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         schedules_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",
+        schedule_ticks_schedule_id_fkey: "REFERENCES schedules(id) ON DELETE RESTRICT",
+        schedule_ticks_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        schedule_ticks_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
+        schedule_agent_workflows_schedule_id_fkey:
+          "REFERENCES schedules(id) ON DELETE RESTRICT",
+        schedule_agent_workflows_workflow_id_fkey:
+          "REFERENCES workflows(id) ON DELETE RESTRICT",
         ticket_labels_label_id_fkey: "REFERENCES labels(id) ON DELETE CASCADE",
         ticket_labels_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE CASCADE",
         tickets_assignee_agent_id_fkey: "REFERENCES agents(id) ON DELETE SET NULL",

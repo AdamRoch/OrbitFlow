@@ -24,6 +24,7 @@ import {
 } from "../workflow/graph.ts";
 import { telegramInboundForEngine } from "../telegram/adapter.ts";
 import { cronTickForEngine, startScheduleWorker, type ScheduleWorker } from "./scheduling.ts";
+import { parseChannelIntakeDecision } from "../channel-intake.ts";
 
 export type WorkflowRunStatus =
   | "pending"
@@ -1193,6 +1194,99 @@ async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<
   }
 }
 
+async function handleChannelIntakeOutput(
+  transaction: PoolClient,
+  run: QueryResultRow,
+  dispatch: QueryResultRow,
+  output: JsonObject,
+): Promise<
+  | { kind: "not_intake" }
+  | { kind: "waiting" }
+  | { kind: "already_ready" }
+  | { kind: "ready"; spec: JsonObject }
+> {
+  if (run.trigger_type !== "channel") return { kind: "not_intake" };
+  const graph = parseWorkflowGraph(run.graph_snapshot);
+  if (dispatch.node_id !== workflowEntryNodeId(graph)) return { kind: "not_intake" };
+
+  const intakeResult = await transaction.query(
+    "SELECT * FROM channel_intakes WHERE run_id = $1 FOR UPDATE",
+    [run.id],
+  );
+  const intake = intakeResult.rows[0];
+  if (!intake) return { kind: "not_intake" };
+  if (intake.status === "ready") return { kind: "already_ready" };
+  if (intake.status !== "collecting") {
+    throw new WorkflowGraphError(`channel intake is ${intake.status}`);
+  }
+
+  const decision = parseChannelIntakeDecision(output);
+  const existingSpec = asJsonObject(run.spec, "workflow run spec");
+  const channelContext = asJsonObject(
+    existingSpec.channelContext,
+    "workflow run spec.channelContext",
+  );
+  if (channelContext.provider !== "telegram") {
+    throw new WorkflowGraphError("channel intake provider must be telegram");
+  }
+  const chat = asJsonObject(channelContext.chat, "workflow run spec.channelContext.chat");
+  const chatId = nonBlank(chat.id, "workflow run spec.channelContext.chat.id");
+
+  if (decision.kind === "needs_clarification") {
+    await insertMessage(transaction, {
+      runId: run.id,
+      sender: `agent:${dispatch.agent_id}`,
+      recipient: `telegram:chat:${chatId}`,
+      type: "channel_outbound",
+      payload: {
+        provider: "telegram",
+        chatId,
+        text: decision.question,
+      },
+      handoffBrief: decision.question,
+    });
+    await transaction.query(
+      `UPDATE channel_intakes
+       SET last_question = $2, clarification_count = clarification_count + 1,
+           updated_at = clock_timestamp()
+       WHERE run_id = $1 AND status = 'collecting'`,
+      [run.id, decision.question],
+    );
+    await transaction.query(
+      `UPDATE workflow_runs
+       SET spec = jsonb_set(spec, '{intake}', $2::jsonb),
+           updated_at = clock_timestamp()
+       WHERE id = $1`,
+      [run.id, JSON.stringify({ status: "collecting", lastQuestion: decision.question })],
+    );
+    return { kind: "waiting" };
+  }
+
+  const spec: JsonObject = {
+    schemaVersion: 1,
+    objective: decision.spec.objective,
+    acceptanceCriteria: decision.spec.acceptanceCriteria,
+    constraints: decision.spec.constraints,
+    channelContext,
+  };
+  const changed = await transaction.query(
+    `UPDATE channel_intakes
+     SET status = 'ready', last_question = NULL, validated_spec = $2,
+         updated_at = clock_timestamp()
+     WHERE run_id = $1 AND status = 'collecting'
+     RETURNING run_id`,
+    [run.id, spec],
+  );
+  if (changed.rowCount !== 1) return { kind: "already_ready" };
+  await transaction.query(
+    `UPDATE workflow_runs
+     SET spec = $2, updated_at = clock_timestamp()
+     WHERE id = $1`,
+    [run.id, spec],
+  );
+  return { kind: "ready", spec };
+}
+
 /**
  * FACT-9 calls this inside its routing transaction. Every graph mutation,
  * dispatch row, cost event, receipt, and cursor advance therefore commits or
@@ -1313,7 +1407,17 @@ export async function routeWorkflowMessage(
   try {
     const graph: WorkflowGraph = parseWorkflowGraph(run.graph_snapshot);
     const usage = parseUsage(message.tokenUsage);
-    const evaluation = evaluateGraph(graph, dispatch.node_id, parsed.output);
+    const intake = await handleChannelIntakeOutput(
+      transaction,
+      run,
+      dispatch,
+      parsed.output,
+    );
+    const evaluation =
+      intake.kind === "waiting" || intake.kind === "already_ready"
+        ? null
+        : evaluateGraph(graph, dispatch.node_id, parsed.output);
+    const runSpec = intake.kind === "ready" ? intake.spec : run.spec;
 
     if (usage) {
       await transaction.query(
@@ -1351,11 +1455,12 @@ export async function routeWorkflowMessage(
       [dispatch.id, parsed.sessionId, message.id, parsed.dispatchGeneration],
     );
     await routeScheduledStandup(transaction, run, message, parsed);
+    if (intake.kind === "waiting" || intake.kind === "already_ready") return;
     await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);
-    if (evaluation.kind === "dispatch") {
+    if (evaluation?.kind === "dispatch") {
       await enqueueNode(transaction, {
         runId: message.runId,
-        spec: run.spec,
+        spec: runSpec,
         node: evaluation.node,
         sourceMessage: message,
         sourceOutput: parsed.output,
@@ -1364,7 +1469,13 @@ export async function routeWorkflowMessage(
     }
     await finishRunIfIdle(transaction, message.runId);
   } catch (error) {
-    if (!(error instanceof WorkflowGraphError)) throw error;
+    if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;
+    await transaction.query(
+      `UPDATE channel_intakes
+       SET status = 'failed', last_question = NULL, updated_at = clock_timestamp()
+       WHERE run_id = $1 AND status = 'collecting'`,
+      [message.runId],
+    );
     await failRun(
       transaction,
       message.runId,
@@ -1422,7 +1533,7 @@ async function routeChannelInbound(
   );
   if (!runResult.rows[0]) throw new WorkflowStateError(`run ${message.runId} disappeared`);
   const run = runResult.rows[0];
-  if (run.status !== "pending") return;
+  if (!(run.status === "pending" || run.status === "running")) return;
 
   try {
     const inbound = telegramInboundForEngine(message);
@@ -1437,13 +1548,21 @@ async function routeChannelInbound(
     if (message.recipient !== `agent:${entryNode.agentId}`) {
       throw new WorkflowGraphError("channel inbound recipient does not match workflow entry agent");
     }
-    await transaction.query(
-      `UPDATE workflow_runs
-       SET status = 'running', graph_snapshot = $2, started_at = clock_timestamp(),
-           updated_at = clock_timestamp()
-       WHERE id = $1`,
-      [message.runId, run.graph],
-    );
+    if (run.status === "pending") {
+      await transaction.query(
+        `UPDATE workflow_runs
+         SET status = 'running', graph_snapshot = $2, started_at = clock_timestamp(),
+             updated_at = clock_timestamp()
+         WHERE id = $1`,
+        [message.runId, run.graph],
+      );
+    } else {
+      const intake = await transaction.query<{ status: string }>(
+        "SELECT status FROM channel_intakes WHERE run_id = $1 FOR UPDATE",
+        [message.runId],
+      );
+      if (intake.rows[0]?.status !== "collecting") return;
+    }
     const inserted = await enqueueNode(transaction, {
       runId: message.runId,
       spec: asJsonObject(run.spec, "workflow run spec"),
