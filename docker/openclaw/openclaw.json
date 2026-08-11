@@ -36,5 +36,10 @@
   },
   "tools": {
     "profile": "minimal"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false
+    }
   }
 }
