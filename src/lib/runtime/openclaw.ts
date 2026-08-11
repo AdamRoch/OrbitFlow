@@ -9,6 +9,7 @@ import {
   type JsonValue,
   type Queryable,
 } from "../postgres/message-bus.ts";
+import { parseAgentGuardrails } from "../guardrails.ts";
 
 export const EXPECTED_OPENCLAW_VERSION = "2026.4.15";
 export const DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -25,6 +26,18 @@ const OPENCLAW_GATEWAY_ENVIRONMENT = new Set([
 ]);
 const FIXED_OUTPUT_CONTRACT =
   '{"artifact":{},"handoff_brief":"string","events":[]}';
+
+/** FACT-23 lists the enforced blocked-action boundary inside every wake prompt. */
+function blockedActionLines(guardrails: unknown): string[] {
+  const { blockedActions } = parseAgentGuardrails(guardrails);
+  if (blockedActions.length === 0) {
+    return ["No platform tool actions are blocked for this agent."];
+  }
+  return [
+    "The platform tool surface rejects these actions for this agent; never attempt them:",
+    ...blockedActions.map((action) => `- ${action}`),
+  ];
+}
 
 type ErrorCode =
   | "agent_not_found"
@@ -994,6 +1007,9 @@ export class OpenClawRuntimeAdapter {
       "# Canonical agent memory",
       "This is the current PostgreSQL-owned memory snapshot. Treat it as authoritative.",
       stableJson(input.agent.memory),
+      "",
+      "# Blocked actions",
+      ...blockedActionLines(input.agent.guardrails),
       "",
       "# Fixed output contract",
       `Return only strict JSON matching ${FIXED_OUTPUT_CONTRACT}.`,

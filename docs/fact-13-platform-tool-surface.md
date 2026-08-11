@@ -36,6 +36,10 @@ migration as `0008`, but current main already applied ordinals `0009` through
 checksum are unchanged, and the historical `0005` through `0008` gap stays
 empty.
 
+`dispatchPlatformTool` was named above as the one future enforcement point for
+blocked-action policy; FACT-23 now enforces `agents.guardrails.blockedActions`
+there (see `docs/guardrails-enforcement.md`).
+
 Run the disposable, real-PostgreSQL proof with:
 
 ```sh

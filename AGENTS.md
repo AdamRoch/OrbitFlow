@@ -10,6 +10,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - FACT-20's engine-compatible graph schema, visual editor boundary, and proof commands live in `docs/workflow-builder.md`; no builder translation model or migration exists.
 - FACT-10's pure graph, durable dispatch, fan-out, lifecycle, and mock-runtime contracts live in `docs/workflow-engine.md`; prove them with `npm run fact10:proof`.
 - FACT-11's OpenClaw sync, wake, failure, credential, and fake-provider proof contracts live in `docs/openclaw-runtime-adapter.md`; prove them with `npm run fact11:proof`.
+- FACT-23's cost-ceiling, rate-limit, and blocked-action contracts live in `docs/guardrails-enforcement.md`; prove them with `npm run fact23:proof`.
 
 ## CodingToolAdapter (PRD §5)
 

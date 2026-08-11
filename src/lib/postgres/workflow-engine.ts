@@ -9,6 +9,10 @@ import {
   type MessageRow,
 } from "./message-bus.ts";
 import {
+  parseAgentGuardrails,
+  parseRunCostLimit,
+} from "../guardrails.ts";
+import {
   WorkflowGraphError,
   asJsonObject,
   evaluateGraph,
@@ -691,6 +695,87 @@ interface ClaimedDispatch {
   phase: "start" | "reconcile";
 }
 
+interface CostCeilingRefusal {
+  scope: "run" | "agent";
+  ceiling: number;
+  spend: string;
+}
+
+const RATE_LIMIT_WINDOW = "60 seconds";
+
+/**
+ * FACT-23: the engine enforces per-run and per-agent cost ceilings before every
+ * wake. Spend already at or beyond a ceiling refuses the wake and pauses the
+ * run with one durable system message per pause transition, never a silent
+ * stall. Numeric ceilings compare in PostgreSQL so the exact boundary holds.
+ */
+async function costCeilingRefusal(
+  transaction: PoolClient,
+  run: { id: string; spec: unknown; total_cost: string },
+  agentId: string,
+  agentCostLimit: number | null,
+): Promise<CostCeilingRefusal | null> {
+  const runCeiling = parseRunCostLimit(run.spec);
+  if (runCeiling !== null) {
+    const breached = await transaction.query<{ breached: boolean }>(
+      "SELECT $1::numeric >= $2::numeric AS breached",
+      [run.total_cost, runCeiling],
+    );
+    if (breached.rows[0].breached) {
+      return { scope: "run", ceiling: runCeiling, spend: run.total_cost };
+    }
+  }
+  if (agentCostLimit !== null) {
+    const spend = await transaction.query<{ spend: string; breached: boolean }>(
+      `SELECT COALESCE(SUM(computed_cost), 0)::text AS spend,
+              COALESCE(SUM(computed_cost), 0) >= $3::numeric AS breached
+       FROM cost_events
+       WHERE run_id = $1 AND agent_id = $2`,
+      [run.id, agentId, agentCostLimit],
+    );
+    if (spend.rows[0].breached) {
+      return { scope: "agent", ceiling: agentCostLimit, spend: spend.rows[0].spend };
+    }
+  }
+  return null;
+}
+
+async function pauseRunForCostCeiling(
+  transaction: PoolClient,
+  dispatch: { id: string; run_id: string; node_id: string; agent_id: string },
+  refusal: CostCeilingRefusal,
+): Promise<void> {
+  const paused = await transaction.query(
+    `UPDATE workflow_runs
+     SET status = 'paused', updated_at = clock_timestamp()
+     WHERE id = $1 AND status = 'running'
+     RETURNING id`,
+    [dispatch.run_id],
+  );
+  if (paused.rowCount !== 1) return;
+  const detail =
+    refusal.scope === "run"
+      ? `run spend ${refusal.spend} reached the run cost ceiling ${refusal.ceiling}`
+      : `agent ${dispatch.agent_id} spend ${refusal.spend} reached its cost ceiling ${refusal.ceiling}`;
+  await insertMessage(transaction, {
+    runId: dispatch.run_id,
+    sender: "system:workflow-engine",
+    recipient: "system:operators",
+    type: "system",
+    payload: {
+      code: "guardrail_cost_ceiling",
+      message: `Wake refused for dispatch ${dispatch.id} on node ${dispatch.node_id}: ${detail}. Run paused; raise the ceiling and resume to continue.`,
+      scope: refusal.scope,
+      agentId: dispatch.agent_id,
+      runId: dispatch.run_id,
+      dispatchId: dispatch.id,
+      nodeId: dispatch.node_id,
+      ceiling: refusal.ceiling,
+      spend: refusal.spend,
+    },
+  });
+}
+
 async function claimDispatch(
   pool: Pool,
   workerId: string,
@@ -730,8 +815,13 @@ async function claimDispatch(
     );
 
     for (const candidate of candidates.rows) {
-      const lockedRun = await transaction.query<{ status: WorkflowRunStatus }>(
-        "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE",
+      const lockedRun = await transaction.query<{
+        id: string;
+        status: WorkflowRunStatus;
+        spec: unknown;
+        total_cost: string;
+      }>(
+        "SELECT id, status, spec, total_cost FROM workflow_runs WHERE id = $1 FOR UPDATE",
         [candidate.run_id],
       );
       if (lockedRun.rows[0]?.status !== "running") continue;
@@ -771,6 +861,37 @@ async function claimDispatch(
       const dispatch = locked.rows[0];
       const phase = dispatch.status === "pending" ? "start" : "reconcile";
 
+      if (phase === "start") {
+        // Locking the agent row serializes start-phase claims for this agent
+        // across runs, so the rate window and agent ceiling cannot be
+        // overshot by concurrent dispatch workers.
+        const agent = await transaction.query<{ guardrails: unknown }>(
+          "SELECT guardrails FROM agents WHERE id = $1 FOR UPDATE",
+          [dispatch.agent_id],
+        );
+        const guardrails = parseAgentGuardrails(agent.rows[0]?.guardrails);
+        const refusal = await costCeilingRefusal(
+          transaction,
+          lockedRun.rows[0],
+          dispatch.agent_id,
+          guardrails.costLimit,
+        );
+        if (refusal) {
+          await pauseRunForCostCeiling(transaction, dispatch, refusal);
+          return null;
+        }
+        if (guardrails.rateLimitPerMinute !== null) {
+          const recent = await transaction.query<{ count: number }>(
+            `SELECT count(*)::int AS count
+             FROM agent_wake_events
+             WHERE agent_id = $1
+               AND created_at > clock_timestamp() - interval '${RATE_LIMIT_WINDOW}'`,
+            [dispatch.agent_id],
+          );
+          if (recent.rows[0].count >= guardrails.rateLimitPerMinute) continue;
+        }
+      }
+
       const claimed = await transaction.query(
         `UPDATE workflow_dispatches
          SET status = $4::workflow_dispatch_status, lease_owner = $2,
@@ -794,6 +915,14 @@ async function claimDispatch(
         [dispatch.id, workerId, leaseMs, phase === "start" ? "dispatching" : "reconciling"],
       );
       const row = claimed.rows[0];
+      if (phase === "start") {
+        await transaction.query(
+          `INSERT INTO agent_wake_events (run_id, agent_id, dispatch_id, lease_generation)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT ON CONSTRAINT agent_wake_events_start_unique DO NOTHING`,
+          [row.run_id, row.agent_id, row.id, row.lease_generation],
+        );
+      }
       return {
         id: row.id,
         runId: row.run_id,
