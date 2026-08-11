@@ -24,7 +24,7 @@ export interface OpenClawEngineAdapterOptions {
  *
  * Pinned OpenClaw 2026.4.15 uses `agent:<ref>:main` as its canonical session
  * key for every wake.  Concurrent fan-out dispatches targeting the same agent
- * ref are not serialised here.  Blocked by OEMR-86.
+ * ref are not serialised here.  Blocked by FACT-30.
  */
 export class OpenClawEngineAdapter implements RuntimeAdapter {
   private readonly pool: Pool;

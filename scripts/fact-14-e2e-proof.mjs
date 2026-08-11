@@ -336,6 +336,25 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
 
     const outputMessages = messages.rows.filter((row) => row.type === "output");
     const handoffBriefs = outputMessages.filter((row) => row.handoff_brief && row.handoff_brief.trim());
+    assert.ok(outputMessages.length >= 1, "at least one output message");
+
+    // Distinct finalized Implementer cost event on exact DeepSeek model
+    const implementerId = String(agents.find((a) => a.name === "Factory Implementer")?.id);
+    const implCostEvents = costEvents.rows.filter(
+      (row) =>
+        String(row.agent_id) === implementerId &&
+        row.model === codingModel &&
+        BigInt(row.tokens_in) > BigInt(0) &&
+        BigInt(row.tokens_out) > BigInt(0) &&
+        parseFloat(row.computed_cost) > 0,
+    );
+    assert.ok(implCostEvents.length >= 1, `implementer has finalized ${codingModel} cost event with positive tokens and cost`);
+
+    // No orbitflow-invocation reservation cost events
+    const reservations = costEvents.rows.filter(
+      (row) => row.model && String(row.model).startsWith("orbitflow-invocation:"),
+    );
+    assert.equal(reservations.length, 0, "zero unconverted invocation reservations");
 
     const totalTokens = BigInt(finalRun.totalTokens || "0");
     const totalCost = parseFloat(finalRun.totalCost || "0");
@@ -358,45 +377,22 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
       assert.ok(dispatchNodeIds.has(nodeId), `dispatch completed for ${nodeId}`);
     }
 
-    // Each output message must have non-blank handoff
-    for (const msg of outputMessages) {
-      assert.ok(msg.handoff_brief && msg.handoff_brief.trim(), "every output message has non-blank handoff_brief");
-    }
-
-    // Distinct finalized Implementer cost event on exact DeepSeek model
-    const implementerId = String(agents.find((a) => a.name === "Factory Implementer")?.id);
-    const implCostEvents = costEvents.rows.filter(
-      (row) => String(row.agent_id) === implementerId && row.model !== null && String(row.model).includes("deepseek"),
-    );
-    assert.ok(implCostEvents.length >= 1, "implementer has a finalized DeepSeek cost event");
-
-    // No orbitflow-invocation reservation cost events
-    const reservations = costEvents.rows.filter(
-      (row) => row.model && String(row.model).startsWith("orbitflow-invocation:"),
-    );
-    assert.equal(reservations.length, 0, "zero unconverted invocation reservations");
-
-    // Real run workspace diff with hello.txt
+    // Real run workspace diff with hello.txt — strict mandatory
     const wsRoot = process.env.ORBITFLOW_WORKSPACE_ROOT;
-    if (wsRoot) {
-      const runWs = `${wsRoot}/run-${run.id}`;
-      try {
-        const diffResult = spawnSync("git", ["-C", runWs, "diff", "--name-only"], {
-          encoding: "utf8",
-          timeout: 5_000,
-        });
-        const changedFiles = diffResult.stdout.trim();
-        if (changedFiles) {
-          console.error("Workspace diff files:", changedFiles);
-          assert.ok(changedFiles.includes("hello.txt"), "git diff includes hello.txt");
-          try {
-            const content = readFileSync(`${runWs}/hello.txt`, "utf8");
-            assert.ok(content.includes("Hello from OrbitFlow"), "hello.txt has expected content");
-            console.error("hello.txt content:", content.trim());
-          } catch { /* file may not exist if coding delegate didn't create it */ }
-        }
-      } catch { /* workspace may not exist */ }
-    }
+    assert.ok(wsRoot, "ORBITFLOW_WORKSPACE_ROOT must be set");
+    const runWs = `${wsRoot}/run-${run.id}`;
+    const diffResult = spawnSync("git", ["-C", runWs, "diff"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(diffResult.status, 0, `git diff must succeed in ${runWs}`);
+    const diff = diffResult.stdout || diffResult.stderr || "";
+    const expectContent = "Hello from OrbitFlow Software Factory!";
+    assert.ok(diff.includes("hello.txt"), `git diff must include hello.txt\n${diff.slice(0, 500)}`);
+    const helloPath = `${runWs}/hello.txt`;
+    const helloContent = readFileSync(helloPath, "utf8");
+    assert.equal(helloContent.trim(), expectContent, `hello.txt must contain exact: ${expectContent}`);
+    console.error("Workspace hello.txt:", helloContent.trim());
 
     // Assert no database URL leaks in retained evidence
     const dbUrl = process.env.DATABASE_URL || "";
