@@ -14,6 +14,7 @@ const expectedKeys = [
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
+  "__CF_USER_TEXT_ENCODING",
 ];
 
 if (
