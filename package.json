@@ -30,6 +30,8 @@
     "fact22:proof": "bash scripts/fact-22-monitoring-proof.sh",
     "test:guardrails": "node --experimental-strip-types --test test/postgres/guardrails.test.mjs",
     "fact23:proof": "bash scripts/fact-23-guardrails-proof.sh",
+    "fact21:proof": "bash scripts/fact-21-workflow-templates-proof.sh",
+    "test:templates": "node --experimental-strip-types --test test/postgres/workflow-templates.test.mjs",
     "test:state-stream": "node --experimental-strip-types --test test/postgres/state-stream.test.mjs",
     "fact18:proof": "bash scripts/fact-18-state-stream-proof.sh",
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
