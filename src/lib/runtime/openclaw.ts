@@ -54,6 +54,8 @@ type ErrorCode =
   | "openclaw_termination_failed"
   | "openclaw_invocation_conflict"
   | "openclaw_invocation_indeterminate"
+  | "openclaw_session_lock_timeout"
+  | "openclaw_session_lock_unavailable"
   | "runtime_persistence_failed";
 
 export class RuntimeAdapterError extends Error {
@@ -495,6 +497,22 @@ function runtimeInvocation(
   return { invocationKey, requestFingerprint, costEventId: (-positive).toString() };
 }
 
+/**
+ * FACT-30: stable advisory lock key for one exact canonical OpenClaw agent
+ * ref, derived through SHA-256 and BigInt so JavaScript number precision never
+ * truncates it. The digest is mapped into 1..2^63-1 so the key can never
+ * overflow PostgreSQL's signed bigint. Returned as text for a `$1::bigint` bind.
+ */
+function agentSessionLockKey(ref: string): string {
+  const digest = createHash("sha256")
+    .update(`orbitflow:openclaw-agent-session:${ref}`)
+    .digest("hex")
+    .slice(0, 16);
+  const modulus = (BigInt(1) << BigInt(63)) - BigInt(1);
+  const positive = (BigInt(`0x${digest}`) % modulus) + BigInt(1);
+  return positive.toString();
+}
+
 function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
   try {
@@ -600,6 +618,8 @@ function isErrorCode(value: unknown): value is ErrorCode {
     "openclaw_termination_failed",
     "openclaw_invocation_conflict",
     "openclaw_invocation_indeterminate",
+    "openclaw_session_lock_timeout",
+    "openclaw_session_lock_unavailable",
     "runtime_persistence_failed",
   ].includes(value);
 }
@@ -688,105 +708,137 @@ export class OpenClawRuntimeAdapter {
         });
       }
 
-      let attempts = 0;
+      // Deterministic lock order: the per-invocation lock is always taken
+      // first and the FACT-30 same-agent session lock second.
       try {
-        const synchronized = await this.withConfigurationLock(async () => {
-          await this.ensureVersion();
-          return await this.syncAgentRow(context.agent, client);
-        });
-        const prompt = this.composePrompt({
-          invocationId,
-          nodeId,
-          nodeSystemPrompt,
-          agent: context.agent,
-          run: context.run,
-          tickets: context.tickets,
-          upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
-        });
-        for (;;) {
-          attempts += 1;
-          const commandTimeoutSeconds = Math.max(1, Math.ceil(wakeTimeoutMs / 1_000));
-          const deliveredPrompt =
-            attempts === 1
-              ? prompt
-              : `${prompt}\n\n# Structured-output retry\nYour previous response did not satisfy the fixed output contract. This is the only retry. Return only the required strict JSON object.`;
-          const result = await this.runCommand(
-            [
-              "agent",
-              "--agent",
-              synchronized.openclawRef,
-              "--session-id",
-              session.sessionId,
-              "--message",
-              deliveredPrompt,
-              "--timeout",
-              String(commandTimeoutSeconds),
-              "--json",
-            ],
-            {
-              timeoutMs: wakeTimeoutMs,
-              activeAgentRef: synchronized.openclawRef,
-              activeSessionKey: session.sessionKey,
-            },
-          );
+        return await this.withAgentSessionLock(ref, wakeTimeoutMs, async (deadlineMs) => {
+          let attempts = 0;
+          let agentCommandLaunched = false;
           try {
-            const parsed = parseTurn(result);
-            await this.verifySessionIdentity(
-              synchronized.openclawRef,
-              session,
-              parsed.completion.sessionId,
-            );
-            const completion: RuntimeCompletion = {
-              ...parsed.completion,
-              model: parsed.completion.model ?? context.agent.model,
-            };
-            return await this.persistSuccessfulInvocation(client, {
+            const synchronized = await this.withConfigurationLock(async () => {
+              await this.ensureVersion(deadlineMs);
+              return await this.syncAgentRow(context.agent, client, deadlineMs);
+            });
+            const prompt = this.composePrompt({
+              invocationId,
+              nodeId,
+              nodeSystemPrompt,
+              agent: context.agent,
+              run: context.run,
+              tickets: context.tickets,
+              upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
+            });
+            for (;;) {
+              attempts += 1;
+              const commandTimeoutMs = this.commandBudget(
+                deadlineMs,
+                wakeTimeoutMs,
+                "the OpenClaw agent command",
+              );
+              const commandTimeoutSeconds = Math.max(1, Math.ceil(commandTimeoutMs / 1_000));
+              const deliveredPrompt =
+                attempts === 1
+                  ? prompt
+                  : `${prompt}\n\n# Structured-output retry\nYour previous response did not satisfy the fixed output contract. This is the only retry. Return only the required strict JSON object.`;
+              agentCommandLaunched = true;
+              const result = await this.runCommand(
+                [
+                  "agent",
+                  "--agent",
+                  synchronized.openclawRef,
+                  "--session-id",
+                  session.sessionId,
+                  "--message",
+                  deliveredPrompt,
+                  "--timeout",
+                  String(commandTimeoutSeconds),
+                  "--json",
+                ],
+                {
+                  timeoutMs: commandTimeoutMs,
+                  activeAgentRef: synchronized.openclawRef,
+                  activeSessionKey: session.sessionKey,
+                },
+              );
+              try {
+                const parsed = parseTurn(result);
+                await this.verifySessionIdentity(
+                  synchronized.openclawRef,
+                  session,
+                  parsed.completion.sessionId,
+                  deadlineMs,
+                );
+                const completion: RuntimeCompletion = {
+                  ...parsed.completion,
+                  model: parsed.completion.model ?? context.agent.model,
+                };
+                return await this.persistSuccessfulInvocation(client, {
+                  ...invocation,
+                  runId,
+                  agentId,
+                  ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
+                  attempts,
+                  output: parsed.output,
+                  usage: parsed.usage,
+                  completion,
+                });
+              } catch (error) {
+                if (error instanceof MalformedOutputError && attempts === 1) continue;
+                throw error;
+              }
+            }
+          } catch (error) {
+            let runtimeError = safeError(error);
+            try {
+              await this.terminateRef(
+                ref,
+                agentCommandLaunched &&
+                  (runtimeError.code === "openclaw_timeout" ||
+                    runtimeError.code === "openclaw_terminated" ||
+                    runtimeError.code === "openclaw_session_mismatch")
+                  ? session.sessionKey
+                  : null,
+              );
+            } catch (terminationError) {
+              runtimeError = new RuntimeAdapterError(
+                "openclaw_termination_failed",
+                "OpenClaw wake failed and its gateway session could not be confirmed aborted",
+                {
+                  originalErrorCode: runtimeError.code,
+                  terminationErrorName:
+                    terminationError instanceof Error ? terminationError.name : "unknown",
+                },
+              );
+            }
+            await this.persistSystemError(client, {
               ...invocation,
               runId,
               agentId,
               ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
+              ref,
               attempts,
-              output: parsed.output,
-              usage: parsed.usage,
-              completion,
+              error: runtimeError,
             });
-          } catch (error) {
-            if (error instanceof MalformedOutputError && attempts === 1) continue;
-            throw error;
+            throw runtimeError;
           }
-        }
-      } catch (error) {
-        let runtimeError = safeError(error);
-        try {
-          await this.terminateRef(
-            ref,
-            runtimeError.code === "openclaw_timeout" ||
-              runtimeError.code === "openclaw_terminated" ||
-              runtimeError.code === "openclaw_session_mismatch"
-              ? session.sessionKey
-              : null,
-          );
-        } catch (terminationError) {
-          runtimeError = new RuntimeAdapterError(
-            "openclaw_termination_failed",
-            "OpenClaw wake failed and its gateway session could not be confirmed aborted",
-            {
-              originalErrorCode: runtimeError.code,
-              terminationErrorName:
-                terminationError instanceof Error ? terminationError.name : "unknown",
-            },
-          );
-        }
-        await this.persistSystemError(client, {
-          ...invocation,
-          runId,
-          agentId,
-          ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
-          ref,
-          attempts,
-          error: runtimeError,
         });
-        throw runtimeError;
+      } catch (error) {
+        if (
+          error instanceof RuntimeAdapterError &&
+          (error.code === "openclaw_session_lock_timeout" ||
+            error.code === "openclaw_session_lock_unavailable")
+        ) {
+          await this.persistSystemError(client, {
+            ...invocation,
+            runId,
+            agentId,
+            ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
+            ref,
+            attempts: 0,
+            error,
+          });
+        }
+        throw error;
       }
     });
   }
@@ -1099,6 +1151,110 @@ export class OpenClawRuntimeAdapter {
       } finally {
         client.release();
       }
+    }
+  }
+
+  /**
+   * FACT-30: serializes the full OpenClaw wake session of one exact canonical
+   * agent ref across processes with a PostgreSQL session-level advisory lock
+   * held on a dedicated pool client. No ordinary application transaction stays
+   * open across the external command, and different refs never contend.
+   * The wake deadline is end-to-end for the session region: pool checkout and
+   * lock acquisition (PostgreSQL lock_timeout, error 55P03) consume it, and
+   * the operation receives the absolute deadline so every command attempt
+   * spends only the remaining budget. Every acquisition-stage
+   * failure is typed. The lock is always explicitly unlocked and the client's
+   * lock_timeout reset before the client returns to the pool, and a failed
+   * unlock destroys the client so a leaked lock can never survive checkout.
+   */
+  private async withAgentSessionLock<T>(
+    ref: string,
+    timeoutMs: number,
+    operation: (deadlineMs: number) => Promise<T>,
+  ): Promise<T> {
+    const deadline = Date.now() + timeoutMs;
+    const lockKey = agentSessionLockKey(ref);
+    const acquisitionTimeout = (stage: string) =>
+      new RuntimeAdapterError(
+        "openclaw_session_lock_timeout",
+        "Timed out waiting for the same-agent OpenClaw session lock",
+        { openclawRef: ref, timeoutMs, stage },
+      );
+    let client: PoolClient | null = null;
+    try {
+      try {
+        client = await this.connectBounded(ref, timeoutMs, deadline);
+        const remaining = deadline - Date.now();
+        if (remaining < 1) throw acquisitionTimeout("lock");
+        await client.query("SELECT set_config('lock_timeout', $1, false)", [
+          String(Math.floor(remaining)),
+        ]);
+        await client.query("SELECT pg_advisory_lock($1::bigint)", [lockKey]);
+      } catch (error) {
+        if (error instanceof RuntimeAdapterError) throw error;
+        if ((error as { code?: string }).code === "55P03") {
+          throw acquisitionTimeout("lock");
+        }
+        throw new RuntimeAdapterError(
+          "openclaw_session_lock_unavailable",
+          "PostgreSQL could not acquire the same-agent OpenClaw session lock",
+          {
+            openclawRef: ref,
+            errorName: error instanceof Error ? error.name : "unknown",
+          },
+        );
+      }
+      return await operation(deadline);
+    } finally {
+      if (client) {
+        try {
+          await client.query(
+            "SELECT pg_advisory_unlock($1::bigint), set_config('lock_timeout', '0', false)",
+            [lockKey],
+          );
+          client.release();
+        } catch (error) {
+          client.release(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    }
+  }
+
+  /**
+   * Bounds even the pool checkout by the wake deadline. A client that arrives
+   * after the deadline fired is released again instead of leaking.
+   */
+  private async connectBounded(
+    ref: string,
+    timeoutMs: number,
+    deadline: number,
+  ): Promise<PoolClient> {
+    const connecting = this.pool.connect();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        connecting,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => {
+              connecting.then(
+                (late) => late.release(),
+                () => undefined,
+              );
+              reject(
+                new RuntimeAdapterError(
+                  "openclaw_session_lock_timeout",
+                  "Timed out waiting for the same-agent OpenClaw session lock",
+                  { openclawRef: ref, timeoutMs, stage: "connect" },
+                ),
+              );
+            },
+            Math.max(1, deadline - Date.now()),
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

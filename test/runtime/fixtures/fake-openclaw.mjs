@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 const stateDirectory = process.env.OPENCLAW_STATE_DIR;
 if (!stateDirectory) process.exit(90);
@@ -13,7 +14,8 @@ const agentsPath = path.join(stateDirectory, "fake-agents.json");
 const planPath = path.join(stateDirectory, "fake-plan.json");
 const requestsPath = path.join(stateDirectory, "fake-requests.ndjson");
 const counterPath = path.join(stateDirectory, "fake-turn-counter.txt");
-const sessionsPath = path.join(stateDirectory, "fake-sessions.json");
+const sessionsPathFor = (agentId) =>
+  path.join(stateDirectory, `fake-sessions-${agentId}.json`);
 const forbiddenEnvironmentNames = [
   "OPENROUTER_API_KEY",
   "ORBITFLOW_EXFIL_SENTINEL",
@@ -69,15 +71,15 @@ if (arguments_[0] === "agents" && arguments_[1] === "list") {
 }
 
 if (arguments_[0] === "sessions") {
-  const sessions = await readJson(sessionsPath, []);
   const agentId = option("--agent");
+  const sessions = await readJson(sessionsPathFor(agentId), []);
   await record("sessions-list", { agentId });
   console.log(
     JSON.stringify({
       path: path.join(stateDirectory, "agents", agentId, "sessions", "sessions.json"),
       count: sessions.length,
       activeMinutes: null,
-      sessions: sessions.filter((session) => session.agentId === agentId),
+      sessions,
     }),
   );
   process.exit(0);
@@ -182,8 +184,33 @@ if (arguments_[0] === "agent") {
 
   const requestedSessionId = option("--session-id");
   const agentId = option("--agent");
+
+  // FACT-30 proof support: hold a marker file for half the delay, record how
+  // many same-agent and total agent turns are concurrently active, then hold
+  // the second half so overlapping executions always observe each other.
+  if (typeof action.delayMs === "number" && action.delayMs > 0) {
+    const activeDirectory = path.join(stateDirectory, "fake-active");
+    await mkdir(activeDirectory, { recursive: true });
+    const marker = path.join(activeDirectory, `${agentId}-${process.pid}`);
+    await writeFile(marker, String(process.pid));
+    await delay(Math.ceil(action.delayMs / 2));
+    const active = await readdir(activeDirectory);
+    await appendFile(
+      path.join(stateDirectory, "fake-overlap.ndjson"),
+      `${JSON.stringify({
+        agentId,
+        turn,
+        sameAgent: active.filter((name) => name.startsWith(`${agentId}-`)).length,
+        total: active.length,
+      })}\n`,
+    );
+    await delay(Math.ceil(action.delayMs / 2));
+    await unlink(marker);
+  }
+
   const sessionKey = `agent:${agentId}:explicit:${requestedSessionId}`;
   const internalSessionId = action.sessionId ?? `internal-${requestedSessionId}`;
+  const sessionsPath = sessionsPathFor(agentId);
   const sessions = await readJson(sessionsPath, []);
   const otherSessions = sessions.filter((session) => session.key !== sessionKey);
   otherSessions.push({

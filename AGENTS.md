@@ -9,7 +9,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - FACT-13's agent CLI, dispatch seam, idempotency, and PostgreSQL proof live in `docs/fact-13-platform-tool-surface.md`; prove them with `npm run fact13:proof`.
 - FACT-20's engine-compatible graph schema, visual editor boundary, and proof commands live in `docs/workflow-builder.md`; no builder translation model or migration exists.
 - FACT-10's pure graph, durable dispatch, fan-out, lifecycle, and mock-runtime contracts live in `docs/workflow-engine.md`; prove them with `npm run fact10:proof`.
-- FACT-11's OpenClaw sync, wake, failure, credential, and fake-provider proof contracts live in `docs/openclaw-runtime-adapter.md`; prove them with `npm run fact11:proof`.
+- FACT-11's OpenClaw sync, wake, failure, credential, and fake-provider proof contracts live in `docs/openclaw-runtime-adapter.md`; prove them with `npm run fact11:proof`. FACT-30's same-agent session serialization contract lives there too, proven by the same gate.
 - FACT-23's cost-ceiling, rate-limit, and blocked-action contracts live in `docs/guardrails-enforcement.md`; prove them with `npm run fact23:proof`.
 - FACT-21's template agents, prompts, skills, graphs, idempotent seed, and clean-install/upgrade proof contracts live in `db/migrations/0013-workflow-templates.sql` and `test/postgres/workflow-templates.test.mjs`; prove them with `npm run fact21:proof`.
 

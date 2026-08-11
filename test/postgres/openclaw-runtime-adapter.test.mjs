@@ -109,6 +109,44 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     }
   }
 
+  async function waitForRequest(predicate) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const found = (await requests()).find(predicate);
+      if (found) return found;
+      await delay(10);
+    }
+    assert.fail("timed out waiting for the fake OpenClaw request");
+  }
+
+  async function resetConcurrency() {
+    await rm(path.join(stateDirectory, "fake-active"), { recursive: true, force: true });
+    await rm(path.join(stateDirectory, "fake-overlap.ndjson"), { force: true });
+  }
+
+  async function overlaps() {
+    try {
+      return (await readFile(path.join(stateDirectory, "fake-overlap.ndjson"), "utf8"))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch (error) {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async function createAgent(name) {
+    const result = await pool.query(
+      `INSERT INTO agents (
+         name, role, system_prompt, model, guardrails, interaction_rules, memory
+       ) VALUES ($1, $2, $3, $4, '{}', '{}', '{}')
+       RETURNING id::text`,
+      [name, "runtime worker", `Act as ${name}.`, "openrouter/openai/gpt-4.1-mini"],
+    );
+    return result.rows[0].id;
+  }
+
   async function createRun(label) {
     const result = await pool.query(
       `INSERT INTO workflow_runs (
@@ -120,7 +158,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     return result.rows[0].id;
   }
 
-  async function createTicket(runId, number, label) {
+  async function createTicket(runId, number, label, assignee = agentId) {
     const result = await pool.query(
       `INSERT INTO tickets (
          number, identifier, project_id, run_id, title, description,
@@ -135,7 +173,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
         `Ticket ${label}`,
         `Description ${label}`,
         `Acceptance ${label}`,
-        agentId,
+        assignee,
       ],
     );
     return result.rows[0].id;
@@ -781,5 +819,360 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       abort.sessionKey,
       new RegExp(`^agent:orbitflow-${agentId}:explicit:orbitflow-`),
     );
+  });
+
+  await t.test("serializes concurrent wakes for the same canonical agent ref", async () => {
+    const runA = await createRun("same-ref-a");
+    await createTicket(runA, 30, "same ref a");
+    const runB = await createRun("same-ref-b");
+    await createTicket(runB, 31, "same ref b");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("same-ref"),
+        delayMs: 400,
+        usage: { input: 5, output: 3, total: 8, cost: { total: "0.001" } },
+      },
+    ]);
+    await resetConcurrency();
+    const before = (await requests()).length;
+    const results = await Promise.all([
+      adapter.wakeAgent({
+        runId: runA,
+        agentId,
+        invocationId: "same-ref-a",
+        nodeId: "work",
+        nodeSystemPrompt: "First same-ref wake.",
+        timeoutMs: 10_000,
+      }),
+      adapter.wakeAgent({
+        runId: runB,
+        agentId,
+        invocationId: "same-ref-b",
+        nodeId: "work",
+        nodeSystemPrompt: "Second same-ref wake.",
+        timeoutMs: 10_000,
+      }),
+    ]);
+    assert.ok(results.every((result) => result.replayed === false));
+    const agentRequests = (await requests())
+      .slice(before)
+      .filter((request) => request.command === "agent");
+    assert.equal(agentRequests.length, 2);
+    const observations = await overlaps();
+    assert.equal(observations.length, 2);
+    assert.ok(
+      observations.every(
+        (observation) => observation.sameAgent === 1 && observation.total === 1,
+      ),
+      "same-agent OpenClaw turns must never overlap",
+    );
+  });
+
+  await t.test("keeps wakes for different agent refs concurrent", async () => {
+    const otherAgentId = await createAgent("Nova");
+    const runA = await createRun("cross-ref-a");
+    await createTicket(runA, 32, "cross ref a");
+    const runB = await createRun("cross-ref-b");
+    await createTicket(runB, 33, "cross ref b", otherAgentId);
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("cross-ref"),
+        delayMs: 400,
+        usage: { input: 6, output: 4, total: 10, cost: { total: "0.001" } },
+      },
+    ]);
+    await resetConcurrency();
+    const before = (await requests()).length;
+    const results = await Promise.all([
+      adapter.wakeAgent({
+        runId: runA,
+        agentId,
+        invocationId: "cross-ref-a",
+        nodeId: "work",
+        nodeSystemPrompt: "First cross-ref wake.",
+        timeoutMs: 10_000,
+      }),
+      adapter.wakeAgent({
+        runId: runB,
+        agentId: otherAgentId,
+        invocationId: "cross-ref-b",
+        nodeId: "work",
+        nodeSystemPrompt: "Second cross-ref wake.",
+        timeoutMs: 10_000,
+      }),
+    ]);
+    assert.ok(results.every((result) => result.replayed === false));
+    const agentRequests = (await requests())
+      .slice(before)
+      .filter((request) => request.command === "agent");
+    assert.equal(agentRequests.length, 2);
+    const observations = await overlaps();
+    assert.equal(observations.length, 2);
+    assert.ok(observations.every((observation) => observation.sameAgent === 1));
+    assert.ok(
+      observations.some((observation) => observation.total >= 2),
+      "different agent refs must be able to overlap",
+    );
+  });
+
+  await t.test("releases the agent session lock on the timeout path", async () => {
+    const timedOutRun = await createRun("lock-release-timeout");
+    await createTicket(timedOutRun, 34, "lock release timeout");
+    await resetPlan([{ mode: "timeout" }]);
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          runId: timedOutRun,
+          agentId,
+          invocationId: "lock-release-timeout",
+          nodeId: "timeout",
+          nodeSystemPrompt: "This wake times out while holding the lock.",
+          timeoutMs: 150,
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
+    );
+    const followUpRun = await createRun("lock-release-follow-up");
+    await createTicket(followUpRun, 35, "lock release follow up");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("lock-release-follow-up"),
+        usage: { input: 7, output: 5, total: 12, cost: { total: "0.0012" } },
+      },
+    ]);
+    const followUp = await adapter.wakeAgent({
+      runId: followUpRun,
+      agentId,
+      invocationId: "lock-release-follow-up",
+      nodeId: "work",
+      nodeSystemPrompt: "This wake must acquire the released lock.",
+      timeoutMs: 2_000,
+    });
+    assert.equal(followUp.replayed, false);
+    assert.deepEqual(followUp.output, completedOutput("lock-release-follow-up"));
+  });
+
+  await t.test("fails closed with a typed durable error at the acquisition deadline", async () => {
+    const slowRun = await createRun("lock-deadline-slow");
+    await createTicket(slowRun, 36, "lock deadline slow");
+    const waitingRun = await createRun("lock-deadline-waiting");
+    await createTicket(waitingRun, 37, "lock deadline waiting");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("lock-deadline-slow"),
+        delayMs: 1_500,
+        usage: { input: 9, output: 6, total: 15, cost: { total: "0.0015" } },
+      },
+    ]);
+    await resetConcurrency();
+    const slowWake = adapter.wakeAgent({
+      runId: slowRun,
+      agentId,
+      invocationId: "lock-deadline-slow",
+      nodeId: "work",
+      nodeSystemPrompt: "Slow wake holding the agent session lock.",
+      timeoutMs: 10_000,
+    });
+    await waitForRequest(
+      (request) =>
+        request.command === "agent" &&
+        typeof request.message === "string" &&
+        request.message.includes("Slow wake holding the agent session lock."),
+    );
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          runId: waitingRun,
+          agentId,
+          invocationId: "lock-deadline-waiting",
+          nodeId: "work",
+          nodeSystemPrompt: "This wake must stop waiting at its deadline.",
+          timeoutMs: 200,
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError &&
+        error.code === "openclaw_session_lock_timeout" &&
+        error.safeDetails.stage === "lock",
+    );
+    const durable = await pool.query(
+      "SELECT payload FROM messages WHERE run_id = $1",
+      [waitingRun],
+    );
+    assert.equal(durable.rowCount, 1);
+    assert.equal(durable.rows[0].payload.code, "openclaw_session_lock_timeout");
+    assert.equal(durable.rows[0].payload.details.stage, "lock");
+    assert.equal(durable.rows[0].payload.attempts, 0);
+    const slowResult = await slowWake;
+    assert.equal(slowResult.replayed, false);
+    const observations = await overlaps();
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0].total, 1);
+    const costs = await pool.query(
+      `SELECT count(*)::int AS count, max(tokens_in)::int AS tokens_in
+       FROM cost_events WHERE run_id = $1`,
+      [waitingRun],
+    );
+    assert.deepEqual(costs.rows[0], { count: 1, tokens_in: 0 });
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          runId: waitingRun,
+          agentId,
+          invocationId: "lock-deadline-waiting",
+          nodeId: "work",
+          nodeSystemPrompt: "This wake must stop waiting at its deadline.",
+          timeoutMs: 200,
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError &&
+        error.code === "openclaw_session_lock_timeout" &&
+        error.safeDetails.replayed === true,
+    );
+  });
+
+  await t.test("bounds pool checkout by the wake deadline with a typed durable error", async () => {
+    const starvedRun = await createRun("lock-connect-starved");
+    await createTicket(starvedRun, 38, "lock connect starved");
+    const starvedPool = new Pool({ connectionString: databaseUrl, max: 2 });
+    const starvedAdapter = new OpenClawRuntimeAdapter({
+      pool: starvedPool,
+      runtimeRoot,
+      openClawCommand: process.execPath,
+      openClawCommandArguments: [fixture],
+      wakeTimeoutMs: 2_000,
+      terminationGraceMs: 100,
+    });
+    const held = await starvedPool.connect();
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () =>
+          starvedAdapter.wakeAgent({
+            runId: starvedRun,
+            agentId,
+            invocationId: "lock-connect-starved",
+            nodeId: "work",
+            nodeSystemPrompt: "This wake cannot check out a lock client.",
+            timeoutMs: 300,
+          }),
+        (error) =>
+          error instanceof RuntimeAdapterError &&
+          error.code === "openclaw_session_lock_timeout" &&
+          error.safeDetails.stage === "connect",
+      );
+      assert.ok(Date.now() - started < 3_000, "pool checkout wait must stay bounded");
+    } finally {
+      held.release();
+      await starvedPool.end();
+    }
+    const durable = await pool.query(
+      "SELECT payload FROM messages WHERE run_id = $1",
+      [starvedRun],
+    );
+    assert.equal(durable.rowCount, 1);
+    assert.equal(durable.rows[0].payload.code, "openclaw_session_lock_timeout");
+    assert.equal(durable.rows[0].payload.details.stage, "connect");
+    assert.equal(durable.rows[0].payload.attempts, 0);
+  });
+
+  await t.test("spends only the remaining deadline budget on the OpenClaw command", async () => {
+    const holderRun = await createRun("lock-budget-holder");
+    await createTicket(holderRun, 39, "lock budget holder");
+    const waiterRun = await createRun("lock-budget-waiter");
+    await createTicket(waiterRun, 40, "lock budget waiter");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("lock-budget-holder"),
+        delayMs: 600,
+        usage: { input: 5, output: 3, total: 8, cost: { total: "0.001" } },
+      },
+      {
+        mode: "success",
+        output: completedOutput("lock-budget-waiter"),
+        delayMs: 900,
+        usage: { input: 5, output: 3, total: 8, cost: { total: "0.001" } },
+      },
+    ]);
+    await resetConcurrency();
+    const holderWake = adapter.wakeAgent({
+      runId: holderRun,
+      agentId,
+      invocationId: "lock-budget-holder",
+      nodeId: "work",
+      nodeSystemPrompt: "Holder wake consuming the deadline budget.",
+      timeoutMs: 10_000,
+    });
+    await waitForRequest(
+      (request) =>
+        request.command === "agent" &&
+        typeof request.message === "string" &&
+        request.message.includes("Holder wake consuming the deadline budget."),
+    );
+    // The waiter acquires the lock only after most of its 1s deadline was
+    // spent waiting. A fresh full command timeout would let the 900ms turn
+    // succeed; the remaining-budget contract must time the command out.
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          runId: waiterRun,
+          agentId,
+          invocationId: "lock-budget-waiter",
+          nodeId: "work",
+          nodeSystemPrompt: "Waiter wake gets only the remaining budget.",
+          timeoutMs: 1_000,
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
+    );
+    const holderResult = await holderWake;
+    assert.equal(holderResult.replayed, false);
+    const durable = await pool.query(
+      "SELECT payload FROM messages WHERE run_id = $1",
+      [waiterRun],
+    );
+    assert.equal(durable.rowCount, 1);
+    assert.equal(durable.rows[0].payload.code, "openclaw_timeout");
+    await resetConcurrency();
+  });
+
+  await t.test("refuses to launch the OpenClaw command once the deadline is exhausted", async () => {
+    const runId = await createRun("deadline-exhausted");
+    await createTicket(runId, 41, "deadline exhausted");
+    await resetPlan([
+      { mode: "success", output: completedOutput("deadline-exhausted") },
+    ]);
+    // The 50ms minimum deadline is consumed by checkout, lock acquisition,
+    // and configuration sync, so the first command must be refused, not
+    // launched with a clamped budget.
+    const before = (await requests()).length;
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          runId,
+          agentId,
+          invocationId: "deadline-exhausted",
+          nodeId: "work",
+          nodeSystemPrompt: "The deadline expires before the command can launch.",
+          timeoutMs: 50,
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
+    );
+    assert.equal(
+      (await requests()).slice(before).filter((request) => request.command === "agent").length,
+      0,
+      "no OpenClaw command may launch after the deadline is exhausted",
+    );
+    const durable = await pool.query(
+      "SELECT payload FROM messages WHERE run_id = $1",
+      [runId],
+    );
+    assert.equal(durable.rowCount, 1);
+    assert.equal(durable.rows[0].payload.code, "openclaw_timeout");
   });
 });
