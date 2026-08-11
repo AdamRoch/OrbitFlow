@@ -394,10 +394,11 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
     });
   }
 
-  let envelope = parseJsonDocument(result.stdout, result.stderr, result.stderrBytes);
-  if (!isObject(envelope)) {
+  const parsedDocument = parseJsonDocument(result.stdout, result.stderr, result.stderrBytes);
+  if (!isObject(parsedDocument)) {
     throw new RuntimeAdapterError("openclaw_turn_failed", "OpenClaw envelope must be an object");
   }
+  let envelope: Record<string, unknown> = parsedDocument;
 
   let embedded = false;
   if (
@@ -438,6 +439,21 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
     meta.livenessState === "working" &&
     meta.stopReason === "stop";
 
+  if (isCompletedStop && !firstPayload && meta && meta.replayInvalid === true) {
+    throw new RuntimeAdapterError(
+      "openclaw_turn_failed",
+      "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without an output payload",
+      {
+        exitCode: result.exitCode,
+        status: typeof envelope.status === "string" ? envelope.status : null,
+        livenessState:
+          typeof meta.livenessState === "string" ? meta.livenessState : null,
+        stopReason: typeof meta.stopReason === "string" ? meta.stopReason : null,
+        diagnostics: { hasFirstPayload: false, metaReplayInvalid: true },
+      },
+    );
+  }
+
   if (isCompletedStop && !firstPayload && attempt === 1) {
     throw new MalformedOutputError(
       "Agent completed its turn without a text payload; retry should prompt for the output contract",
@@ -462,7 +478,7 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
     payloadKeys !== "mediaUrl,text" ||
     firstPayload.mediaUrl !== null ||
     meta.aborted !== false ||
-    meta.replayInvalid !== false ||
+    (Object.hasOwn(meta, "replayInvalid") && typeof meta.replayInvalid !== "boolean") ||
     meta.livenessState !== "working" ||
     meta.stopReason !== "stop" ||
     completion.stopReason !== "stop" ||
@@ -494,8 +510,8 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
     }
     if (meta) {
       diag.hasErrorField = Object.hasOwn(meta, "error");
-      if (typeof meta.aborted !== "undefined") diag.metaAborted = meta.aborted;
-      if (typeof meta.replayInvalid !== "undefined") diag.metaReplayInvalid = meta.replayInvalid;
+      if (typeof meta.aborted !== "undefined") diag.metaAborted = meta.aborted as JsonValue;
+      if (typeof meta.replayInvalid !== "undefined") diag.metaReplayInvalid = meta.replayInvalid as JsonValue;
       if (typeof meta.livenessState === "string") diag.metaLivenessState = meta.livenessState;
       if (typeof meta.stopReason === "string") diag.metaStopReason = meta.stopReason;
     }

@@ -58,6 +58,7 @@ test(`FACT-10 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
       "0012-platform-tool-idempotency.sql",
       "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
+      "0015-factory-implementer-prompt.sql",
     ]);
 
     const journal = await client.query(
@@ -71,6 +72,7 @@ test(`FACT-10 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
         "0012-platform-tool-idempotency.sql",
         "0013-workflow-templates.sql",
         "0014-guardrail-wake-events.sql",
+        "0015-factory-implementer-prompt.sql",
       ],
     );
     const columns = await client.query(

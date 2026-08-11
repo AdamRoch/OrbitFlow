@@ -498,6 +498,29 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.equal(completed.completion.status, "stop");
     assert.deepEqual(completed.output, completedOutput("gateway-completion"));
 
+    // replayInvalid: true signals mutating tool actions during this turn;
+    // a turn with valid output payload remains accepted (no retry risk).
+    const replayValidRunId = await createRun("replay-valid-payload");
+    await createTicket(replayValidRunId, 82, "replay valid payload");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("replay-valid-payload"),
+        replayInvalid: true,
+        usage: { input: 11, output: 7, total: 18, cost: { total: "0.002" } },
+      },
+    ]);
+    const replayAccepted = await adapter.wakeAgent({
+      runId: replayValidRunId,
+      agentId,
+      invocationId: "replay-valid-payload",
+      nodeId: "replay-valid",
+      nodeSystemPrompt: "Produce contract output, call a mutating tool.",
+    });
+    assert.equal(replayAccepted.replayed, false);
+    assert.equal(replayAccepted.attempts, 1);
+    assert.deepEqual(replayAccepted.output, completedOutput("replay-valid-payload"));
+
     const rejected = [
       {
         label: "blocked",
@@ -515,9 +538,32 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
         plan: { mode: "success", aborted: true },
       },
       {
-        label: "replay-invalid",
+        label: "replay-invalid-invalid-type",
         expectedCode: "openclaw_turn_failed",
-        plan: { mode: "success", replayInvalid: true },
+        plan: {
+          mode: "raw",
+          envelope: {
+            status: "ok",
+            summary: "completed",
+            runId: "fake-run",
+            result: {
+              payloads: [{ text: "not-relevant", mediaUrl: null }],
+              meta: {
+                aborted: false,
+                replayInvalid: "not-a-boolean",
+                livenessState: "working",
+                stopReason: "stop",
+                completion: { stopReason: "stop", finishReason: "stop" },
+                agentMeta: {
+                  usage: { input: 1, output: 1, total: 2 },
+                  provider: "openrouter",
+                  model: "test-model",
+                  sessionId: "fake-session",
+                },
+              },
+            },
+          },
+        },
       },
       {
         label: "missing-provider",
@@ -570,6 +616,111 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       assert.equal(durableError.rowCount, 1);
       assert.equal(durableError.rows[0].payload.code, scenario.expectedCode);
     }
+  });
+
+  await t.test("rejects replayInvalid true without payload and does not retry", async () => {
+    const runId = await createRun("replay-invalid-no-payload");
+    await createTicket(runId, 91, "replay invalid no payload");
+    await resetPlan([
+      {
+        mode: "raw",
+        envelope: {
+          status: "ok",
+          summary: "completed",
+          runId: "fake-run",
+          result: {
+            payloads: [],
+            meta: {
+              aborted: false,
+              replayInvalid: true,
+              livenessState: "working",
+              stopReason: "stop",
+              completion: { stopReason: "stop", finishReason: "stop" },
+              agentMeta: {
+                usage: { input: 1, output: 1, total: 2 },
+                provider: "openrouter",
+                model: "test-model",
+                sessionId: "fake-session",
+              },
+            },
+          },
+        },
+      },
+    ]);
+    const before = (await requests()).length;
+    await assert.rejects(
+      () =>
+        adapter.wakeAgent({
+          runId,
+          agentId,
+          invocationId: "replay-invalid-no-payload",
+          nodeId: "adversarial",
+          nodeSystemPrompt: "Turn with side effects and no output.",
+        }),
+      (error) =>
+        error instanceof RuntimeAdapterError &&
+        error.code === "openclaw_turn_failed",
+    );
+    assert.equal(
+      (await requests()).slice(before).filter((r) => r.command === "agent").length,
+      1,
+      "no unsafe retry when replayInvalid is true",
+    );
+    const durableError = await pool.query(
+      "SELECT payload FROM messages WHERE run_id = $1",
+      [runId],
+    );
+    assert.equal(durableError.rowCount, 1);
+    assert.equal(durableError.rows[0].payload.code, "openclaw_turn_failed");
+  });
+
+  await t.test("retries no-payload turn when replayInvalid is absent", async () => {
+    const runId = await createRun("no-payload-retry-absent");
+    await createTicket(runId, 92, "no payload retry absent");
+    await resetPlan([
+      {
+        mode: "raw",
+        envelope: {
+          status: "ok",
+          summary: "completed",
+          runId: "fake-run",
+          result: {
+            payloads: [],
+            meta: {
+              aborted: false,
+              livenessState: "working",
+              stopReason: "stop",
+              completion: { stopReason: "stop", finishReason: "stop" },
+              agentMeta: {
+                usage: { input: 1, output: 1, total: 2 },
+                provider: "openrouter",
+                model: "test-model",
+                sessionId: "fake-session",
+              },
+            },
+          },
+        },
+      },
+      {
+        mode: "success",
+        output: completedOutput("retry-success"),
+        usage: { input: 11, output: 7, total: 18, cost: { total: "0.002" } },
+      },
+    ]);
+    const before = (await requests()).length;
+    const result = await adapter.wakeAgent({
+      runId,
+      agentId,
+      invocationId: "no-payload-retry-absent",
+      nodeId: "no-payload-retry",
+      nodeSystemPrompt: "Return the fixed output contract after a no-payload first turn.",
+    });
+    assert.equal(result.attempts, 2);
+    assert.equal(
+      (await requests()).slice(before).filter((r) => r.command === "agent").length,
+      2,
+    );
+    assert.deepEqual(result.output, completedOutput("retry-success"));
   });
 
   await t.test("replays one durable invocation without executing or charging twice", async () => {
@@ -778,7 +929,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     const abort = (await requests()).filter((request) => request.command === "sessions-abort").at(-1);
     assert.match(
       abort.sessionKey,
-      new RegExp(`^agent:orbitflow-${agentId}:explicit:orbitflow-`),
+      new RegExp(`^agent:orbitflow-${agentId}:main$`),
     );
   });
 
@@ -817,7 +968,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     const abort = (await requests()).filter((request) => request.command === "sessions-abort").at(-1);
     assert.match(
       abort.sessionKey,
-      new RegExp(`^agent:orbitflow-${agentId}:explicit:orbitflow-`),
+      new RegExp(`^agent:orbitflow-${agentId}:main$`),
     );
   });
 

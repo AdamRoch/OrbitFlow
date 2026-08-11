@@ -34,6 +34,22 @@ const agentTool = path.join(bin, "orbit-agent-tools.mjs");
 const codingTool = path.join(bin, "orbit-coding-tool.mjs");
 const codingModel = process.env.ORBITFLOW_OPENCODE_MODEL || process.env.ORBITFLOW_FACT14_MODEL || "openrouter/deepseek/deepseek-v4-flash";
 
+// The proof must run against the shipped template prompt from
+// db/migrations/0015-factory-implementer-prompt.sql — never a proof-only
+// override. Keep this constant in sync with that migration.
+const shippedImplementerPrompt = [
+  "You are a Software Factory implementer. Follow this exact workflow for every ticket:",
+  "",
+  "1. Read the ticket. Use list_tickets to see your assigned work.",
+  "2. Call start_run_workspace to prepare the coding workspace.",
+  "3. Call delegate_coding_task with a clear task description. The task must describe exactly what files to create or modify. Wait for the tool to finish before continuing.",
+  "4. NEVER pretend a tool ran. If you write files yourself instead of calling the coding tool, the work is invalid.",
+  "5. After the coding tool finishes, call update_ticket to mark the ticket done.",
+  "6. Produce the fixed JSON output contract with your handoff brief summarizing what was done.",
+  "",
+  "Key rule: you must call delegate_coding_task for every implementation ticket. Do not output the file content yourself.",
+].join("\n");
+
 function workspaceToolsFor(agentName, projectId, agentId, runId) {
   const dbAlias = "ORBITFLOW_PLATFORM_DATABASE_URL";
   if (agentName === "Factory Orchestrator") return [
@@ -97,6 +113,13 @@ async function startGateway(runtimeRoot, port) {
   const setModel = spawn("openclaw", ["models", "set", model], { env: gwEnv, stdio: "ignore" });
   const modelExit = await new Promise((resolve) => setModel.once("close", resolve));
   if (modelExit !== 0) throw new Error(`models set ${model} exited ${modelExit}`);
+
+  // Bounded output-token budget (pinned OpenClaw agents.defaults.params.maxTokens
+  // passes through to the OpenRouter request) to conserve limited OpenRouter credit.
+  const maxOutputTokens = process.env.ORBITFLOW_FACT14_MAX_OUTPUT_TOKENS || "4096";
+  const setBudget = spawn("openclaw", ["config", "set", "agents.defaults.params.maxTokens", maxOutputTokens, "--strict-json"], { env: gwEnv, stdio: "ignore" });
+  const budgetExit = await new Promise((resolve) => setBudget.once("close", resolve));
+  if (budgetExit !== 0) throw new Error(`config set agents.defaults.params.maxTokens exited ${budgetExit}`);
 
   const diag = [];
   const child = spawn("openclaw", [
@@ -181,9 +204,13 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     const proofModel = process.env.ORBITFLOW_FACT14_MODEL || "openrouter/deepseek/deepseek-v4-flash";
     await pool.query(
       `UPDATE agents SET model = $1 WHERE name IN (
-         'Factory Orchestrator', 'Factory Planner', 'Factory Implementer', 'Factory Tester'
+         'Factory Orchestrator', 'Factory Planner', 'Factory Tester'
        )`,
       [proofModel],
+    );
+    await pool.query(
+      `UPDATE agents SET model = $1 WHERE name = 'Factory Implementer'`,
+      [codingModel],
     );
     const verifyAgents = await pool.query(
       `SELECT id, name, model FROM agents WHERE name IN (
@@ -191,9 +218,20 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
        ) ORDER BY id`,
     );
     for (const agent of verifyAgents.rows) {
-      assert.equal(agent.model, proofModel, `agent ${agent.name} must use ${proofModel}`);
+      const expectedModel = agent.name === "Factory Implementer" ? codingModel : proofModel;
+      assert.equal(agent.model, expectedModel, `agent ${agent.name} must use ${expectedModel}`);
     }
-    console.error(`All agent models set to: ${proofModel}`);
+    console.error(`Orch/Plan/Tester model: ${proofModel}  Implementer model: ${codingModel}`);
+
+    // Strict gate: the implementer must run the shipped 0015 template prompt.
+    const implPrompt = await pool.query(
+      `SELECT system_prompt FROM agents WHERE name = 'Factory Implementer'`,
+    );
+    assert.equal(
+      implPrompt.rows[0]?.system_prompt,
+      shippedImplementerPrompt,
+      "Factory Implementer must run the shipped 0015 template prompt",
+    );
 
     const runtimeRoot = path.join(tmpdir(), `orbitflow-fact14-${randomUUID()}`);
     await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
@@ -334,6 +372,10 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
       console.error(`  msg: type=${msg.type} sender=${msg.sender} handoff=${msg.handoff_brief?.slice(0, 80) ?? "none"}`);
     }
 
+    const completedDispatches = dispatches.rows.filter((row) => row.status === "completed");
+    const dispatchNodeIds = new Set(completedDispatches.map((d) => d.nodeId));
+    console.error(`Completed dispatches: ${completedDispatches.length} (nodes: ${[...dispatchNodeIds].join(", ")})`);
+
     const outputMessages = messages.rows.filter((row) => row.type === "output");
     const handoffBriefs = outputMessages.filter((row) => row.handoff_brief && row.handoff_brief.trim());
 
@@ -378,10 +420,6 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     const totalTokens = BigInt(finalRun.totalTokens || "0");
     const totalCost = parseFloat(finalRun.totalCost || "0");
     console.error(`Aggregated: ${totalTokens} tokens, $${totalCost}`);
-
-    const completedDispatches = dispatches.rows.filter((row) => row.status === "completed");
-    const dispatchNodeIds = new Set(completedDispatches.map((d) => d.nodeId));
-    console.error(`Completed dispatches: ${completedDispatches.length} (nodes: ${[...dispatchNodeIds].join(", ")})`);
 
     // FACT-14 acceptance assertions
     assert.equal(finalRun.status, "completed", "run must reach completed status");
