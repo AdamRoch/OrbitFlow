@@ -1181,19 +1181,6 @@ export class OpenClawRuntimeAdapter {
   }
 
   /**
-   * FACT-30: serializes the full OpenClaw wake session of one exact canonical
-   * agent ref across processes with a PostgreSQL session-level advisory lock
-   * held on a dedicated pool client. No ordinary application transaction stays
-   * open across the external command, and different refs never contend.
-   * The wake deadline is end-to-end for the session region: pool checkout and
-   * lock acquisition (PostgreSQL lock_timeout, error 55P03) consume it, and
-   * the operation receives the absolute deadline so every command attempt
-   * spends only the remaining budget. Every acquisition-stage
-   * failure is typed. The lock is always explicitly unlocked and the client's
-   * lock_timeout reset before the client returns to the pool, and a failed
-   * unlock destroys the client so a leaked lock can never survive checkout.
-   */
-  /**
    * Maps the shared wake deadline onto one nested external command. Without a
    * deadline the historical fixed cap applies. With one, an exhausted budget
    * refuses to launch and a live command gets only the remaining milliseconds,
@@ -1211,6 +1198,19 @@ export class OpenClawRuntimeAdapter {
     return Math.min(capMs, remainingMs);
   }
 
+  /**
+   * FACT-30: serializes the full OpenClaw wake session of one exact canonical
+   * agent ref across processes with a PostgreSQL session-level advisory lock
+   * held on a dedicated pool client. No ordinary application transaction stays
+   * open across the external command, and different refs never contend.
+   * The wake deadline is end-to-end for the session region: pool checkout and
+   * lock acquisition (PostgreSQL lock_timeout, error 55P03) consume it, and
+   * the operation receives the absolute deadline so every command attempt
+   * spends only the remaining budget. Every acquisition-stage
+   * failure is typed. The lock is always explicitly unlocked and the client's
+   * lock_timeout reset before the client returns to the pool, and a failed
+   * unlock destroys the client so a leaked lock can never survive checkout.
+   */
   private async withAgentSessionLock<T>(
     ref: string,
     timeoutMs: number,

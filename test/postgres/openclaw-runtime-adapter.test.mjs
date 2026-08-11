@@ -1089,13 +1089,13 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       {
         mode: "success",
         output: completedOutput("lock-budget-holder"),
-        delayMs: 600,
+        delayMs: 1_000,
         usage: { input: 5, output: 3, total: 8, cost: { total: "0.001" } },
       },
       {
         mode: "success",
         output: completedOutput("lock-budget-waiter"),
-        delayMs: 900,
+        delayMs: 3_500,
         usage: { input: 5, output: 3, total: 8, cost: { total: "0.001" } },
       },
     ]);
@@ -1115,9 +1115,12 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
         typeof request.message === "string" &&
         request.message.includes("Holder wake consuming the deadline budget."),
     );
-    // The waiter acquires the lock only after most of its 1s deadline was
-    // spent waiting. A fresh full command timeout would let the 900ms turn
-    // succeed; the remaining-budget contract must time the command out.
+    // The waiter starts only after the holder's agent command is recorded
+    // (explicit coordination), so the holder keeps the lock for about another
+    // 1.1s. The waiter's 4s deadline therefore leaves roughly 2.9s of budget
+    // at acquisition: a fresh full timeout would let the 3.5s turn succeed,
+    // while the remaining-budget contract must time it out. A scheduler would
+    // need roughly 3s of pathological preemption to invalidate that setup.
     await assert.rejects(
       () =>
         adapter.wakeAgent({
@@ -1126,7 +1129,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
           invocationId: "lock-budget-waiter",
           nodeId: "work",
           nodeSystemPrompt: "Waiter wake gets only the remaining budget.",
-          timeoutMs: 1_000,
+          timeoutMs: 4_000,
         }),
       (error) =>
         error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
