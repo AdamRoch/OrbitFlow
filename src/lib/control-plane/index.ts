@@ -22,6 +22,12 @@ export function getControlPlaneRepository(): ControlPlaneRepository {
   return repository;
 }
 
+/** Shared PostgreSQL pool for engine-adjacent API actions such as schedule ticks. */
+export function getControlPlanePool(): Pool {
+  getControlPlaneRepository();
+  return pool!;
+}
+
 /** Test-only lifecycle hook; production workers retain their pool. */
 export async function resetControlPlaneRepository(): Promise<void> {
   const current = pool;

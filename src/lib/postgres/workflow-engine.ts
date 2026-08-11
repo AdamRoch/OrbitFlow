@@ -23,6 +23,7 @@ import {
   type WorkflowNode,
 } from "../workflow/graph.ts";
 import { telegramInboundForEngine } from "../telegram/adapter.ts";
+import { cronTickForEngine, startScheduleWorker, type ScheduleWorker } from "./scheduling.ts";
 
 export type WorkflowRunStatus =
   | "pending"
@@ -487,12 +488,10 @@ async function failRun(
   }
 }
 
-export async function startWorkflowRun(
-  pool: Pool,
-  runIdValue: DatabaseId,
+async function startWorkflowRunInTransaction(
+  transaction: PoolClient,
+  runId: string,
 ): Promise<WorkflowRunRecord> {
-  const runId = positiveId(runIdValue, "runId");
-  return inTransaction(pool, async (transaction) => {
     const result = await transaction.query(
       `SELECT run.*, workflow.graph
        FROM workflow_runs AS run
@@ -553,7 +552,14 @@ export async function startWorkflowRun(
       runId,
     ]);
     return runFromRow(updated.rows[0]);
-  });
+}
+
+export async function startWorkflowRun(
+  pool: Pool,
+  runIdValue: DatabaseId,
+): Promise<WorkflowRunRecord> {
+  const runId = positiveId(runIdValue, "runId");
+  return inTransaction(pool, (transaction) => startWorkflowRunInTransaction(transaction, runId));
 }
 
 async function transitionRun(
@@ -1196,6 +1202,17 @@ export async function routeWorkflowMessage(
   transaction: PoolClient,
   message: MessageRow,
 ): Promise<void> {
+  if (message.type === "cron_tick") {
+    cronTickForEngine(message);
+    const run = await transaction.query<{ trigger_type: string }>(
+      "SELECT trigger_type FROM workflow_runs WHERE id = $1 FOR UPDATE",
+      [message.runId],
+    );
+    if (!run.rows[0]) throw new WorkflowStateError(`run ${message.runId} disappeared`);
+    if (run.rows[0].trigger_type !== "cron") throw new WorkflowStateError("cron tick belongs to a non-cron run");
+    await startWorkflowRunInTransaction(transaction, message.runId);
+    return;
+  }
   if (message.type === "channel_inbound") {
     await routeChannelInbound(transaction, message);
     return;
@@ -1333,6 +1350,7 @@ export async function routeWorkflowMessage(
          AND status IN ('dispatching', 'reconciling', 'active')`,
       [dispatch.id, parsed.sessionId, message.id, parsed.dispatchGeneration],
     );
+    await routeScheduledStandup(transaction, run, message, parsed);
     await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);
     if (evaluation.kind === "dispatch") {
       await enqueueNode(transaction, {
@@ -1354,6 +1372,35 @@ export async function routeWorkflowMessage(
       boundedReason(error),
     );
   }
+}
+
+/** A scheduled standup reuses the same durable Telegram outbound queue as an agent reply. */
+async function routeScheduledStandup(
+  transaction: PoolClient,
+  run: { spec: unknown },
+  message: MessageRow,
+  output: { output: JsonObject },
+): Promise<void> {
+  const spec = asJsonObject(run.spec, "workflow run spec");
+  const schedule = spec.schedule;
+  if (!schedule || typeof schedule !== "object" || Array.isArray(schedule) || spec.standup === undefined) return;
+  const chat = await transaction.query<{ chat_id: string }>(
+    `SELECT payload #>> '{chat,id}' AS chat_id
+     FROM messages
+     WHERE type = 'channel_inbound' AND payload ->> 'provider' = 'telegram'
+       AND payload #>> '{chat,id}' IS NOT NULL
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+  );
+  if (!chat.rows[0]) return;
+  const text = message.handoffBrief?.trim()
+    || (typeof output.output.summary === "string" ? output.output.summary.trim() : "Daily standup complete.");
+  await insertMessage(transaction, {
+    runId: message.runId,
+    sender: "system:daily-standup",
+    recipient: `telegram:chat:${chat.rows[0].chat_id}`,
+    type: "channel_outbound",
+    payload: { provider: "telegram", chatId: chat.rows[0].chat_id, text },
+  });
 }
 
 /**
@@ -1471,12 +1518,14 @@ export function startWorkflowEngine(
     pollIntervalMs: options.pollIntervalMs,
     leaseMs: options.dispatchLeaseMs,
   });
-  const done = Promise.all([messageWorker, dispatchWorker]).then(() => undefined);
+  const scheduler: ScheduleWorker = startScheduleWorker(pool, () => controller.abort());
+  const done = Promise.all([messageWorker, dispatchWorker, scheduler.done]).then(() => undefined);
   void done.catch(() => controller.abort());
   return {
     done,
     async stop() {
       controller.abort();
+      await scheduler.stop();
       await done;
     },
   };
