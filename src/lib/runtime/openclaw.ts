@@ -1586,6 +1586,12 @@ export class OpenClawRuntimeAdapter {
       const result = await this.runCommand(["--version"], {
         timeoutMs: this.commandBudget(deadlineMs, 10_000, "the version check"),
       });
+      if (deadlineMs !== undefined && result.timedOut) {
+        throw new RuntimeAdapterError(
+          "openclaw_timeout",
+          "OpenClaw version check consumed the wake deadline",
+        );
+      }
       const version = result.stdout.match(/(?:OpenClaw\s+)?(\d{4}\.\d+\.\d+)/)?.[1];
       if (result.exitCode !== 0 || version !== this.expectedVersion) {
         throw new RuntimeAdapterError(

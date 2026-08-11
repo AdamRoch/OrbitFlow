@@ -67,6 +67,7 @@ async function maybeHold(commandName) {
 
 if (arguments_[0] === "--version") {
   await record("version");
+  await maybeHold("version");
   console.log("OpenClaw 2026.4.15 (fake-request-path-proof)");
   process.exit(0);
 }

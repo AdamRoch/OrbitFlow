@@ -1202,4 +1202,70 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.equal(durable.rows[0].payload.code, "openclaw_timeout");
     assert.equal(durable.rows[0].payload.attempts, 0);
   });
+
+  await t.test("maps a deadline-exhausted version check to openclaw_timeout and resets its cache", async () => {
+    const runId = await createRun("version-check-exhausted");
+    await createTicket(runId, 42, "version check exhausted");
+    await resetPlan([
+      {
+        mode: "success",
+        output: completedOutput("version-check-recovered"),
+        usage: { input: 4, output: 2, total: 6, cost: { total: "0.0006" } },
+      },
+    ]);
+    // A fresh adapter has no cached version proof, so its first wake runs
+    // --version; the deterministic hold parks it past the 50ms deadline.
+    const freshAdapter = new OpenClawRuntimeAdapter({
+      pool,
+      runtimeRoot,
+      openClawCommand: process.execPath,
+      openClawCommandArguments: [fixture],
+      wakeTimeoutMs: 2_000,
+      terminationGraceMs: 100,
+    });
+    const holdPath = path.join(stateDirectory, "fake-config-hold.json");
+    await writeFile(holdPath, JSON.stringify({ version: 250 }));
+    const before = (await requests()).length;
+    try {
+      await assert.rejects(
+        () =>
+          freshAdapter.wakeAgent({
+            runId,
+            agentId,
+            invocationId: "version-check-exhausted",
+            nodeId: "work",
+            nodeSystemPrompt: "The version check consumes the whole deadline.",
+            timeoutMs: 50,
+          }),
+        (error) =>
+          error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
+      );
+    } finally {
+      await rm(holdPath, { force: true });
+    }
+    const after = (await requests()).slice(before);
+    assert.equal(after.filter((request) => request.command === "agent").length, 0);
+    assert.equal(after.filter((request) => request.command === "sessions-abort").length, 0);
+    const durable = await pool.query(
+      "SELECT payload FROM messages WHERE run_id = $1",
+      [runId],
+    );
+    assert.equal(durable.rowCount, 1);
+    assert.equal(durable.rows[0].payload.code, "openclaw_timeout");
+
+    // The rejected proof must not be cached: the same adapter re-proves the
+    // version and completes a wake once the hold is gone.
+    const recoveredRun = await createRun("version-check-recovered");
+    await createTicket(recoveredRun, 43, "version check recovered");
+    const recovered = await freshAdapter.wakeAgent({
+      runId: recoveredRun,
+      agentId,
+      invocationId: "version-check-recovered",
+      nodeId: "work",
+      nodeSystemPrompt: "The version proof was reset and passes now.",
+      timeoutMs: 5_000,
+    });
+    assert.equal(recovered.replayed, false);
+    assert.deepEqual(recovered.output, completedOutput("version-check-recovered"));
+  });
 });
