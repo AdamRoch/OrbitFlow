@@ -27,6 +27,7 @@
     "fact13:proof": "bash scripts/fact-13-platform-tool-proof.sh",
     "fact10:proof": "bash scripts/fact-10-workflow-engine-proof.sh",
     "fact11:proof": "bash scripts/fact-11-runtime-adapter-proof.sh",
+    "fact14:proof": "bash scripts/fact-14-e2e-proof.sh",
     "fact22:proof": "bash scripts/fact-22-monitoring-proof.sh",
     "test:guardrails": "node --experimental-strip-types --test test/postgres/guardrails.test.mjs",
     "fact23:proof": "bash scripts/fact-23-guardrails-proof.sh",
