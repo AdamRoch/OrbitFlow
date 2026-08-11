@@ -13,6 +13,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - FACT-23's cost-ceiling, rate-limit, and blocked-action contracts live in `docs/guardrails-enforcement.md`; prove them with `npm run fact23:proof`.
 - FACT-21's template agents, prompts, skills, graphs, idempotent seed, and clean-install/upgrade proof contracts live in `db/migrations/0013-workflow-templates.sql` and `test/postgres/workflow-templates.test.mjs`; prove them with `npm run fact21:proof`.
 - FACT-14's strict Software Factory E2E gate (real OpenClaw + OpenRouter, shipped-template prompt, bounded output-token budget) lives in `scripts/fact-14-e2e-proof.mjs`; prove it with `npm run fact14:proof`. The Factory Implementer prompt is owned by `db/migrations/0015-factory-implementer-prompt.sql`, which replaces only the exact 0013-seeded prompt.
+- FACT-15's grammY long-poll adapter, Telegram binding, durable inbound/outbound receipts, and fail-closed outbound recovery live in `docs/telegram-adapter.md`; prove them with `npm run fact15:proof`. OpenClaw Telegram is explicitly disabled in `docker/openclaw/openclaw.json`.
 
 ## CodingToolAdapter (PRD §5)
 

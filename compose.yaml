@@ -87,6 +87,19 @@ services:
       retries: 30
       start_period: 5s
 
+  telegram:
+    profiles: ["telegram"]
+    build:
+      context: .
+      target: app
+    command: ["node", "--experimental-strip-types", "src/runtime/telegram.ts"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    depends_on:
+      engine:
+        condition: service_healthy
+
   # This is deliberately opt-in: a provider key belongs only to an ephemeral
   # coding delegation, never to the long-lived engine readiness process.
   coding-adapter:

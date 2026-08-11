@@ -114,6 +114,8 @@ const expectedColumns = {
   message_enqueues: ["message_id","enqueued_at"],
   message_ready_runs: ["run_id","message_id","ready_at"],
   message_consumptions: ["message_id","consumer_id","consumed_at"],
+  telegram_inbound_updates: ["update_id","run_id","message_id","received_at"],
+  telegram_outbound_deliveries: ["message_id","status","telegram_message_id","claimed_at","sent_at","failure_reason"],
   agent_tool_invocations: ["agent_id","run_id","idempotency_key","request_hash","response","created_at","updated_at"],
   agent_wake_events: ["id","run_id","agent_id","dispatch_id","lease_generation","created_at","updated_at"],
   workflow_fanout_groups: ["id","run_id","source_message_id","node_id","agent_id","agent_model","node_config","max_concurrency","created_at","updated_at"],
@@ -131,6 +133,7 @@ const expectedEnums = {
   workflow_trigger_type: ["channel","ui","cron"],
   workflow_dispatch_status: ["pending","dispatching","reconciling","active","completed","failed"],
   workflow_thread_status: ["running","paused"],
+  telegram_outbound_delivery_status: ["sending","sent","indeterminate"],
 };
 
 const requiredConstraints = [
@@ -146,6 +149,7 @@ const requiredConstraints = [
   "messages_sequence_positive","messages_token_usage_nonnegative","messages_token_usage_object",
   "message_consumer_runs_sequence_positive","message_consumptions_consumer_not_blank",
   "message_ready_runs_state_complete","schedules_exactly_one_target",
+  "telegram_outbound_deliveries_state_complete",
   "ticket_labels_ticket_label_unique","tickets_priority_range","tickets_project_number_unique",
   "workflow_runs_spec_object","workflow_runs_failure_state","workflow_runs_graph_snapshot_object",
   "workflow_runs_total_cost_nonnegative","workflow_runs_total_tokens_nonnegative",
@@ -169,6 +173,7 @@ const requiredIndexes = [
   "idx_dependencies_blocked","idx_dependencies_blocker",
   "idx_messages_run_conversation","idx_messages_ticket",
   "idx_message_ready_runs_fair","idx_message_consumptions_consumed_at",
+  "idx_telegram_inbound_updates_run","idx_telegram_outbound_deliveries_status",
   "idx_schedules_agent","idx_schedules_enabled","idx_schedules_workflow",
   "idx_ticket_labels_label","idx_tickets_assignee","idx_tickets_project",
   "idx_tickets_run_board","idx_tickets_run_frontier",
@@ -308,6 +313,9 @@ try {
       message_ready_runs_run_id_fkey: "REFERENCES message_consumer_runs(run_id) ON DELETE CASCADE",
       message_ready_runs_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
       message_consumptions_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
+      telegram_inbound_updates_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+      telegram_inbound_updates_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
+      telegram_outbound_deliveries_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
       schedules_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
       schedules_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",
       ticket_labels_label_id_fkey: "REFERENCES labels(id) ON DELETE CASCADE",

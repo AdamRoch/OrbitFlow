@@ -134,6 +134,8 @@ const expectedColumns = {
   message_enqueues: ["message_id", "enqueued_at"],
   message_ready_runs: ["run_id", "message_id", "ready_at"],
   message_consumptions: ["message_id", "consumer_id", "consumed_at"],
+  telegram_inbound_updates: ["update_id", "run_id", "message_id", "received_at"],
+  telegram_outbound_deliveries: ["message_id", "status", "telegram_message_id", "claimed_at", "sent_at", "failure_reason"],
   agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
   agent_wake_events: [
     "id",
@@ -250,6 +252,7 @@ const expectedEnums = {
     "failed",
   ],
   workflow_thread_status: ["running", "paused"],
+  telegram_outbound_delivery_status: ["sending", "sent", "indeterminate"],
 };
 
 const requiredConstraints = [
@@ -281,6 +284,7 @@ const requiredConstraints = [
   "message_consumer_runs_sequence_positive",
   "message_consumptions_consumer_not_blank",
   "message_ready_runs_state_complete",
+  "telegram_outbound_deliveries_state_complete",
   "schedules_exactly_one_target",
   "ticket_labels_ticket_label_unique",
   "tickets_priority_range",
@@ -325,6 +329,8 @@ const requiredIndexes = [
   "idx_messages_ticket",
   "idx_message_ready_runs_fair",
   "idx_message_consumptions_consumed_at",
+  "idx_telegram_inbound_updates_run",
+  "idx_telegram_outbound_deliveries_status",
   "idx_schedules_agent",
   "idx_schedules_enabled",
   "idx_schedules_workflow",
@@ -706,6 +712,12 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         message_ready_runs_message_id_fkey:
           "REFERENCES messages(id) ON DELETE RESTRICT",
         message_consumptions_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        telegram_inbound_updates_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        telegram_inbound_updates_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        telegram_outbound_deliveries_message_id_fkey:
           "REFERENCES messages(id) ON DELETE RESTRICT",
         schedules_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         schedules_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",

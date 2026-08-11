@@ -22,6 +22,7 @@ import {
   type WorkflowGraph,
   type WorkflowNode,
 } from "../workflow/graph.ts";
+import { telegramInboundForEngine } from "../telegram/adapter.ts";
 
 export type WorkflowRunStatus =
   | "pending"
@@ -1195,6 +1196,10 @@ export async function routeWorkflowMessage(
   transaction: PoolClient,
   message: MessageRow,
 ): Promise<void> {
+  if (message.type === "channel_inbound") {
+    await routeChannelInbound(transaction, message);
+    return;
+  }
   if (message.type !== "output") return;
   const runResult = await transaction.query(
     `SELECT run.*
@@ -1348,6 +1353,69 @@ export async function routeWorkflowMessage(
       "workflow_evaluation_failed",
       boundedReason(error),
     );
+  }
+}
+
+/**
+ * Channel starts remain ordinary durable bus events. The inbound row is the
+ * source message for the entry dispatch, so the runtime receives both its text
+ * handoff and its Telegram reply identity through the existing engine input.
+ */
+async function routeChannelInbound(
+  transaction: PoolClient,
+  message: MessageRow,
+): Promise<void> {
+  const runResult = await transaction.query(
+    `SELECT run.*, workflow.graph
+     FROM workflow_runs AS run
+     JOIN workflows AS workflow ON workflow.id = run.workflow_id
+     WHERE run.id = $1
+     FOR UPDATE OF run, workflow`,
+    [message.runId],
+  );
+  if (!runResult.rows[0]) throw new WorkflowStateError(`run ${message.runId} disappeared`);
+  const run = runResult.rows[0];
+  if (run.status !== "pending") return;
+
+  try {
+    const inbound = telegramInboundForEngine(message);
+    if (run.trigger_type !== "channel") {
+      throw new WorkflowGraphError("channel inbound message belongs to a non-channel run");
+    }
+    const graph = parseWorkflowGraph(run.graph);
+    const entryNode = graph.nodes.find((node) => node.id === workflowEntryNodeId(graph))!;
+    if (entryNode.config.channelBinding !== true) {
+      throw new WorkflowGraphError("channel workflow entry is not channel-bound");
+    }
+    if (message.recipient !== `agent:${entryNode.agentId}`) {
+      throw new WorkflowGraphError("channel inbound recipient does not match workflow entry agent");
+    }
+    await transaction.query(
+      `UPDATE workflow_runs
+       SET status = 'running', graph_snapshot = $2, started_at = clock_timestamp(),
+           updated_at = clock_timestamp()
+       WHERE id = $1`,
+      [message.runId, run.graph],
+    );
+    const inserted = await enqueueNode(transaction, {
+      runId: message.runId,
+      spec: asJsonObject(run.spec, "workflow run spec"),
+      node: entryNode,
+      sourceMessage: message,
+      sourceOutput: inbound,
+      inheritedTicketId: null,
+    });
+    if (inserted === 0) {
+      await transaction.query(
+        `UPDATE workflow_runs
+         SET status = 'completed', ended_at = clock_timestamp(), updated_at = clock_timestamp()
+         WHERE id = $1`,
+        [message.runId],
+      );
+    }
+  } catch (error) {
+    if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;
+    await failRun(transaction, message.runId, "channel_inbound_invalid", boundedReason(error));
   }
 }
 
