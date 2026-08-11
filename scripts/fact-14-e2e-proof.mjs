@@ -336,7 +336,26 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
 
     const outputMessages = messages.rows.filter((row) => row.type === "output");
     const handoffBriefs = outputMessages.filter((row) => row.handoff_brief && row.handoff_brief.trim());
-    assert.ok(outputMessages.length >= 1, "at least one output message");
+
+    // Phase-reconstructable handoff evidence: every completed dispatch of a
+    // required node must produce a corresponding output message with non-blank
+    // handoff_brief whose payload.dispatchId matches.
+    const requiredNodes = ["orchestrator", "planner", "implement", "test", "report"];
+    for (const nodeId of requiredNodes) {
+      if (!dispatchNodeIds.has(nodeId)) continue;
+      const nodeDispatches = dispatches.rows.filter(
+        (row) => row.status === "completed" && row.node_id === nodeId,
+      );
+      for (const disp of nodeDispatches) {
+        const matchingMsg = outputMessages.find((msg) => {
+          const p = typeof msg.payload === "string" ? JSON.parse(msg.payload) : msg.payload;
+          return String(p?.dispatchId) === String(disp.id);
+        });
+        assert.ok(matchingMsg, `output message for completed dispatch ${disp.id} (${nodeId})`);
+        assert.ok(matchingMsg.handoff_brief && matchingMsg.handoff_brief.trim(), `non-blank handoff for ${nodeId} dispatch ${disp.id}`);
+      }
+    }
+    console.error(`Output messages: ${outputMessages.length}, handoffs: ${handoffBriefs.length}`);
 
     // Distinct finalized Implementer cost event on exact DeepSeek model
     const implementerId = String(agents.find((a) => a.name === "Factory Implementer")?.id);
@@ -391,8 +410,8 @@ test("FACT-14 Software Factory end-to-end", { timeout: 900_000 }, async (_t) => 
     assert.ok(diff.includes("hello.txt"), `git diff must include hello.txt\n${diff.slice(0, 500)}`);
     const helloPath = `${runWs}/hello.txt`;
     const helloContent = readFileSync(helloPath, "utf8");
-    assert.equal(helloContent.trim(), expectContent, `hello.txt must contain exact: ${expectContent}`);
-    console.error("Workspace hello.txt:", helloContent.trim());
+    assert.equal(helloContent, expectContent, `hello.txt must contain exact: ${expectContent}`);
+    console.error("Workspace hello.txt:", JSON.stringify(helloContent));
 
     // Assert no database URL leaks in retained evidence
     const dbUrl = process.env.DATABASE_URL || "";
