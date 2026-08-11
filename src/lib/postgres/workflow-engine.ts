@@ -13,6 +13,7 @@ import {
   asJsonObject,
   evaluateGraph,
   parseWorkflowGraph,
+  workflowEntryNodeId,
   type JsonObject,
   type WorkflowGraph,
   type WorkflowNode,
@@ -510,7 +511,7 @@ export async function startWorkflowRun(
          WHERE id = $1`,
         [runId],
       );
-      const entryNode = graph.nodes.find((node) => node.id === graph.entryNodeId)!;
+      const entryNode = graph.nodes.find((node) => node.id === workflowEntryNodeId(graph))!;
       const inserted = await enqueueNode(transaction, {
         runId,
         spec: row.spec,

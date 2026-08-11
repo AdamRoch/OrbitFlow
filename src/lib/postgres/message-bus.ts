@@ -1,18 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
+import { MESSAGE_TYPES, type MessageType } from "../message-types.ts";
 
-export const MESSAGE_TYPES = [
-  "output",
-  "feedback",
-  "question",
-  "answer",
-  "channel_inbound",
-  "channel_outbound",
-  "cron_tick",
-  "system",
-] as const;
-
-export type MessageType = (typeof MESSAGE_TYPES)[number];
+export { MESSAGE_TYPES, type MessageType } from "../message-types.ts";
 export type JsonValue =
   | null
   | boolean

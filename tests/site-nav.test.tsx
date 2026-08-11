@@ -4,48 +4,46 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SiteNav } from "@/components/site-nav";
 
-const { route } = vi.hoisted(() => ({ route: { pathname: "/" } }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/monitoring" }));
 
-vi.mock("next/navigation", () => ({
-  usePathname: () => route.pathname,
-}));
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
-
-describe("SiteNav", () => {
+describe("SiteNav mobile dialog", () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(async () => {
-    route.pathname = "/";
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    await act(async () => root.render(<SiteNav />));
+    await act(async () => root.render(<><SiteNav /><main><button type="button">Covered content</button></main></>));
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
-    document.body.style.overflow = "";
   });
 
-  it("closes the mobile menu when the route changes", async () => {
-    const menuButton = () =>
-      container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Toggle menu"]',
-      )!;
+  it("contains focus, hides covered content, and returns focus to the toggle on Escape", async () => {
+    const toggle = container.querySelector<HTMLButtonElement>("button[aria-label='Toggle menu']")!;
+    await act(async () => toggle.click());
+    const dialog = container.querySelector<HTMLElement>("[role='dialog']")!;
+    const links = [...dialog.querySelectorAll<HTMLAnchorElement>("a")];
+    expect(document.querySelector("main")?.hasAttribute("inert")).toBe(true);
+    expect(document.querySelector("main")?.getAttribute("aria-hidden")).toBe("true");
+    expect(document.activeElement).toBe(links[0]);
 
-    await act(async () => menuButton().click());
-    expect(menuButton().getAttribute("aria-expanded")).toBe("true");
-    expect(document.body.style.overflow).toBe("hidden");
+    links.at(-1)!.focus();
+    await act(async () => links.at(-1)!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })));
+    expect(document.activeElement).toBe(links[0]);
+    links[0]!.focus();
+    await act(async () => links[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true })));
+    expect(document.activeElement).toBe(links.at(-1));
 
-    route.pathname = "/frontier";
-    await act(async () => root.render(<SiteNav />));
-
-    expect(menuButton().getAttribute("aria-expanded")).toBe("false");
-    expect(document.body.style.overflow).toBe("");
+    await act(async () => links[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector("[role='dialog']")).toBeNull();
+    expect(document.querySelector("main")?.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(toggle);
   });
 
   it("keeps closed mobile navigation out of the accessibility tree and Tab order", () => {
@@ -71,6 +69,9 @@ describe("SiteNav", () => {
     expect(mobileNavigation?.querySelector('a[href="/agents"]')?.textContent).toContain(
       "Agents",
     );
-    expect(mobileNavigation?.querySelectorAll("a")).toHaveLength(5);
+    expect(mobileNavigation?.querySelector('a[href="/workflows"]')?.textContent).toContain(
+      "Workflows",
+    );
+    expect(mobileNavigation?.querySelectorAll("a")).toHaveLength(7);
   });
 });

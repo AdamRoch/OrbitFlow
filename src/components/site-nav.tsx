@@ -2,14 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { UfoIcon, AlienIcon, StarIcon, CometIcon } from "@/components/icons";
+import { UfoIcon, AlienIcon, StarIcon, CometIcon, OrbitIcon, SignalIcon } from "@/components/icons";
 
 const LINKS = [
   { href: "/", label: "Tickets", Icon: StarIcon },
   { href: "/frontier", label: "Frontier", Icon: CometIcon },
+  { href: "/monitoring", label: "Monitoring", Icon: SignalIcon },
   { href: "/agents", label: "Agents", Icon: UfoIcon },
+  { href: "/workflows", label: "Workflows", Icon: OrbitIcon },
   { href: "/labels", label: "Labels", Icon: AlienIcon },
 ];
 
@@ -30,14 +32,58 @@ export function SiteNav() {
 
 function RouteSiteNav({ pathname }: { pathname: string }) {
   const [open, setOpen] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLElement>(null);
+  const restoreToggleFocus = useRef(false);
+
+  const closeMenu = () => {
+    restoreToggleFocus.current = true;
+    setOpen(false);
+  };
 
   // Lock body scroll while the overlay is open.
   useEffect(() => {
     document.body.style.overflow = open ? "hidden" : "";
+    const main = document.querySelector("main");
+    if (open && main) {
+      main.setAttribute("inert", "");
+      main.setAttribute("aria-hidden", "true");
+      const firstLink = menuRef.current?.querySelector<HTMLAnchorElement>("a");
+      firstLink?.focus();
+    }
     return () => {
       document.body.style.overflow = "";
+      main?.removeAttribute("inert");
+      main?.removeAttribute("aria-hidden");
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open && restoreToggleFocus.current) {
+      restoreToggleFocus.current = false;
+      toggleRef.current?.focus();
+    }
+  }, [open]);
+
+  const containMenuFocus = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(menuRef.current?.querySelectorAll<HTMLElement>("a[href], button:not([disabled])") ?? []);
+    if (focusable.length === 0) return;
+    const first = focusable[0]!;
+    const last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -92,6 +138,7 @@ function RouteSiteNav({ pathname }: { pathname: string }) {
 
           {/* Mobile hamburger */}
           <button
+            ref={toggleRef}
             type="button"
             aria-label="Toggle menu"
             aria-expanded={open}
@@ -110,7 +157,11 @@ function RouteSiteNav({ pathname }: { pathname: string }) {
        */}
       {open && (
         <nav
+          ref={menuRef}
+          role="dialog"
+          aria-modal="true"
           aria-label="Mobile navigation"
+          onKeyDown={containMenuFocus}
           className="fixed inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-[--background]/80 backdrop-blur-3xl md:hidden"
         >
           {LINKS.map(({ href, label, Icon }) => (

@@ -37,11 +37,11 @@ the first matching outgoing edge wins deterministically. A node with no outgoing
 edges is terminal. An outgoing edge set with no match fails the run. Cycles need
 no special case because each accepted output creates one new activation.
 
-`src/lib/workflow/graph.ts` parses and evaluates this contract without database,
-clock, runtime, or network access. FACT-8 still preserves submitted graph JSON;
-engine-specific validation happens when a run starts. The accepted graph is
-copied into `workflow_runs.graph_snapshot`, so later workflow edits cannot alter
-an active run's transitions.
+`src/lib/workflow/graph-contract.ts` validates the submitted graph without
+normalizing, projecting, or reordering it. `src/lib/workflow/graph.ts` re-exports
+that exact parser and evaluates transitions without database, clock, runtime, or
+network access. The accepted graph is copied into `workflow_runs.graph_snapshot`,
+so later workflow edits cannot alter an active run's transitions.
 
 ## Durable routing and dispatch
 
