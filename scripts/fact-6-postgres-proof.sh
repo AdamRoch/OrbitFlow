@@ -73,4 +73,4 @@ host_port="$(docker port "$container_name" 5432/tcp | sed 's/.*://')"
 export DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$database_name"
 export ORBITFACTORY_FACT6_PROOF_DATABASE="$database_name"
 
-npm run test:postgres
+node test/postgres/schema-standalone.mjs

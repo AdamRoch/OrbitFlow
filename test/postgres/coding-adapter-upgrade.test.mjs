@@ -53,14 +53,14 @@ test(`FACT-10 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
     assert.deepEqual(mainMigration.applied, Object.keys(CURRENT_MAIN_MIGRATIONS));
 
     const fact10Migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(fact10Migration.applied, ["0011-workflow-engine.sql"]);
+    assert.deepEqual(fact10Migration.applied, ["0011-workflow-engine.sql", "0012-platform-tool-idempotency.sql"]);
 
     const journal = await client.query(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
     assert.deepEqual(
       journal.rows.map((row) => row.version),
-      [...Object.keys(CURRENT_MAIN_MIGRATIONS), "0011-workflow-engine.sql"],
+      [...Object.keys(CURRENT_MAIN_MIGRATIONS), "0011-workflow-engine.sql", "0012-platform-tool-idempotency.sql"],
     );
     const columns = await client.query(
       `SELECT column_name, is_nullable
