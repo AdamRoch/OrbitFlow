@@ -31,6 +31,10 @@ reconnecting; a successful PostgreSQL LISTEN installation also emits a
 `state.resync` wake-up after listener loss. There is no stream replay log and
 a missed notification never authorizes a write.
 
+FACT-23 reserves `0014-guardrail-wake-events.sql` (FACT-21 owns `0013`). It
+adds the durable per-agent wake log the rate limiter reads; the contract lives
+in `docs/guardrails-enforcement.md`.
+
 ## Run the FACT-6 proof
 
 ```sh

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { types } from "pg";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
+import { parseAgentGuardrails } from "../guardrails.ts";
 import { insertMessage, type JsonObject, type MessageRow, type MessageType } from "../postgres/message-bus.ts";
 
 export const PLATFORM_TOOL_COMMANDS = [
@@ -47,10 +48,18 @@ interface MessageDTO {
   createdAt: string;
 }
 
+export interface BlockedToolResult {
+  blocked: true;
+  command: PlatformToolCommand;
+  message: MessageDTO;
+  replayed: boolean;
+}
+
 export type PlatformToolResult =
   | { ticket: TicketDTO; message: MessageDTO; replayed: boolean }
   | { message: MessageDTO; replayed: boolean }
-  | { tickets: TicketDTO[]; nextCursor: string | null };
+  | { tickets: TicketDTO[]; nextCursor: string | null }
+  | BlockedToolResult;
 
 export class PlatformToolError extends Error {
   readonly code: string;
@@ -307,11 +316,12 @@ async function one<R extends QueryResultRow>(client: PoolClient, sql: string, va
   return result.rows[0] ?? null;
 }
 
-async function requireAttribution(client: PoolClient, input: Attribution): Promise<void> {
-  const actor = await one<Row>(client, "SELECT id FROM agents WHERE id = $1", [input.agentId]);
+async function requireAttribution(client: PoolClient, input: Attribution): Promise<Row> {
+  const actor = await one<Row>(client, "SELECT id, guardrails FROM agents WHERE id = $1", [input.agentId]);
   if (!actor) throw new PlatformToolError("agent_not_found", "agentId does not identify an agent");
   const run = await one<Row>(client, "SELECT id FROM workflow_runs WHERE id = $1", [input.runId]);
   if (!run) throw new PlatformToolError("run_not_found", "runId does not identify a workflow run");
+  return actor;
 }
 
 async function requireTicketForRun(client: PoolClient, ticketId: string, runId: string): Promise<Row> {
@@ -458,8 +468,46 @@ async function transaction<T>(pool: Pool, operation: (client: PoolClient) => Pro
 }
 
 /**
- * FACT-13's sole command seam. Future blocked-action policy belongs before the
- * command-specific branch below; no CLI command may bypass this dispatcher.
+ * FACT-23 blocked actions are rejected before any mutation. The rejection is
+ * itself durable: one system message per first attempt, recorded through the
+ * same idempotent invocation seam, so a retry replays the rejection without
+ * appending again. The rejection message names no ticket because a blocked
+ * command has not proven its ticket attribution yet.
+ */
+async function rejectBlockedAction(
+  client: PoolClient,
+  input: InvocationInput,
+): Promise<BlockedToolResult> {
+  const message = await insertMessage(client, {
+    runId: input.runId,
+    sender: "system:guardrails",
+    recipient: "system:operators",
+    type: "system",
+    payload: {
+      code: "action_blocked",
+      message: `Rejected blocked action ${input.command} attempted by agent ${input.agentId} in run ${input.runId}.`,
+      command: input.command,
+      agentId: input.agentId,
+      runId: input.runId,
+      idempotencyKey: input.idempotencyKey,
+    },
+  });
+  return {
+    blocked: true,
+    command: input.command,
+    message: messageFromRow(message),
+    replayed: false,
+  };
+}
+
+function isBlockedToolResult(result: PlatformToolResult): result is BlockedToolResult {
+  return "blocked" in result;
+}
+
+/**
+ * FACT-13's sole command seam. FACT-23 enforces the agent's blocked-action list
+ * before the command-specific branch below; no CLI command may bypass this
+ * dispatcher.
  */
 export async function dispatchPlatformTool(
   pool: Pool,
@@ -470,15 +518,27 @@ export async function dispatchPlatformTool(
     throw new PlatformToolError("unknown_command", "command must be a supported platform tool command");
   }
   const input = parseInput(command, value);
-  return transaction(pool, async (client) => {
-    await requireAttribution(client, input);
+  const result = await transaction(pool, async (client) => {
+    const agent = await requireAttribution(client, input);
+    const { blockedActions } = parseAgentGuardrails(agent.guardrails);
+    const guarded = (operation: () => Promise<PlatformToolResult>) =>
+      blockedActions.includes(input.command)
+        ? rejectBlockedAction(client, input)
+        : operation();
     if (input.command === "list_tickets") {
-      return invoke(client, input, () => listTickets(client, input));
+      return invoke(client, input, () => guarded(() => listTickets(client, input)));
     }
-    return invoke(client, input, () => input.command === "create_ticket"
+    return invoke(client, input, () => guarded(() => input.command === "create_ticket"
       ? createTicket(client, input)
       : input.command === "update_ticket"
         ? updateTicket(client, input)
-        : postMessage(client, input));
+        : postMessage(client, input)));
   });
+  if (isBlockedToolResult(result)) {
+    throw new PlatformToolError(
+      "action_blocked",
+      `command ${result.command} is blocked by the calling agent's guardrails`,
+    );
+  }
+  return result;
 }

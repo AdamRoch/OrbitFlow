@@ -115,6 +115,7 @@ const expectedColumns = {
   message_ready_runs: ["run_id","message_id","ready_at"],
   message_consumptions: ["message_id","consumer_id","consumed_at"],
   agent_tool_invocations: ["agent_id","run_id","idempotency_key","request_hash","response","created_at","updated_at"],
+  agent_wake_events: ["id","run_id","agent_id","dispatch_id","lease_generation","created_at","updated_at"],
   workflow_fanout_groups: ["id","run_id","source_message_id","node_id","agent_id","agent_model","node_config","max_concurrency","created_at","updated_at"],
   workflow_fanout_members: ["fanout_group_id","position","ticket_id","created_at"],
   workflow_dispatches: ["id","run_id","node_id","agent_id","agent_model","ticket_id","source_message_id","fanout_group_id","status","input","idempotency_key","attempt_count","lease_generation","runtime_generation","lease_owner","lease_expires_at","runtime_session_id","output_message_id","reconciliation_reason","failure_reason","created_at","updated_at"],
@@ -133,7 +134,8 @@ const expectedEnums = {
 };
 
 const requiredConstraints = [
-  "agent_skills_agent_skill_unique","agents_channel_binding_object","agents_guardrails_object",
+  "agent_skills_agent_skill_unique","agent_wake_events_lease_generation_positive",
+  "agent_wake_events_start_unique","agents_channel_binding_object","agents_guardrails_object",
   "agents_interaction_rules_object","agents_memory_object","agents_openclaw_ref_unique",
   "agent_tool_invocations_hash_format","agent_tool_invocations_key_not_blank",
   "agent_tool_invocations_response_object","cost_events_cache_read_tokens_nonnegative",
@@ -162,6 +164,7 @@ const requiredConstraints = [
 
 const requiredIndexes = [
   "idx_agent_skills_skill","idx_agent_tool_invocations_run_id",
+  "idx_agent_wake_events_agent_window",
   "idx_cost_events_run_agent","idx_cost_events_run_ordered",
   "idx_dependencies_blocked","idx_dependencies_blocker",
   "idx_messages_run_conversation","idx_messages_ticket",
@@ -290,6 +293,9 @@ try {
       agent_skills_skill_id_fkey: "REFERENCES skills(id) ON DELETE CASCADE",
       agent_tool_invocations_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
       agent_tool_invocations_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+      agent_wake_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
+      agent_wake_events_dispatch_id_fkey: "REFERENCES workflow_dispatches(id) ON DELETE RESTRICT",
+      agent_wake_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
       cost_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
       cost_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
       dependencies_blocked_ticket_fk: "REFERENCES tickets(id, project_id) ON DELETE CASCADE",
@@ -368,7 +374,7 @@ try {
     const agent = await client.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Implementer', 'worker', 'Implement the assigned ticket.', 'test/model', '{"cost_limit": 5}', '{"autonomy": "high"}', '{"facts": []}') RETURNING id`);
     const skill = await client.query(`INSERT INTO skills (name, description, procedure) VALUES ('testing', 'Prove behavior', 'Run the contract tests.') RETURNING id`);
     await client.query("INSERT INTO agent_skills (agent_id, skill_id) VALUES ($1, $2)", [agent.rows[0].id, skill.rows[0].id]);
-    const workflow = await client.query(`INSERT INTO workflows (name, description, graph) VALUES ('Software Factory', 'Test workflow', '{"nodes": [], "edges": []}') RETURNING id`);
+    const workflow = await client.query(`INSERT INTO workflows (name, description, graph) VALUES ('Schema proof workflow', 'Test workflow', '{"nodes": [], "edges": []}') RETURNING id`);
     const run = await client.query(`INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, started_at) VALUES ($1, 'running', 'ui', '{"task": "Build FACT-6"}', now()) RETURNING id`, [workflow.rows[0].id]);
     const otherRun = await client.query(`INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'cron', '{"task": "Other run"}') RETURNING id`, [workflow.rows[0].id]);
 

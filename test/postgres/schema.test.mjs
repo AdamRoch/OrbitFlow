@@ -135,6 +135,15 @@ const expectedColumns = {
   message_ready_runs: ["run_id", "message_id", "ready_at"],
   message_consumptions: ["message_id", "consumer_id", "consumed_at"],
   agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
+  agent_wake_events: [
+    "id",
+    "run_id",
+    "agent_id",
+    "dispatch_id",
+    "lease_generation",
+    "created_at",
+    "updated_at",
+  ],
   workflow_fanout_groups: [
     "id",
     "run_id",
@@ -245,6 +254,8 @@ const expectedEnums = {
 
 const requiredConstraints = [
   "agent_skills_agent_skill_unique",
+  "agent_wake_events_lease_generation_positive",
+  "agent_wake_events_start_unique",
   "agents_channel_binding_object",
   "agents_guardrails_object",
   "agents_interaction_rules_object",
@@ -305,6 +316,7 @@ const requiredConstraints = [
 const requiredIndexes = [
   "idx_agent_skills_skill",
   "idx_agent_tool_invocations_run_id",
+  "idx_agent_wake_events_agent_window",
   "idx_cost_events_run_agent",
   "idx_cost_events_run_ordered",
   "idx_dependencies_blocked",
@@ -672,6 +684,10 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         agent_skills_skill_id_fkey: "REFERENCES skills(id) ON DELETE CASCADE",
         agent_tool_invocations_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         agent_tool_invocations_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        agent_wake_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
+        agent_wake_events_dispatch_id_fkey:
+          "REFERENCES workflow_dispatches(id) ON DELETE RESTRICT",
+        agent_wake_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         cost_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         cost_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         dependencies_blocked_ticket_fk:
@@ -825,7 +841,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       );
       const workflow = await client.query(
         `INSERT INTO workflows (name, description, graph)
-         VALUES ('Software Factory', 'Test workflow', '{"nodes": [], "edges": []}')
+         VALUES ('Schema proof workflow', 'Test workflow', '{"nodes": [], "edges": []}')
          RETURNING id`,
       );
       const run = await client.query(

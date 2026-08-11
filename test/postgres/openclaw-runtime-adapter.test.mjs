@@ -279,6 +279,11 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.match(firstAgentRequest.message, /Implement only the assigned runtime ticket/);
     assert.match(firstAgentRequest.message, /Ticket memory one/);
     assert.match(firstAgentRequest.message, /Upstream verified the schema/);
+    assert.match(firstAgentRequest.message, /# Blocked actions/);
+    assert.match(
+      firstAgentRequest.message,
+      /No platform tool actions are blocked for this agent\./,
+    );
     assert.match(firstAgentRequest.message, /edited-before-wake/);
 
     await pool.query(
@@ -340,6 +345,63 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       total_tokens: 42,
       total_cost: "0.00420000",
     });
+  });
+
+  await t.test("lists blocked actions in the wake prompt when configured, omits when empty", async () => {
+    const blocked = await pool.query(
+      `INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory)
+       VALUES ($1, $2, $3, $4, $5, '{}', '{}')
+       RETURNING id::text`,
+      [
+        "Blocker",
+        "blocked agent",
+        "You are blocked from creating tickets and posting messages.",
+        "openrouter/openai/gpt-4.1-mini",
+        JSON.stringify({ blockedActions: ["create_ticket", "post_message"] }),
+      ],
+    );
+    const blockedAgentId = blocked.rows[0].id;
+    const blockedRun = await createRun("blocked-prompt-run");
+    const blockedTicket = await pool.query(
+      `INSERT INTO tickets (
+         number, identifier, project_id, run_id, title, description,
+         acceptance_criteria, status, priority, assignee_agent_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress', 3, $8)
+       RETURNING id::text`,
+      [
+        99,
+        "RUN-99",
+        projectId,
+        blockedRun,
+        "Blocked prompt ticket",
+        "Prove blocked actions in prompt",
+        "The prompt lists blocked actions",
+        blockedAgentId,
+      ],
+    );
+    await resetPlan([
+      { mode: "success", output: completedOutput("blocked-prompt-run") },
+    ]);
+    await adapter.wakeAgent({
+      runId: blockedRun,
+      agentId: blockedAgentId,
+      invocationId: "blocked-prompt-wake",
+      nodeId: "work",
+      nodeSystemPrompt: "Check the blocked actions in your prompt.",
+      ticketIds: [blockedTicket.rows[0].id],
+    });
+    const blockedRequest = (await requests())
+      .filter((request) => request.command === "agent")
+      .at(-1);
+    assert.match(blockedRequest.message, /# Blocked actions/);
+    assert.match(
+      blockedRequest.message,
+      /The platform tool surface rejects these actions for this agent; never attempt them:/,
+    );
+    assert.match(blockedRequest.message, /- create_ticket/);
+    assert.match(blockedRequest.message, /- post_message/);
+    assert.doesNotMatch(blockedRequest.message, /- update_ticket/);
+    assert.doesNotMatch(blockedRequest.message, /No platform tool actions are blocked/);
   });
 
   await t.test("retries malformed structured output exactly once", async () => {

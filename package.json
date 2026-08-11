@@ -28,6 +28,8 @@
     "fact10:proof": "bash scripts/fact-10-workflow-engine-proof.sh",
     "fact11:proof": "bash scripts/fact-11-runtime-adapter-proof.sh",
     "fact22:proof": "bash scripts/fact-22-monitoring-proof.sh",
+    "test:guardrails": "node --experimental-strip-types --test test/postgres/guardrails.test.mjs",
+    "fact23:proof": "bash scripts/fact-23-guardrails-proof.sh",
     "fact21:proof": "bash scripts/fact-21-workflow-templates-proof.sh",
     "test:templates": "node --experimental-strip-types --test test/postgres/workflow-templates.test.mjs",
     "test:state-stream": "node --experimental-strip-types --test test/postgres/state-stream.test.mjs",
