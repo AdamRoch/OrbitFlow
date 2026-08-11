@@ -134,6 +134,7 @@ const expectedColumns = {
   message_enqueues: ["message_id", "enqueued_at"],
   message_ready_runs: ["run_id", "message_id", "ready_at"],
   message_consumptions: ["message_id", "consumer_id", "consumed_at"],
+  agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
   workflow_fanout_groups: [
     "id",
     "run_id",
@@ -249,6 +250,9 @@ const requiredConstraints = [
   "agents_interaction_rules_object",
   "agents_memory_object",
   "agents_openclaw_ref_unique",
+  "agent_tool_invocations_hash_format",
+  "agent_tool_invocations_key_not_blank",
+  "agent_tool_invocations_response_object",
   "cost_events_cache_read_tokens_nonnegative",
   "cost_events_cache_write_tokens_nonnegative",
   "cost_events_computed_cost_nonnegative",
@@ -300,6 +304,7 @@ const requiredConstraints = [
 
 const requiredIndexes = [
   "idx_agent_skills_skill",
+  "idx_agent_tool_invocations_run_id",
   "idx_cost_events_run_agent",
   "idx_cost_events_run_ordered",
   "idx_dependencies_blocked",
@@ -353,6 +358,38 @@ async function waitForAdvisoryWait(observer, applicationName) {
 
 async function migrateQuietly(options) {
   return migratePostgres({ ...options, log: () => {} });
+}
+
+async function readPlatformToolInvocationIndexKeys(client) {
+  const result = await client.query(`
+    SELECT key_column.ordinality::integer AS ordinality,
+           key_column.attribute_number::integer AS attribute_number,
+           attribute.attname AS attribute_name
+    FROM pg_index AS index_metadata
+    JOIN pg_class AS index_class ON index_class.oid = index_metadata.indexrelid
+    JOIN pg_class AS table_class ON table_class.oid = index_metadata.indrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace
+    CROSS JOIN LATERAL unnest(index_metadata.indkey)
+      WITH ORDINALITY AS key_column(attribute_number, ordinality)
+    LEFT JOIN pg_attribute AS attribute
+      ON attribute.attrelid = table_class.oid
+     AND attribute.attnum = key_column.attribute_number
+     AND NOT attribute.attisdropped
+    WHERE namespace.nspname = 'public'
+      AND table_class.relname = 'agent_tool_invocations'
+      AND index_class.relname = 'idx_agent_tool_invocations_run_id'
+      AND index_metadata.indisvalid
+    ORDER BY key_column.ordinality
+  `);
+  return result.rows;
+}
+
+function assertPlatformToolInvocationRunIndex(keys) {
+  assert.deepEqual(keys, [{
+    ordinality: 1,
+    attribute_number: 2,
+    attribute_name: 'run_id',
+  }]);
 }
 
 test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
@@ -633,6 +670,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       const expectedForeignKeys = {
         agent_skills_agent_id_fkey: "REFERENCES agents(id) ON DELETE CASCADE",
         agent_skills_skill_id_fkey: "REFERENCES skills(id) ON DELETE CASCADE",
+        agent_tool_invocations_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
+        agent_tool_invocations_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         cost_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         cost_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         dependencies_blocked_ticket_fk:
@@ -703,6 +742,38 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       `);
       const indexNames = new Set(indexes.rows.map((row) => row.indexname));
       for (const name of requiredIndexes) assert.ok(indexNames.has(name), name);
+
+      assertPlatformToolInvocationRunIndex(
+        await readPlatformToolInvocationIndexKeys(client),
+      );
+
+      await t.test("rejects an expression-first invocation run index", async () => {
+        await client.query("DROP INDEX idx_agent_tool_invocations_run_id");
+        try {
+          await client.query(`
+            CREATE INDEX idx_agent_tool_invocations_run_id
+              ON agent_tool_invocations ((lower(idempotency_key)), run_id)
+          `);
+          const expressionFirstKeys = await readPlatformToolInvocationIndexKeys(client);
+          assert.deepEqual(expressionFirstKeys, [
+            { ordinality: 1, attribute_number: 0, attribute_name: null },
+            { ordinality: 2, attribute_number: 2, attribute_name: "run_id" },
+          ]);
+          assert.throws(
+            () => assertPlatformToolInvocationRunIndex(expressionFirstKeys),
+            assert.AssertionError,
+          );
+        } finally {
+          await client.query("DROP INDEX IF EXISTS idx_agent_tool_invocations_run_id");
+          await client.query(`
+            CREATE INDEX idx_agent_tool_invocations_run_id
+              ON agent_tool_invocations(run_id)
+          `);
+        }
+        assertPlatformToolInvocationRunIndex(
+          await readPlatformToolInvocationIndexKeys(client),
+        );
+      });
 
       const triggers = await client.query(`
         SELECT tgname
