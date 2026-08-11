@@ -157,6 +157,14 @@ test("FACT-12 production coding-tool contract", async (t) => {
           computed_cost: "0.25000000",
         },
       ]);
+      const runTotals = await pool.query(
+        "SELECT total_tokens::text, total_cost::text FROM workflow_runs WHERE id = $1",
+        [runId],
+      );
+      assert.deepEqual(runTotals.rows[0], {
+        total_tokens: "25",
+        total_cost: "0.37500000",
+      });
     });
 
     await t.test("keeps omitted usage unknown and explicit zero distinct", async () => {
@@ -185,6 +193,14 @@ test("FACT-12 production coding-tool contract", async (t) => {
           computed_cost: null,
         },
       ]);
+      const runTotals = await pool.query(
+        "SELECT total_tokens::text, total_cost::text FROM workflow_runs WHERE id = $1",
+        [runId],
+      );
+      assert.deepEqual(runTotals.rows[0], {
+        total_tokens: "0",
+        total_cost: "0.00000000",
+      });
     });
 
     await t.test("exposes the validated tool contract through the executable CLI", async () => {

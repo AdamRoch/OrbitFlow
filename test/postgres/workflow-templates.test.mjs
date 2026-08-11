@@ -84,6 +84,22 @@ test("FACT-21 clean install: seeds both templates on a fresh database", async ()
     assert.ok(skillNames.includes("Writing"), "Writing skill exists");
     assert.equal(skills.rows.length, 8, "total of 8 skills across both templates");
 
+    // The 0015 forward migration strengthens the seeded Factory Implementer
+    // prompt (exact-original replacement); fresh installs end on the shipped prompt.
+    const implementer = await client.query(
+      "SELECT system_prompt FROM agents WHERE name = 'Factory Implementer'",
+    );
+    assert.match(
+      implementer.rows[0].system_prompt,
+      /delegate_coding_task/,
+      "shipped implementer prompt requires coding-tool delegation",
+    );
+    assert.match(
+      implementer.rows[0].system_prompt,
+      /start_run_workspace/,
+      "shipped implementer prompt requires workspace preparation",
+    );
+
     // Skills are attached to agents
     const attachments = await client.query(
       "SELECT COUNT(*)::int AS count FROM agent_skills",
@@ -203,6 +219,7 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
     assert.deepEqual(fact21Migration.applied, [
       "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
+      "0015-factory-implementer-prompt.sql",
     ]);
 
     // Verify journal
@@ -213,7 +230,19 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
       ...Object.keys(CURRENT_MAIN_MIGRATIONS),
       "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
+      "0015-factory-implementer-prompt.sql",
     ]);
+
+    // Upgrade path: the 0013-seeded implementer prompt (untouched original) was
+    // replaced by the strengthened 0015 prompt.
+    const upgradedImplementer = await client.query(
+      "SELECT system_prompt FROM agents WHERE name = 'Factory Implementer'",
+    );
+    assert.match(
+      upgradedImplementer.rows[0].system_prompt,
+      /delegate_coding_task/,
+      "0015 replaces the exact original seeded implementer prompt on upgrade",
+    );
 
     // User data is preserved
     const userAgent = await client.query("SELECT name FROM agents WHERE id = $1", [existing.rows[0].id]);
@@ -295,6 +324,7 @@ test("FACT-21 no-overwrite: pre-existing same-name agents and skills keep their 
     assert.deepEqual(fact21Migration.applied, [
       "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
+      "0015-factory-implementer-prompt.sql",
     ]);
 
     // Same-name agents preserved their custom values (not overwritten)

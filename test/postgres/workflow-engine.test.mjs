@@ -659,6 +659,99 @@ test("FACT-10 durable workflow engine", async (t) => {
         message: "deterministic runtime failure",
       });
     });
+
+    await t.test("transfers ticket ownership planner→implement only on real dispatch insert", async () => {
+      const graph = {
+        nodes: [
+          { id: "planner", agentId: agents.worker, config: { entry: true } },
+          { id: "implement", agentId: agents.implement, config: { fanOut: { maxConcurrency: 2 } } },
+        ],
+        edges: [
+          { source: "planner", target: "implement", condition: { operator: "always" } },
+        ],
+      };
+      const workflowId = await createWorkflow(graph);
+      const run = await createWorkflowRun(pool, {
+        workflowId,
+        triggerType: "ui",
+        spec: { objective: "ownership transfer proof" },
+      });
+
+      // Two open tickets owned by the planner's agent.
+      const ticketIds = [];
+      for (const title of ["transfer one", "transfer two"]) {
+        ticketCounter += 1;
+        const result = await client.query(
+          `INSERT INTO tickets (
+             number, identifier, project_id, run_id, title, status, priority, assignee_agent_id
+           ) VALUES ($1, $2, $3, $4, $5, 'todo', 1, $6)
+           RETURNING id`,
+          [ticketCounter, `T-${ticketCounter}`, project.rows[0].id, run.id, title, agents.worker],
+        );
+        ticketIds.push(result.rows[0].id);
+      }
+
+      await startWorkflowRun(pool, run.id);
+      const runtime = new DeterministicRuntimeAdapter();
+      await dispatchNextWorkflowNode(pool, runtime, { workerId: "transfer-worker" });
+      await publishOutput(await dispatchFor(run.id, "planner"), { plan: "ready" });
+
+      // Fan-out inserted one dispatch per ticket and transferred ownership
+      // from the planner's agent to the implement node's agent.
+      const transferred = await client.query(
+        "SELECT id, assignee_agent_id FROM tickets WHERE run_id = $1 ORDER BY id",
+        [run.id],
+      );
+      assert.equal(transferred.rows.length, 2);
+      for (const row of transferred.rows) {
+        assert.equal(
+          String(row.assignee_agent_id),
+          String(agents.implement),
+          "ownership transferred to the implement node agent",
+        );
+      }
+      const implDispatches = await client.query(
+        "SELECT count(*)::int AS count FROM workflow_dispatches WHERE run_id = $1 AND node_id = 'implement'",
+        [run.id],
+      );
+      assert.equal(implDispatches.rows[0].count, 2, "two implement dispatches materialized");
+
+      // Replay/no-op: re-materialization without a new insert must not clobber
+      // a reassignment that happened after the original dispatch.
+      await client.query(
+        "UPDATE tickets SET assignee_agent_id = $2 WHERE id = $1",
+        [ticketIds[0], agents.worker],
+      );
+      await resumeWorkflowThread(pool, run.id, ticketIds[0]);
+      const afterReplay = await client.query(
+        "SELECT assignee_agent_id FROM tickets WHERE id = $1",
+        [ticketIds[0]],
+      );
+      assert.equal(
+        String(afterReplay.rows[0].assignee_agent_id),
+        String(agents.worker),
+        "replay without a new insert leaves the reassignment untouched",
+      );
+      const replayDispatches = await client.query(
+        "SELECT count(*)::int AS count FROM workflow_dispatches WHERE run_id = $1 AND node_id = 'implement'",
+        [run.id],
+      );
+      assert.equal(replayDispatches.rows[0].count, 2, "replay inserted no new dispatch");
+
+      // A genuinely new ticket-scoped dispatch (pause deletes the pending one,
+      // resume re-materializes) transfers ownership again.
+      await pauseWorkflowThread(pool, run.id, ticketIds[0], "reassignment check");
+      await resumeWorkflowThread(pool, run.id, ticketIds[0]);
+      const afterReinsert = await client.query(
+        "SELECT assignee_agent_id FROM tickets WHERE id = $1",
+        [ticketIds[0]],
+      );
+      assert.equal(
+        String(afterReinsert.rows[0].assignee_agent_id),
+        String(agents.implement),
+        "a real re-inserted dispatch transfers ownership again",
+      );
+    });
   } finally {
     await Promise.all([client.end(), pool.end()]);
   }

@@ -247,13 +247,13 @@ if (arguments_[0] === "agent") {
   }
 
   const sessionKey = `agent:${agentId}:explicit:${requestedSessionId}`;
-  const internalSessionId = action.sessionId ?? `internal-${requestedSessionId}`;
   const sessionsPath = sessionsPathFor(agentId);
+  const defaultSessionId = action.sessionId ?? requestedSessionId;
   const sessions = await readJson(sessionsPath, []);
   const otherSessions = sessions.filter((session) => session.key !== sessionKey);
   otherSessions.push({
     key: sessionKey,
-    sessionId: internalSessionId,
+    sessionId: defaultSessionId,
     agentId,
     updatedAt: Date.now(),
   });
@@ -285,7 +285,7 @@ if (arguments_[0] === "agent") {
           lastCallUsage: action.lastCallUsage ?? { input: 3, output: 2, total: 5 },
           provider: Object.hasOwn(action, "provider") ? action.provider : "openrouter",
           model: action.model ?? "openrouter/openai/gpt-4.1-mini",
-          sessionId: action.reportedSessionId ?? internalSessionId,
+          sessionId: action.reportedSessionId ?? defaultSessionId,
         },
       },
     },

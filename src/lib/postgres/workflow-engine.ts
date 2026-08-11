@@ -294,7 +294,17 @@ async function insertDispatch(
       dispatchKey(input.runId, input.sourceMessageId, input.node.id, input.ticketId),
     ],
   );
-  return result.rowCount ?? 0;
+  const inserted = result.rowCount ?? 0;
+  if (inserted === 1 && input.ticketId !== null) {
+    await transaction.query(
+      `UPDATE tickets
+       SET assignee_agent_id = $3, updated_at = now()
+       WHERE id = $1 AND run_id = $2
+         AND assignee_agent_id IS DISTINCT FROM $3`,
+      [input.ticketId, input.runId, input.node.agentId],
+    );
+  }
+  return inserted;
 }
 
 async function materializeFanoutCapacity(

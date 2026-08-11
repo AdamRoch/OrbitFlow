@@ -37,17 +37,31 @@ export function createCostEventStore({ pool } = {}) {
 
     try {
       const result = await pool.query(
-        `INSERT INTO cost_events (
-           run_id,
-           agent_id,
-           model,
-           tokens_in,
-           tokens_out,
-           computed_cost,
-           cache_read_tokens,
-           cache_write_tokens
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id::text AS id`,
+        `WITH inserted AS (
+           INSERT INTO cost_events (
+             run_id,
+             agent_id,
+             model,
+             tokens_in,
+             tokens_out,
+             computed_cost,
+             cache_read_tokens,
+             cache_write_tokens
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id, tokens_in, tokens_out, computed_cost
+         )
+         UPDATE workflow_runs
+         SET total_tokens = total_tokens + COALESCE(
+               (SELECT tokens_in + tokens_out FROM inserted),
+               0
+             ),
+             total_cost = total_cost + COALESCE(
+               (SELECT computed_cost FROM inserted),
+               0
+             ),
+             updated_at = now()
+         WHERE id = $1
+         RETURNING (SELECT id::text FROM inserted) AS id`,
         [
           normalizedRunId,
           normalizedAgentId,

@@ -1,0 +1,524 @@
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import pg from "pg";
+import { migratePostgres } from "../scripts/migrate-postgres.mjs";
+import {
+  createWorkflowRun,
+  getWorkflowRun,
+  startWorkflowEngine,
+  startWorkflowRun,
+} from "../src/lib/postgres/workflow-engine.ts";
+import { OpenClawRuntimeAdapter } from "../src/lib/runtime/openclaw.ts";
+import { OpenClawEngineAdapter } from "../src/lib/runtime/engine-adapter.ts";
+
+const { Pool } = pg;
+
+function projectBin() {
+  return path.resolve(fileURLToPath(new URL("..", import.meta.url)), "bin");
+}
+
+function pendingDir() {
+  return process.env.ORBITFLOW_FACT14_PENDING_DIR || tmpdir();
+}
+
+const bin = projectBin();
+const agentTool = path.join(bin, "orbit-agent-tools.mjs");
+const codingTool = path.join(bin, "orbit-coding-tool.mjs");
+const codingModel = process.env.ORBITFLOW_OPENCODE_MODEL || process.env.ORBITFLOW_FACT14_MODEL || "openrouter/deepseek/deepseek-v4-flash";
+
+// The proof must run against the shipped template prompt from
+// db/migrations/0015-factory-implementer-prompt.sql — never a proof-only
+// override. Keep this constant in sync with that migration.
+const shippedImplementerPrompt = [
+  "You are a Software Factory implementer. Follow this exact workflow for every ticket:",
+  "",
+  "1. Read the ticket. Use list_tickets to see your assigned work.",
+  "2. Call start_run_workspace to prepare the coding workspace.",
+  "3. Call delegate_coding_task with a clear task description. The task must describe exactly what files to create or modify. Wait for the tool to finish before continuing.",
+  "4. NEVER pretend a tool ran. If you write files yourself instead of calling the coding tool, the work is invalid.",
+  "5. After the coding tool finishes, call update_ticket to mark the ticket done.",
+  "6. Produce the fixed JSON output contract with your handoff brief summarizing what was done.",
+  "",
+  "Key rule: you must call delegate_coding_task for every implementation ticket. Do not output the file content yourself.",
+].join("\n");
+
+function workspaceToolsFor(agentName, nodeId, projectId, agentId, runId) {
+  const dbAlias = "ORBITFLOW_PLATFORM_DATABASE_URL";
+  const databaseContract = [
+    `${dbAlias} is already set to the real disposable proof database.`,
+    `Never assign, export, replace, or invent a value for ${dbAlias}.`,
+    `Use the exact DATABASE_URL=\"$${dbAlias}\" prefix shown below.`,
+  ];
+  if (nodeId === "report") return [
+    `# Tools for Reporter`,
+    `Do not call tools, execute commands, modify tickets, or modify files, even if the upstream handoff reports rejection.`,
+    `Summarize the completed workflow from the upstream handoff.`,
+  ].join("\n");
+  if (agentName === "Factory Orchestrator") return [
+    `# Tools for Orchestrator`,
+    ...databaseContract,
+    `You must create exactly one implementation ticket with create_ticket before returning the handoff.`,
+    `Do not inspect, create, or modify workspace files; implementation belongs to the implementer.`,
+    `If create_ticket fails, report the failure. Never implement the ticket yourself.`,
+    `Use \`node ${agentTool}\` with a single JSON argument.`,
+    `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
+    ``,
+    `### create_ticket`,
+    `DATABASE_URL="$${dbAlias}" node ${agentTool} create_ticket '{"agentId":"${agentId}","runId":"${runId}","projectId":"${projectId}","title":"...","description":"...","status":"todo","priority":1,"idempotencyKey":"orch-create-${agentId}"}'`,
+    ``,
+    `### list_tickets`,
+    `DATABASE_URL="$${dbAlias}" node ${agentTool} list_tickets '{"agentId":"${agentId}","runId":"${runId}","idempotencyKey":"orch-list-${agentId}"}'`,
+  ].join("\n");
+  if (agentName === "Factory Planner") return [
+    `# Tools for Planner`,
+    ...databaseContract,
+    `The orchestrator already created the one ticket needed for this trivial proof. List it and hand it off; do not create a duplicate.`,
+    `Do not inspect, create, or modify workspace files; implementation belongs to the implementer.`,
+    `Use \`node ${agentTool}\` with a single JSON argument.`,
+    `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
+    ``,
+    `### create_ticket`,
+    `DATABASE_URL="$${dbAlias}" node ${agentTool} create_ticket '{"agentId":"${agentId}","runId":"${runId}","projectId":"${projectId}","title":"...","description":"...","status":"todo","priority":1,"idempotencyKey":"plan-create-${agentId}"}'`,
+    ``,
+    `### list_tickets`,
+    `DATABASE_URL="$${dbAlias}" node ${agentTool} list_tickets '{"agentId":"${agentId}","runId":"${runId}","idempotencyKey":"plan-list-${agentId}"}'`,
+  ].join("\n");
+  if (agentName === "Factory Implementer") return [
+    `# Tools for Implementer`,
+    ...databaseContract,
+    `Your agentId is ${agentId}, runId is ${runId}, projectId is ${projectId}.`,
+    ``,
+    `### list_tickets`,
+    `DATABASE_URL="$${dbAlias}" node ${agentTool} list_tickets '{"agentId":"${agentId}","runId":"${runId}","idempotencyKey":"impl-list-${agentId}"}'`,
+    ``,
+    `### update_ticket`,
+    `DATABASE_URL="$${dbAlias}" node ${agentTool} update_ticket '{"agentId":"${agentId}","runId":"${runId}","ticketId":"<id>","expectedUpdatedAt":"<date>","status":"done","idempotencyKey":"impl-update-${agentId}"}'`,
+    ``,
+    `### start_run_workspace`,
+    `echo '{"command":"start_run_workspace","runId":"${runId}"}' | DATABASE_URL="$${dbAlias}" ORBITFLOW_WORKSPACE_ROOT=$ORBITFLOW_WORKSPACE_ROOT node ${codingTool}`,
+    ``,
+    `### delegate_coding_task`,
+    `echo '{"command":"delegate_coding_task","task":"<task>","workspace":"$ORBITFLOW_WORKSPACE_ROOT/run-${runId}"}' | DATABASE_URL="$${dbAlias}" ORBITFLOW_RUN_ID=${runId} ORBITFLOW_AGENT_ID=${agentId} ORBITFLOW_WORKSPACE_ROOT=$ORBITFLOW_WORKSPACE_ROOT node ${codingTool}`,
+  ].join("\n");
+  if (agentName === "Factory Tester") return [
+    `# Tools for Tester`,
+    `The implementation workspace is $ORBITFLOW_WORKSPACE_ROOT/run-${runId}.`,
+    `Do not inspect your OpenClaw agent workspace; it is not the implementation workspace.`,
+    `Use exec to verify $ORBITFLOW_WORKSPACE_ROOT/run-${runId}/hello.txt exists and contains exactly Hello from OrbitFlow Software Factory!`,
+    `If it matches, return artifact {"verdict":"approved"} and an approved handoff. Otherwise return artifact {"verdict":"rejected"} and explain the mismatch.`,
+  ].join("\n");
+  return null;
+}
+
+async function startGateway(runtimeRoot, port) {
+  const stateDir = path.join(runtimeRoot, "state");
+  const homeDir = path.join(runtimeRoot, "home");
+  await mkdir(homeDir, { recursive: true, mode: 0o700 });
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+
+  const model = process.env.ORBITFLOW_FACT14_MODEL || "openrouter/deepseek/deepseek-v4-flash";
+  const gwEnv = { ...process.env, OPENCLAW_STATE_DIR: stateDir, HOME: homeDir, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY, OPENCLAW_DISABLE_BONJOUR: "1" };
+
+  const setPort = spawn("openclaw", ["config", "set", "gateway.port", String(port), "--strict-json"], { env: gwEnv, stdio: "ignore" });
+  const portExit = await new Promise((resolve) => setPort.once("close", resolve));
+  if (portExit !== 0) throw new Error(`config set gateway.port exited ${portExit}`);
+
+  for (const [configPath, value] of [
+    ["tools.allow", ["exec"]],
+    ["tools.exec", { host: "gateway", security: "full", ask: "off" }],
+  ]) {
+    const configure = spawn(
+      "openclaw",
+      ["config", "set", configPath, JSON.stringify(value), "--strict-json"],
+      { env: gwEnv, stdio: "ignore" },
+    );
+    const configureExit = await new Promise((resolve) => configure.once("close", resolve));
+    if (configureExit !== 0) throw new Error(`config set ${configPath} exited ${configureExit}`);
+  }
+
+  const setModel = spawn("openclaw", ["models", "set", model], { env: gwEnv, stdio: "ignore" });
+  const modelExit = await new Promise((resolve) => setModel.once("close", resolve));
+  if (modelExit !== 0) throw new Error(`models set ${model} exited ${modelExit}`);
+
+  // Bounded output-token budget scoped to the exact selected model. Pinned
+  // OpenClaw extra-params-DFVfEeA7.js resolveExtraParams merges
+  // agents.defaults.models["<provider>/<modelId>"].params and passes a numeric
+  // maxTokens into the provider request; this conserves limited OpenRouter credit.
+  const maxOutputTokens = process.env.ORBITFLOW_FACT14_MAX_OUTPUT_TOKENS || "4096";
+  const modelCapPath = `agents.defaults.models["${model}"].params.maxTokens`;
+  const setBudget = spawn("openclaw", ["config", "set", modelCapPath, maxOutputTokens, "--strict-json"], { env: gwEnv, stdio: "ignore" });
+  const budgetExit = await new Promise((resolve) => setBudget.once("close", resolve));
+  if (budgetExit !== 0) throw new Error(`config set ${modelCapPath} exited ${budgetExit}`);
+
+  // Assert the disposable proof HOME resolves the exact model cap before gateway start.
+  const getBudget = spawn("openclaw", ["config", "get", modelCapPath], { env: gwEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let budgetOut = "";
+  getBudget.stdout.setEncoding("utf8");
+  getBudget.stdout.on("data", (d) => { budgetOut += d; });
+  const getBudgetExit = await new Promise((resolve) => getBudget.once("close", resolve));
+  if (getBudgetExit !== 0) throw new Error(`config get ${modelCapPath} exited ${getBudgetExit}`);
+  if (Number(budgetOut.trim()) !== Number(maxOutputTokens)) {
+    throw new Error(`model-scoped maxTokens mismatch: expected ${maxOutputTokens}, config get returned ${budgetOut.trim()}`);
+  }
+
+  const diag = [];
+  const child = spawn("openclaw", [
+    "gateway", "--allow-unconfigured", "--auth", "none", "--bind", "loopback", "--port", String(port),
+  ], {
+    env: gwEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (d) => { diag.push(d); });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (d) => { diag.push(d); });
+  child.once("close", (code) => { diag.push(`\nCLOSE: ${code}\n`); });
+
+  return { child, stateDir, homeDir, model, getDiag: () => diag.join("") };
+}
+
+async function waitForGateway(port, timeoutMs = 60_000) {
+  const healthUrl = `http://127.0.0.1:${port}/readyz`;
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "";
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(healthUrl);
+      if (r.ok) return;
+      lastError = `HTTP ${r.status}`;
+    } catch (e) {
+      lastError = e.message;
+    }
+    await delay(500);
+  }
+  throw new Error(`Gateway did not become ready on port ${port}: ${lastError}`);
+}
+
+test("FACT-14 Software Factory end-to-end", { timeout: 1_200_000 }, async (_t) => {
+  const databaseUrl = process.env.DATABASE_URL;
+  assert.ok(databaseUrl, "DATABASE_URL must point to the disposable proof database");
+
+  const pool = new Pool({ connectionString: databaseUrl, max: 8 });
+  const evidence = pendingDir();
+  let gatewayProcess = null;
+
+  try {
+    const client = await pool.connect();
+    try {
+      const identity = await client.query("SELECT current_database() AS name");
+      assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT14_PROOF_DATABASE);
+    } finally {
+      client.release();
+    }
+
+    await migratePostgres({ databaseUrl, log: () => {} });
+
+    const workflowResult = await pool.query(
+      `SELECT id, graph FROM workflows WHERE name = 'Software Factory' AND is_template = true`,
+    );
+    assert.ok(workflowResult.rows[0], "Software Factory template workflow must exist");
+    const workflowId = workflowResult.rows[0].id;
+    const graph = workflowResult.rows[0].graph;
+
+    const nodeIds = new Set(graph.nodes.map((n) => n.id));
+    assert.ok(nodeIds.has("orchestrator"), "template must have orchestrator node");
+    assert.ok(nodeIds.has("planner"), "template must have planner node");
+    assert.ok(nodeIds.has("implement"), "template must have implement node");
+    assert.ok(nodeIds.has("test"), "template must have test node");
+
+    const agentsResult = await pool.query(
+      `SELECT id, name FROM agents WHERE name IN (
+         'Factory Orchestrator', 'Factory Planner', 'Factory Implementer', 'Factory Tester'
+       ) ORDER BY id`,
+    );
+    const agents = agentsResult.rows;
+    assert.equal(agents.length, 4, "all 4 factory agents must exist");
+    console.error("Template agents:", agents.map((a) => `${a.id}:${a.name}`).join(", "));
+
+    const projResult = await pool.query(
+      `INSERT INTO projects (key, name) VALUES ('FACT', 'Factory') ON CONFLICT (key) DO UPDATE SET key = projects.key RETURNING id`,
+    );
+    const projectId = String(projResult.rows[0].id);
+
+    const proofModel = process.env.ORBITFLOW_FACT14_MODEL || "openrouter/deepseek/deepseek-v4-flash";
+    await pool.query(
+      `UPDATE agents SET model = $1 WHERE name IN (
+         'Factory Orchestrator', 'Factory Planner', 'Factory Tester'
+       )`,
+      [proofModel],
+    );
+    await pool.query(
+      `UPDATE agents SET model = $1 WHERE name = 'Factory Implementer'`,
+      [codingModel],
+    );
+    const verifyAgents = await pool.query(
+      `SELECT id, name, model FROM agents WHERE name IN (
+         'Factory Orchestrator', 'Factory Planner', 'Factory Implementer', 'Factory Tester'
+       ) ORDER BY id`,
+    );
+    for (const agent of verifyAgents.rows) {
+      const expectedModel = agent.name === "Factory Implementer" ? codingModel : proofModel;
+      assert.equal(agent.model, expectedModel, `agent ${agent.name} must use ${expectedModel}`);
+    }
+    console.error(`Orch/Plan/Tester model: ${proofModel}  Implementer model: ${codingModel}`);
+
+    // Strict gate: the implementer must run the shipped 0015 template prompt.
+    const implPrompt = await pool.query(
+      `SELECT system_prompt FROM agents WHERE name = 'Factory Implementer'`,
+    );
+    assert.equal(
+      implPrompt.rows[0]?.system_prompt,
+      shippedImplementerPrompt,
+      "Factory Implementer must run the shipped 0015 template prompt",
+    );
+
+    const runtimeRoot = path.join(tmpdir(), `orbitflow-fact14-${randomUUID()}`);
+    await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+
+    const workspaceRoot = process.env.ORBITFLOW_WORKSPACE_ROOT || path.join(runtimeRoot, "workspaces");
+    await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
+    process.env.ORBITFLOW_WORKSPACE_ROOT = workspaceRoot;
+    process.env.ORBITFLOW_OPENCODE_MODEL = process.env.ORBITFLOW_OPENCODE_MODEL || codingModel;
+    process.env.ORBITFLOW_PLATFORM_DATABASE_URL = databaseUrl;
+
+    const gwPort = Number(process.env.ORBITFLOW_FACT14_GATEWAY_PORT || 18794);
+    console.error(`Starting gateway on port ${gwPort} with state in ${runtimeRoot}/state`);
+    gatewayProcess = await startGateway(runtimeRoot, gwPort);
+    await waitForGateway(gwPort);
+    const expectedModel = gatewayProcess.model;
+    const modelLine = `agent model: ${expectedModel}`;
+    for (let i = 0; i < 40; i += 1) {
+      if (gatewayProcess.getDiag().includes(modelLine)) { console.error(`Model verified: ${modelLine}`); break; }
+      await delay(500);
+    }
+    if (!gatewayProcess.getDiag().includes(modelLine)) {
+      console.error("Diag:", gatewayProcess.getDiag().slice(-2000));
+      throw new Error(`Missing model line: ${modelLine}`);
+    }
+    console.error("Gateway ready");
+
+    const nodeBin = path.dirname(process.execPath);
+    const currentPath = process.env.PATH ?? "";
+    if (!currentPath.includes(nodeBin)) process.env.PATH = `${nodeBin}:${currentPath}`;
+    if (!currentPath.includes(bin)) process.env.PATH = `${bin}:${currentPath}`;
+
+    const allowedExec = ["DATABASE_URL", "OPENROUTER_API_KEY", "ORBITFLOW_RUN_ID", "ORBITFLOW_AGENT_ID", "ORBITFLOW_WORKSPACE_ROOT", "ORBITFLOW_OPENCODE_MODEL", "ORBITFLOW_PLATFORM_DATABASE_URL"];
+    const gatewayEnvironment = { OPENCLAW_GATEWAY_URL: `ws://127.0.0.1:${gwPort}` };
+
+    const openclawAdapter = new OpenClawRuntimeAdapter({
+      pool,
+      runtimeRoot,
+      wakeTimeoutMs: Number(process.env.ORBITFLOW_FACT14_WAKE_TIMEOUT_MS || 300_000),
+      allowedExecEnvironment: allowedExec,
+      gatewayEnvironment,
+    });
+
+    const engineAdapter = new OpenClawEngineAdapter({
+      pool,
+      openclaw: openclawAdapter,
+      workspaceTools: (agentId, nodeId, _ticketId, runId) => {
+        const agent = agents.find((a) => String(a.id) === agentId);
+        return agent ? workspaceToolsFor(agent.name, nodeId, projectId, agentId, runId) : null;
+      },
+    });
+
+    console.error("Pre-syncing agents...");
+    for (const agent of agents) {
+      await openclawAdapter.syncAgent(agent.id);
+      console.error(`  Agent ${agent.id} synced`);
+    }
+    console.error("All agents synced.");
+
+    console.error("Restarting gateway after agent creation...");
+    if (gatewayProcess?.child && gatewayProcess.child.exitCode === null && gatewayProcess.child.signalCode === null) {
+      const killed = new Promise((resolve) => gatewayProcess.child.once("close", resolve));
+      gatewayProcess.child.kill("SIGTERM");
+      const force = setTimeout(() => gatewayProcess.child.kill("SIGKILL"), 2_000);
+      await killed;
+      clearTimeout(force);
+    }
+    gatewayProcess = await startGateway(runtimeRoot, gwPort);
+    await waitForGateway(gwPort);
+    const m2 = gatewayProcess.model;
+    const ml2 = `agent model: ${m2}`;
+    for (let i = 0; i < 40; i += 1) {
+      if (gatewayProcess.getDiag().includes(ml2)) { console.error(`Model verified (post-sync): ${ml2}`); break; }
+      await delay(500);
+    }
+    if (!gatewayProcess.getDiag().includes(ml2)) throw new Error(`Post-sync missing model line: ${ml2}`);
+    console.error("Gateway ready after restart");
+
+    const run = await createWorkflowRun(pool, {
+      workflowId,
+      triggerType: "ui",
+      spec: { task: "Create a hello.txt file containing 'Hello from OrbitFlow Software Factory!'" },
+    });
+
+    await startWorkflowRun(pool, run.id);
+
+    let startedRun = await getWorkflowRun(pool, run.id);
+    assert.ok(startedRun, "run created");
+    assert.equal(startedRun.status, "running");
+
+    const engineWorker = startWorkflowEngine(pool, engineAdapter, {
+      consumerId: `fact14-${randomUUID().slice(0, 8)}`,
+      dispatcherId: `fact14-${randomUUID().slice(0, 8)}`,
+      pollIntervalMs: 250,
+    });
+
+    const maxWaitMs = 900_000;
+    const startTime = Date.now();
+    let finalRun = null;
+    let lastStatus = startedRun.status;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      await delay(2_000);
+      finalRun = await getWorkflowRun(pool, run.id);
+      if (!finalRun) break;
+      if (finalRun.status !== lastStatus) {
+        console.error(`Run ${run.id}: ${lastStatus} → ${finalRun.status}`);
+        lastStatus = finalRun.status;
+      }
+      if (["completed", "failed"].includes(finalRun.status)) break;
+    }
+
+    await engineWorker.stop();
+
+    assert.ok(finalRun, "run must exist");
+
+    const messages = await pool.query("SELECT * FROM messages WHERE run_id = $1 ORDER BY id", [run.id]);
+    const tickets = await pool.query("SELECT * FROM tickets WHERE run_id = $1 ORDER BY id", [run.id]);
+    const costEvents = await pool.query("SELECT * FROM cost_events WHERE run_id = $1 ORDER BY id", [run.id]);
+    const dispatches = await pool.query("SELECT * FROM workflow_dispatches WHERE run_id = $1 ORDER BY id", [run.id]);
+
+    const evidenceData = {
+      run: { id: finalRun.id, status: finalRun.status, failureReason: finalRun.failureReason, totalTokens: finalRun.totalTokens, totalCost: finalRun.totalCost },
+      messageCount: messages.rowCount,
+      messages: messages.rows.map((row) => ({ id: row.id, type: row.type, sender: row.sender, recipient: row.recipient, handoffBrief: row.handoff_brief?.slice(0, 500), hasTokenUsage: row.token_usage !== null, payload: JSON.stringify(row.payload).slice(0, 2000) })),
+      ticketCount: tickets.rowCount,
+      tickets: tickets.rows.map((row) => ({ id: row.id, identifier: row.identifier, title: row.title, status: row.status })),
+      costEventCount: costEvents.rowCount,
+      costEvents: costEvents.rows.map((row) => ({ id: row.id, agentId: row.agent_id, model: row.model, tokensIn: row.tokens_in, tokensOut: row.tokens_out, computedCost: row.computed_cost })),
+      dispatchCount: dispatches.rowCount,
+      dispatches: dispatches.rows.map((row) => ({ id: row.id, nodeId: row.node_id, status: row.status, agentId: row.agent_id, ticketId: row.ticket_id })),
+    };
+    await writeFile(path.join(evidence, "proof-result.json"), JSON.stringify(evidenceData, null, 2));
+
+    console.error("Run:", finalRun.status, finalRun.failureReason || "");
+    console.error(`Messages: ${messages.rowCount}, Tickets: ${tickets.rowCount}, Cost events: ${costEvents.rowCount}, Dispatches: ${dispatches.rowCount}`);
+
+    for (const msg of messages.rows.slice(0, 20)) {
+      console.error(`  msg: type=${msg.type} sender=${msg.sender} handoff=${msg.handoff_brief?.slice(0, 80) ?? "none"}`);
+    }
+
+    const completedDispatches = dispatches.rows.filter((row) => row.status === "completed");
+    const dispatchNodeIds = new Set(completedDispatches.map((d) => d.node_id));
+    console.error(`Completed dispatches: ${completedDispatches.length} (nodes: ${[...dispatchNodeIds].join(", ")})`);
+
+    const outputMessages = messages.rows.filter((row) => row.type === "output");
+    const handoffBriefs = outputMessages.filter((row) => row.handoff_brief && row.handoff_brief.trim());
+
+    // Phase-reconstructable handoff evidence: every completed dispatch of a
+    // required node must produce a corresponding output message with non-blank
+    // handoff_brief whose payload.dispatchId matches.
+    const requiredNodes = ["orchestrator", "planner", "implement", "test", "report"];
+    for (const nodeId of requiredNodes) {
+      if (!dispatchNodeIds.has(nodeId)) continue;
+      const nodeDispatches = dispatches.rows.filter(
+        (row) => row.status === "completed" && row.node_id === nodeId,
+      );
+      for (const disp of nodeDispatches) {
+        const matchingMsg = outputMessages.find((msg) => {
+          const p = typeof msg.payload === "string" ? JSON.parse(msg.payload) : msg.payload;
+          return String(p?.dispatchId) === String(disp.id);
+        });
+        assert.ok(matchingMsg, `output message for completed dispatch ${disp.id} (${nodeId})`);
+        assert.ok(matchingMsg.handoff_brief && matchingMsg.handoff_brief.trim(), `non-blank handoff for ${nodeId} dispatch ${disp.id}`);
+      }
+    }
+    console.error(`Output messages: ${outputMessages.length}, handoffs: ${handoffBriefs.length}`);
+
+    // Distinct finalized Implementer cost event on exact DeepSeek model
+    const implementerId = String(agents.find((a) => a.name === "Factory Implementer")?.id);
+    const implCostEvents = costEvents.rows.filter(
+      (row) =>
+        String(row.agent_id) === implementerId &&
+        row.model === codingModel &&
+        BigInt(row.tokens_in) > BigInt(0) &&
+        BigInt(row.tokens_out) > BigInt(0) &&
+        parseFloat(row.computed_cost) > 0,
+    );
+    assert.ok(implCostEvents.length >= 1, `implementer has finalized ${codingModel} cost event with positive tokens and cost`);
+
+    // No orbitflow-invocation reservation cost events
+    const reservations = costEvents.rows.filter(
+      (row) => row.model && String(row.model).startsWith("orbitflow-invocation:"),
+    );
+    assert.equal(reservations.length, 0, "zero unconverted invocation reservations");
+
+    const totalTokens = BigInt(finalRun.totalTokens || "0");
+    const totalCost = parseFloat(finalRun.totalCost || "0");
+    console.error(`Aggregated: ${totalTokens} tokens, $${totalCost}`);
+
+    // FACT-14 acceptance assertions
+    assert.equal(finalRun.status, "completed", "run must reach completed status");
+    assert.ok(totalTokens > BigInt(0), "token usage aggregated on the run");
+    assert.ok(totalCost > 0, "cost aggregated on the run");
+
+    assert.ok(tickets.rowCount >= 1, "at least one real ticket created via platform tool surface");
+    const doneTickets = tickets.rows.filter((row) => row.status === "done");
+    assert.ok(doneTickets.length >= 1, "at least one ticket finalized as done");
+
+    for (const nodeId of ["orchestrator", "planner", "implement", "test", "report"]) {
+      assert.ok(dispatchNodeIds.has(nodeId), `dispatch completed for ${nodeId}`);
+    }
+
+    // Real run workspace diff with hello.txt — strict mandatory
+    const wsRoot = process.env.ORBITFLOW_WORKSPACE_ROOT;
+    assert.ok(wsRoot, "ORBITFLOW_WORKSPACE_ROOT must be set");
+    const runWs = `${wsRoot}/run-${run.id}`;
+    const diffResult = spawnSync("git", ["-C", runWs, "diff", "--no-index", "--", "/dev/null", "hello.txt"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(diffResult.status, 1, `git diff must report the new hello.txt in ${runWs}`);
+    const diff = diffResult.stdout || diffResult.stderr || "";
+    const expectContent = "Hello from OrbitFlow Software Factory!";
+    assert.ok(diff.includes("hello.txt"), `git diff must include hello.txt\n${diff.slice(0, 500)}`);
+    const helloPath = `${runWs}/hello.txt`;
+    const helloContent = readFileSync(helloPath, "utf8");
+    assert.equal(helloContent, expectContent, `hello.txt must contain exact: ${expectContent}`);
+    console.error("Workspace hello.txt:", JSON.stringify(helloContent));
+
+    // Assert no database URL leaks in retained evidence
+    const dbUrl = process.env.DATABASE_URL || "";
+    if (dbUrl.includes("://")) {
+      const password = dbUrl.split("@")[0].split(":").slice(-1)[0];
+      const evidenceText = JSON.stringify(evidenceData);
+      assert.ok(!evidenceText.includes(password), "database password not in evidence");
+    }
+
+    // Original-head Software Factory completion evidence retained
+    console.error("\n=== FACT-14 E2E PROOF COMPLETE ===");
+    console.error(`Workflow: orchestrator → planner → implement → test → done`);
+    console.error(`Tickets: ${tickets.rowCount}  Handoffs: ${handoffBriefs.length}  Dispatches: ${dispatches.rowCount}`);
+    console.error(`Tokens: ${totalTokens}  Cost: $${totalCost}  Cost events: ${costEvents.rowCount}`);
+  } finally {
+    if (gatewayProcess?.child && gatewayProcess.child.exitCode === null && gatewayProcess.child.signalCode === null) {
+      gatewayProcess.child.kill("SIGTERM");
+      const force = setTimeout(() => gatewayProcess.child.kill("SIGKILL"), 3_000);
+      await new Promise((resolve) => gatewayProcess.child.once("close", resolve));
+      clearTimeout(force);
+    }
+    await pool.end();
+  }
+});
