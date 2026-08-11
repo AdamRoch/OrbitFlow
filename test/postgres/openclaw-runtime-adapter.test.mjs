@@ -879,7 +879,8 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       {
         mode: "success",
         output: completedOutput("cross-ref"),
-        delayMs: 400,
+        delayMs: 1_500,
+        waitForTotal: 2,
         usage: { input: 6, output: 4, total: 10, cost: { total: "0.001" } },
       },
     ]);
@@ -912,8 +913,8 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.equal(observations.length, 2);
     assert.ok(observations.every((observation) => observation.sameAgent === 1));
     assert.ok(
-      observations.some((observation) => observation.total >= 2),
-      "different agent refs must be able to overlap",
+      observations.every((observation) => observation.total >= 2),
+      "the overlap barrier must release both different-ref turns only after they see each other",
     );
   });
 
@@ -1099,6 +1100,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
       },
     ]);
     await resetConcurrency();
+    const before = (await requests()).length;
     const holderWake = adapter.wakeAgent({
       runId: holderRun,
       agentId,
@@ -1137,6 +1139,18 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     );
     assert.equal(durable.rowCount, 1);
     assert.equal(durable.rows[0].payload.code, "openclaw_timeout");
+    const aborts = (await requests())
+      .slice(before)
+      .filter(
+        (request) =>
+          request.command === "sessions-abort" &&
+          request.sessionKey === `agent:orbitflow-${agentId}:main`,
+      );
+    assert.equal(
+      aborts.length,
+      1,
+      "a launched-then-timed-out agent command must keep its gateway cleanup",
+    );
     await resetConcurrency();
   });
 
@@ -1146,27 +1160,39 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     await resetPlan([
       { mode: "success", output: completedOutput("deadline-exhausted") },
     ]);
-    // The 50ms minimum deadline is consumed by checkout, lock acquisition,
-    // and configuration sync, so the first command must be refused, not
-    // launched with a clamped budget.
+    // Park the first configuration sync command far beyond the 50ms deadline
+    // so the budget is deterministically exhausted mid-sync on any machine:
+    // no agent command may launch and no gateway cleanup may run.
+    const holdPath = path.join(stateDirectory, "fake-config-hold.json");
+    await writeFile(holdPath, JSON.stringify({ "agents-list": 250 }));
     const before = (await requests()).length;
-    await assert.rejects(
-      () =>
-        adapter.wakeAgent({
-          runId,
-          agentId,
-          invocationId: "deadline-exhausted",
-          nodeId: "work",
-          nodeSystemPrompt: "The deadline expires before the command can launch.",
-          timeoutMs: 50,
-        }),
-      (error) =>
-        error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
+    try {
+      await assert.rejects(
+        () =>
+          adapter.wakeAgent({
+            runId,
+            agentId,
+            invocationId: "deadline-exhausted",
+            nodeId: "work",
+            nodeSystemPrompt: "The deadline expires before the command can launch.",
+            timeoutMs: 50,
+          }),
+        (error) =>
+          error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",
+      );
+    } finally {
+      await rm(holdPath, { force: true });
+    }
+    const after = (await requests()).slice(before);
+    assert.equal(
+      after.filter((request) => request.command === "agent").length,
+      0,
+      "no OpenClaw agent command may launch after the deadline is exhausted",
     );
     assert.equal(
-      (await requests()).slice(before).filter((request) => request.command === "agent").length,
+      after.filter((request) => request.command === "sessions-abort").length,
       0,
-      "no OpenClaw command may launch after the deadline is exhausted",
+      "no gateway cleanup may run when no agent command ever launched",
     );
     const durable = await pool.query(
       "SELECT payload FROM messages WHERE run_id = $1",
@@ -1174,5 +1200,6 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     );
     assert.equal(durable.rowCount, 1);
     assert.equal(durable.rows[0].payload.code, "openclaw_timeout");
+    assert.equal(durable.rows[0].payload.attempts, 0);
   });
 });

@@ -57,6 +57,14 @@ function option(name) {
   return index === -1 ? null : arguments_[index + 1];
 }
 
+// FACT-30 proof support: deterministically park one configuration command so
+// tests can exhaust a wake deadline mid-sync regardless of machine speed.
+async function maybeHold(commandName) {
+  const holds = await readJson(path.join(stateDirectory, "fake-config-hold.json"), {});
+  const holdMs = holds[commandName];
+  if (typeof holdMs === "number" && holdMs > 0) await delay(holdMs);
+}
+
 if (arguments_[0] === "--version") {
   await record("version");
   console.log("OpenClaw 2026.4.15 (fake-request-path-proof)");
@@ -66,6 +74,7 @@ if (arguments_[0] === "--version") {
 if (arguments_[0] === "agents" && arguments_[1] === "list") {
   const agents = await readJson(agentsPath, []);
   await record("agents-list");
+  await maybeHold("agents-list");
   console.log(JSON.stringify([{ id: "main", isDefault: true }, ...agents]));
   process.exit(0);
 }
@@ -92,6 +101,7 @@ if (
 ) {
   const agents = await readJson(agentsPath, []);
   await record("config-get", { path: arguments_[2] });
+  await maybeHold("config-get");
   console.log(JSON.stringify(agents));
   process.exit(0);
 }
@@ -185,26 +195,53 @@ if (arguments_[0] === "agent") {
   const requestedSessionId = option("--session-id");
   const agentId = option("--agent");
 
-  // FACT-30 proof support: hold a marker file for half the delay, record how
-  // many same-agent and total agent turns are concurrently active, then hold
-  // the second half so overlapping executions always observe each other.
+  // FACT-30 proof support: hold a marker for the delay window and record the
+  // peak same-agent and total concurrency observed across the whole window.
+  // With action.waitForTotal the marker is held until that many markers are
+  // visible (an explicit overlap barrier), capped by the delay window.
   if (typeof action.delayMs === "number" && action.delayMs > 0) {
     const activeDirectory = path.join(stateDirectory, "fake-active");
     await mkdir(activeDirectory, { recursive: true });
     const marker = path.join(activeDirectory, `${agentId}-${process.pid}`);
     await writeFile(marker, String(process.pid));
-    await delay(Math.ceil(action.delayMs / 2));
-    const active = await readdir(activeDirectory);
+    const holdUntil = Date.now() + action.delayMs;
+    let peakSameAgent = 1;
+    let peakTotal = 1;
+    const observe = async () => {
+      const active = await readdir(activeDirectory);
+      peakSameAgent = Math.max(
+        peakSameAgent,
+        active.filter((name) => name.startsWith(`${agentId}-`)).length,
+      );
+      peakTotal = Math.max(peakTotal, active.length);
+    };
+    let barrierTripped = false;
+    while (Date.now() < holdUntil) {
+      await observe();
+      if (action.waitForTotal && peakTotal >= action.waitForTotal) {
+        barrierTripped = true;
+        break;
+      }
+      await delay(25);
+    }
+    if (barrierTripped) {
+      // Dwell so the peer's next poll still sees this marker before it goes
+      // away; an immediate unlink could race ahead of the peer's observation.
+      const dwellUntil = Date.now() + 200;
+      while (Date.now() < dwellUntil) {
+        await observe();
+        await delay(25);
+      }
+    }
     await appendFile(
       path.join(stateDirectory, "fake-overlap.ndjson"),
       `${JSON.stringify({
         agentId,
         turn,
-        sameAgent: active.filter((name) => name.startsWith(`${agentId}-`)).length,
-        total: active.length,
+        sameAgent: peakSameAgent,
+        total: peakTotal,
       })}\n`,
     );
-    await delay(Math.ceil(action.delayMs / 2));
     await unlink(marker);
   }
 

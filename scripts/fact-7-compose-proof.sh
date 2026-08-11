@@ -177,9 +177,10 @@ assert_app_http
 
 applied_migrations="$(compose exec -T postgres psql -U orbitfactory -d orbitfactory_proof -Atc "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations")"
 # Derive the expected ordered list from the committed migration files so the
-# proof tracks new migrations instead of drifting stale again.
+# proof tracks new migrations instead of drifting stale again. The filename
+# grammar and code-unit sort match scripts/migrate-postgres.mjs exactly.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-expected_migrations="$(git -C "$repo_root" ls-files 'db/migrations/*.sql' | xargs -n1 basename | sort | paste -sd, -)"
+expected_migrations="$(git -C "$repo_root" ls-files 'db/migrations/*.sql' | xargs -n1 basename | grep -E '^[0-9]{4}-[a-z0-9-]+\.sql$' | LC_ALL=C sort | paste -sd, -)"
 if [[ "$applied_migrations" != "$expected_migrations" ]]; then
   echo "Unexpected migration state: $applied_migrations" >&2
   exit 1

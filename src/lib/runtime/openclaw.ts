@@ -708,8 +708,12 @@ export class OpenClawRuntimeAdapter {
         });
       }
 
-      // Deterministic lock order: the per-invocation lock is always taken
-      // first and the FACT-30 same-agent session lock second.
+      // Deterministic lock order: the per-invocation PostgreSQL advisory lock
+      // is always taken first and the FACT-30 same-agent session lock second.
+      // The holder of the agent session lock never takes a second PostgreSQL
+      // advisory lock, so no wait cycle can form. The in-process configuration
+      // promise queue only serializes this process's config edits; it is not a
+      // distributed lock and does not participate in lock ordering.
       try {
         return await this.withAgentSessionLock(ref, wakeTimeoutMs, async (deadlineMs) => {
           let attempts = 0;
@@ -730,6 +734,10 @@ export class OpenClawRuntimeAdapter {
             });
             for (;;) {
               attempts += 1;
+              // End-to-end deadline: each attempt, including the one retry,
+              // gets only the budget left after checkout, lock acquisition,
+              // and configuration sync — never a fresh full timeout — and an
+              // exhausted deadline refuses to launch another command at all.
               const commandTimeoutMs = this.commandBudget(
                 deadlineMs,
                 wakeTimeoutMs,
@@ -790,6 +798,9 @@ export class OpenClawRuntimeAdapter {
           } catch (error) {
             let runtimeError = safeError(error);
             try {
+              // Gateway cleanup only makes sense once an agent command really
+              // launched; a wake refused by the exhausted deadline never
+              // created gateway session state, so it must not abort anything.
               await this.terminateRef(
                 ref,
                 agentCommandLaunched &&
@@ -873,12 +884,13 @@ export class OpenClawRuntimeAdapter {
   private async syncAgentRow(
     agent: AgentRow,
     database: Queryable = this.pool,
+    deadlineMs?: number,
   ): Promise<SynchronizedAgent> {
     const ref = openClawRef(agent);
     const workspace = path.join(this.runtimeRoot, "workspaces", ref);
     await this.writeWorkspace(workspace, agent);
 
-    const listed = await this.requireJsonCommand(["agents", "list", "--json"]);
+    const listed = await this.requireJsonCommand(["agents", "list", "--json"], deadlineMs);
     const entries = Array.isArray(listed)
       ? listed
       : isObject(listed) && Array.isArray(listed.agents)
@@ -897,14 +909,14 @@ export class OpenClawRuntimeAdapter {
         agent.model,
         "--non-interactive",
         "--json",
-      ]);
+      ], deadlineMs);
     } else {
       const configured = await this.requireJsonCommand([
         "config",
         "get",
         "agents.list",
         "--json",
-      ]);
+      ], deadlineMs);
       if (!Array.isArray(configured)) {
         throw new RuntimeAdapterError(
           "openclaw_configuration_failed",
@@ -922,20 +934,27 @@ export class OpenClawRuntimeAdapter {
           { agentId: agent.id },
         );
       }
-      await this.requireCommand([
-        "config",
-        "set",
-        `agents.list[${configuredIndex}].workspace`,
-        JSON.stringify(workspace),
-        "--strict-json",
-      ]);
-      await this.requireCommand([
-        "config",
-        "set",
-        `agents.list[${configuredIndex}].model`,
-        JSON.stringify(agent.model),
-        "--strict-json",
-      ]);
+      const entry = configured[configuredIndex];
+      const configuredWorkspace = isObject(entry) ? String(entry.workspace ?? "") : "";
+      const configuredModel = isObject(entry) ? String(entry.model ?? "") : "";
+      if (configuredWorkspace !== workspace) {
+        await this.requireCommand([
+          "config",
+          "set",
+          `agents.list[${configuredIndex}].workspace`,
+          JSON.stringify(workspace),
+          "--strict-json",
+        ], deadlineMs);
+      }
+      if (configuredModel !== agent.model) {
+        await this.requireCommand([
+          "config",
+          "set",
+          `agents.list[${configuredIndex}].model`,
+          JSON.stringify(agent.model),
+          "--strict-json",
+        ], deadlineMs);
+      }
     }
     await this.requireJsonCommand([
       "agents",
@@ -945,7 +964,7 @@ export class OpenClawRuntimeAdapter {
       "--identity-file",
       path.join(workspace, "IDENTITY.md"),
       "--json",
-    ]);
+    ], deadlineMs);
 
     const persisted = await database.query(
       `UPDATE agents
@@ -1106,11 +1125,18 @@ export class OpenClawRuntimeAdapter {
     ref: string,
     requested: { sessionId: string; sessionKey: string },
     returnedSessionId: string | null,
+    deadlineMs?: number,
   ): Promise<void> {
     const result = await this.runCommand(
       ["sessions", "--agent", ref, "--json"],
-      { timeoutMs: 30_000 },
+      { timeoutMs: this.commandBudget(deadlineMs, 30_000, "session verification") },
     );
+    if (deadlineMs !== undefined && result.timedOut) {
+      throw new RuntimeAdapterError(
+        "openclaw_timeout",
+        "OpenClaw session verification consumed the wake deadline",
+      );
+    }
     const payload =
       !result.timedOut && result.exitCode === 0
         ? parseJsonDocument(result.stdout)
@@ -1167,6 +1193,24 @@ export class OpenClawRuntimeAdapter {
    * lock_timeout reset before the client returns to the pool, and a failed
    * unlock destroys the client so a leaked lock can never survive checkout.
    */
+  /**
+   * Maps the shared wake deadline onto one nested external command. Without a
+   * deadline the historical fixed cap applies. With one, an exhausted budget
+   * refuses to launch and a live command gets only the remaining milliseconds,
+   * so no nested command can hold the same-agent lock past its deadline.
+   */
+  private commandBudget(deadlineMs: number | undefined, capMs: number, what: string): number {
+    if (deadlineMs === undefined) return capMs;
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs < 1) {
+      throw new RuntimeAdapterError(
+        "openclaw_timeout",
+        `OpenClaw wake deadline was exhausted before ${what} could launch`,
+      );
+    }
+    return Math.min(capMs, remainingMs);
+  }
+
   private async withAgentSessionLock<T>(
     ref: string,
     timeoutMs: number,
@@ -1535,9 +1579,13 @@ export class OpenClawRuntimeAdapter {
     }
   }
 
-  private async ensureVersion(): Promise<void> {
+  private async ensureVersion(deadlineMs?: number): Promise<void> {
+    // The proof is cached per adapter; the caller's deadline only applies
+    // while the (re)check is actually created, never to a settled cache entry.
     this.versionProof ??= (async () => {
-      const result = await this.runCommand(["--version"], { timeoutMs: 10_000 });
+      const result = await this.runCommand(["--version"], {
+        timeoutMs: this.commandBudget(deadlineMs, 10_000, "the version check"),
+      });
       const version = result.stdout.match(/(?:OpenClaw\s+)?(\d{4}\.\d+\.\d+)/)?.[1];
       if (result.exitCode !== 0 || version !== this.expectedVersion) {
         throw new RuntimeAdapterError(
@@ -1555,13 +1603,28 @@ export class OpenClawRuntimeAdapter {
     }
   }
 
-  private async requireJsonCommand(arguments_: readonly string[]): Promise<unknown> {
-    const result = await this.requireCommand(arguments_);
+  private async requireJsonCommand(
+    arguments_: readonly string[],
+    deadlineMs?: number,
+  ): Promise<unknown> {
+    const result = await this.requireCommand(arguments_, deadlineMs);
     return parseJsonDocument(result.stdout);
   }
 
-  private async requireCommand(arguments_: readonly string[]): Promise<CommandResult> {
-    const result = await this.runCommand(arguments_, { timeoutMs: 30_000 });
+  private async requireCommand(
+    arguments_: readonly string[],
+    deadlineMs?: number,
+  ): Promise<CommandResult> {
+    const result = await this.runCommand(arguments_, {
+      timeoutMs: this.commandBudget(deadlineMs, 30_000, "a configuration command"),
+    });
+    if (result.timedOut && deadlineMs !== undefined) {
+      throw new RuntimeAdapterError(
+        "openclaw_timeout",
+        "OpenClaw configuration command consumed the wake deadline",
+        { command: arguments_.slice(0, 2).join(" ") },
+      );
+    }
     if (result.timedOut || result.exitCode !== 0) {
       throw new RuntimeAdapterError(
         "openclaw_configuration_failed",
