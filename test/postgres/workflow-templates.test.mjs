@@ -200,7 +200,10 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
       databaseUrl: upgradeDatabaseUrl,
       log: () => {},
     });
-    assert.deepEqual(fact21Migration.applied, ["0013-workflow-templates.sql"]);
+    assert.deepEqual(fact21Migration.applied, [
+      "0013-workflow-templates.sql",
+      "0014-guardrail-wake-events.sql",
+    ]);
 
     // Verify journal
     const journal = await client.query(
@@ -209,6 +212,7 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
     assert.deepEqual(journal.rows.map((row) => row.version), [
       ...Object.keys(CURRENT_MAIN_MIGRATIONS),
       "0013-workflow-templates.sql",
+      "0014-guardrail-wake-events.sql",
     ]);
 
     // User data is preserved
@@ -288,7 +292,10 @@ test("FACT-21 no-overwrite: pre-existing same-name agents and skills keep their 
 
     // Apply FACT-21 migration
     const fact21Migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(fact21Migration.applied, ["0013-workflow-templates.sql"]);
+    assert.deepEqual(fact21Migration.applied, [
+      "0013-workflow-templates.sql",
+      "0014-guardrail-wake-events.sql",
+    ]);
 
     // Same-name agents preserved their custom values (not overwritten)
     const coder = await client.query(

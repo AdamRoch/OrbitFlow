@@ -374,7 +374,7 @@ try {
     const agent = await client.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Implementer', 'worker', 'Implement the assigned ticket.', 'test/model', '{"cost_limit": 5}', '{"autonomy": "high"}', '{"facts": []}') RETURNING id`);
     const skill = await client.query(`INSERT INTO skills (name, description, procedure) VALUES ('testing', 'Prove behavior', 'Run the contract tests.') RETURNING id`);
     await client.query("INSERT INTO agent_skills (agent_id, skill_id) VALUES ($1, $2)", [agent.rows[0].id, skill.rows[0].id]);
-    const workflow = await client.query(`INSERT INTO workflows (name, description, graph) VALUES ('Software Factory', 'Test workflow', '{"nodes": [], "edges": []}') RETURNING id`);
+    const workflow = await client.query(`INSERT INTO workflows (name, description, graph) VALUES ('Schema proof workflow', 'Test workflow', '{"nodes": [], "edges": []}') RETURNING id`);
     const run = await client.query(`INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, started_at) VALUES ($1, 'running', 'ui', '{"task": "Build FACT-6"}', now()) RETURNING id`, [workflow.rows[0].id]);
     const otherRun = await client.query(`INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'cron', '{"task": "Other run"}') RETURNING id`, [workflow.rows[0].id]);
 

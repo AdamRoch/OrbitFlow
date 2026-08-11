@@ -841,7 +841,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       );
       const workflow = await client.query(
         `INSERT INTO workflows (name, description, graph)
-         VALUES ('Software Factory', 'Test workflow', '{"nodes": [], "edges": []}')
+         VALUES ('Schema proof workflow', 'Test workflow', '{"nodes": [], "edges": []}')
          RETURNING id`,
       );
       const run = await client.query(

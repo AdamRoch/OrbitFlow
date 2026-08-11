@@ -56,6 +56,7 @@ test(`FACT-10 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
     assert.deepEqual(fact10Migration.applied, [
       "0011-workflow-engine.sql",
       "0012-platform-tool-idempotency.sql",
+      "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
     ]);
 
@@ -68,6 +69,7 @@ test(`FACT-10 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
         ...Object.keys(CURRENT_MAIN_MIGRATIONS),
         "0011-workflow-engine.sql",
         "0012-platform-tool-idempotency.sql",
+        "0013-workflow-templates.sql",
         "0014-guardrail-wake-events.sql",
       ],
     );

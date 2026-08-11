@@ -62,6 +62,7 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
     "0010-coding-tool-usage.sql",
     "0011-workflow-engine.sql",
     "0012-platform-tool-idempotency.sql",
+    "0013-workflow-templates.sql",
     "0014-guardrail-wake-events.sql",
   ]);
 

@@ -56,6 +56,7 @@ test(`FACT-13 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
     const fact13Migration = await migratePostgres({ databaseUrl, log: () => {} });
     assert.deepEqual(fact13Migration.applied, [
       "0012-platform-tool-idempotency.sql",
+      "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
     ]);
 
@@ -65,6 +66,7 @@ test(`FACT-13 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
     assert.deepEqual(journal.rows.map((row) => row.version), [
       ...Object.keys(CURRENT_MAIN_MIGRATIONS),
       "0012-platform-tool-idempotency.sql",
+      "0013-workflow-templates.sql",
       "0014-guardrail-wake-events.sql",
     ]);
   } finally {
