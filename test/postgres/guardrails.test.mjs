@@ -233,6 +233,80 @@ test("FACT-23 guardrails enforcement", async (t) => {
       assert.equal(Number(messages[0].spend), 0.5);
     });
 
+    await t.test("unknown agent cost fails closed before provider wake", async () => {
+      const agentId = await seedAgent("unknown-agent-cost", { costLimit: 5 });
+      const run = await createLoopRun(agentId);
+      const runtime = new CountingRuntimeAdapter();
+
+      await wake(run.id, runtime);
+      await publishOutput(await dispatchFor(run.id), { input: 1, output: 1, total: 2, cost: 1 });
+      await wake(run.id, runtime);
+      assert.equal(runtime.calls.length, 2, "known-cost wakes proceed");
+
+      await publishOutput(await dispatchFor(run.id), { input: 1, output: 1, total: 2, cost: 2 });
+      await client.query(
+        "UPDATE cost_events SET computed_cost = NULL WHERE run_id = $1 AND agent_id = $2",
+        [run.id, agentId],
+      );
+
+      assert.equal(await wake(run.id, runtime), null, "unknown cost refuses the wake");
+      assert.equal(runtime.calls.length, 2, "the refused wake never reaches the runtime");
+      assert.equal((await getWorkflowRun(pool, run.id)).status, "paused");
+
+      const messages = await ceilingMessages(run.id);
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].code, "guardrail_unknown_cost");
+      assert.equal(messages[0].scope, "agent");
+      assert.equal(messages[0].agentId, String(agentId));
+      assert.equal(Number(messages[0].ceiling), 5);
+
+      await resumeWorkflowRun(pool, run.id);
+      assert.equal(await wake(run.id, runtime), null, "resume without reconciliation refuses again");
+      assert.equal((await ceilingMessages(run.id)).length, 2, "each pause transition gets its own message");
+
+      await client.query(
+        "UPDATE cost_events SET computed_cost = 0.5 WHERE computed_cost IS NULL AND run_id = $1 AND agent_id = $2",
+        [run.id, agentId],
+      );
+      await resumeWorkflowRun(pool, run.id);
+      await wake(run.id, runtime);
+      assert.equal(runtime.calls.length, 3, "reconciled unknown cost lets the run continue");
+    });
+
+    await t.test("unknown run cost fails closed before provider wake", async () => {
+      const agentId = await seedAgent("unknown-run-cost-agent");
+      const run = await createLoopRun(agentId, { guardrails: { costLimit: 10 } });
+      const runtime = new CountingRuntimeAdapter();
+
+      await wake(run.id, runtime);
+      await publishOutput(await dispatchFor(run.id), { input: 5, output: 5, total: 10, cost: 3 });
+      await wake(run.id, runtime);
+      assert.equal(runtime.calls.length, 2, "known-cost wakes proceed");
+
+      await publishOutput(await dispatchFor(run.id), { input: 1, output: 1, total: 2, cost: 1 });
+      await client.query(
+        "UPDATE cost_events SET computed_cost = NULL WHERE run_id = $1",
+        [run.id],
+      );
+
+      assert.equal(await wake(run.id, runtime), null, "unknown cost anywhere in the run refuses the wake");
+      assert.equal(runtime.calls.length, 2);
+      assert.equal((await getWorkflowRun(pool, run.id)).status, "paused");
+
+      const messages = await ceilingMessages(run.id);
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].code, "guardrail_unknown_cost");
+      assert.equal(messages[0].scope, "run");
+
+      await client.query(
+        "UPDATE cost_events SET computed_cost = 2.5 WHERE computed_cost IS NULL AND run_id = $1",
+        [run.id],
+      );
+      await resumeWorkflowRun(pool, run.id);
+      await wake(run.id, runtime);
+      assert.equal(runtime.calls.length, 3, "reconciled unknown cost lets the run continue under ceiling");
+    });
+
     await t.test("rate limit throttles wakes per agent over the trailing window", async () => {
       const agentId = await seedAgent("throttled-agent", { rateLimit: { perMinute: 1 } });
       const run = await createLoopRun(agentId);

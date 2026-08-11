@@ -521,7 +521,7 @@ export async function dispatchPlatformTool(
   const result = await transaction(pool, async (client) => {
     const agent = await requireAttribution(client, input);
     const { blockedActions } = parseAgentGuardrails(agent.guardrails);
-    const guarded = <T extends PlatformToolResult>(operation: () => Promise<T>) =>
+    const guarded = (operation: () => Promise<PlatformToolResult>) =>
       blockedActions.includes(input.command)
         ? rejectBlockedAction(client, input)
         : operation();

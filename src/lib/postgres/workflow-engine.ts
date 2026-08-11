@@ -697,6 +697,7 @@ interface ClaimedDispatch {
 
 interface CostCeilingRefusal {
   scope: "run" | "agent";
+  reason: "ceiling_reached" | "unknown_cost";
   ceiling: number;
   spend: string;
 }
@@ -705,9 +706,13 @@ const RATE_LIMIT_WINDOW = "60 seconds";
 
 /**
  * FACT-23: the engine enforces per-run and per-agent cost ceilings before every
- * wake. Spend already at or beyond a ceiling refuses the wake and pauses the
- * run with one durable system message per pause transition, never a silent
- * stall. Numeric ceilings compare in PostgreSQL so the exact boundary holds.
+ * wake. When a ceiling is configured and any relevant cost_events row has
+ * computed_cost IS NULL the engine cannot prove spend is below the ceiling,
+ * so it fails closed by pausing the run with an unknown-cost message until
+ * the unknown events are reconciled. Otherwise, spend already at or beyond a
+ * ceiling refuses the wake and pauses the run with one durable system message
+ * per pause transition. Numeric ceilings compare in PostgreSQL so the exact
+ * boundary holds.
  */
 async function costCeilingRefusal(
   transaction: PoolClient,
@@ -717,15 +722,29 @@ async function costCeilingRefusal(
 ): Promise<CostCeilingRefusal | null> {
   const runCeiling = parseRunCostLimit(run.spec);
   if (runCeiling !== null) {
+    const unknownRun = await transaction.query<{ has: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM cost_events WHERE run_id = $1 AND computed_cost IS NULL) AS has",
+      [run.id],
+    );
+    if (unknownRun.rows[0].has) {
+      return { scope: "run", reason: "unknown_cost", ceiling: runCeiling, spend: "unknown" };
+    }
     const breached = await transaction.query<{ breached: boolean }>(
       "SELECT $1::numeric >= $2::numeric AS breached",
       [run.total_cost, runCeiling],
     );
     if (breached.rows[0].breached) {
-      return { scope: "run", ceiling: runCeiling, spend: run.total_cost };
+      return { scope: "run", reason: "ceiling_reached", ceiling: runCeiling, spend: run.total_cost };
     }
   }
   if (agentCostLimit !== null) {
+    const unknownAgent = await transaction.query<{ has: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM cost_events WHERE run_id = $1 AND agent_id = $2 AND computed_cost IS NULL) AS has",
+      [run.id, agentId],
+    );
+    if (unknownAgent.rows[0].has) {
+      return { scope: "agent", reason: "unknown_cost", ceiling: agentCostLimit, spend: "unknown" };
+    }
     const spend = await transaction.query<{ spend: string; breached: boolean }>(
       `SELECT COALESCE(SUM(computed_cost), 0)::text AS spend,
               COALESCE(SUM(computed_cost), 0) >= $3::numeric AS breached
@@ -734,7 +753,7 @@ async function costCeilingRefusal(
       [run.id, agentId, agentCostLimit],
     );
     if (spend.rows[0].breached) {
-      return { scope: "agent", ceiling: agentCostLimit, spend: spend.rows[0].spend };
+      return { scope: "agent", reason: "ceiling_reached", ceiling: agentCostLimit, spend: spend.rows[0].spend };
     }
   }
   return null;
@@ -753,6 +772,29 @@ async function pauseRunForCostCeiling(
     [dispatch.run_id],
   );
   if (paused.rowCount !== 1) return;
+  if (refusal.reason === "unknown_cost") {
+    const description =
+      refusal.scope === "run"
+        ? `the run has cost_events with unknown cost (computed_cost IS NULL) and a run ceiling of ${refusal.ceiling} is active`
+        : `agent ${dispatch.agent_id} has cost_events with unknown cost (computed_cost IS NULL) and an agent ceiling of ${refusal.ceiling} is active`;
+    await insertMessage(transaction, {
+      runId: dispatch.run_id,
+      sender: "system:workflow-engine",
+      recipient: "system:operators",
+      type: "system",
+      payload: {
+        code: "guardrail_unknown_cost",
+        message: `Wake refused for dispatch ${dispatch.id} on node ${dispatch.node_id}: ${description}. Run paused; reconcile unknown cost events and resume to continue.`,
+        scope: refusal.scope,
+        agentId: dispatch.agent_id,
+        runId: dispatch.run_id,
+        dispatchId: dispatch.id,
+        nodeId: dispatch.node_id,
+        ceiling: refusal.ceiling,
+      },
+    });
+    return;
+  }
   const detail =
     refusal.scope === "run"
       ? `run spend ${refusal.spend} reached the run cost ceiling ${refusal.ceiling}`
@@ -885,8 +927,8 @@ async function claimDispatch(
             `SELECT count(*)::int AS count
              FROM agent_wake_events
              WHERE agent_id = $1
-               AND created_at > clock_timestamp() - interval '${RATE_LIMIT_WINDOW}'`,
-            [dispatch.agent_id],
+               AND created_at > clock_timestamp() - $2::interval`,
+            [dispatch.agent_id, RATE_LIMIT_WINDOW],
           );
           if (recent.rows[0].count >= guardrails.rateLimitPerMinute) continue;
         }
