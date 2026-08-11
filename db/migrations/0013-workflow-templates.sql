@@ -17,10 +17,13 @@ DECLARE
 BEGIN
   INSERT INTO skills (name, description, procedure)
   VALUES (_name, _description, _procedure)
-  ON CONFLICT (name) DO UPDATE SET
-    description = excluded.description,
-    procedure   = excluded.procedure
+  ON CONFLICT (name) DO NOTHING
   RETURNING id INTO outcome;
+
+  IF outcome IS NULL THEN
+    SELECT id INTO outcome FROM skills WHERE name = _name;
+  END IF;
+
   RETURN outcome;
 END;
 $$;
@@ -42,11 +45,12 @@ BEGIN
                       guardrails, interaction_rules, memory)
   VALUES (_name, _role, _system_prompt, _model, false,
           '{}'::jsonb, '{}'::jsonb, '{}'::jsonb)
-  ON CONFLICT (name) DO UPDATE SET
-    role          = excluded.role,
-    system_prompt = excluded.system_prompt,
-    model         = excluded.model
+  ON CONFLICT (name) DO NOTHING
   RETURNING id INTO outcome;
+
+  IF outcome IS NULL THEN
+    SELECT id INTO outcome FROM agents WHERE name = _name;
+  END IF;
 
   -- Upsert skill attachments regardless of whether the agent row was inserted
   -- or updated, so schema changes that add a skill still link it to existing

@@ -4,6 +4,7 @@ set -euo pipefail
 container_name="orbitfactory-fact21-postgres-proof"
 database_name="orbitfactory_fact21_proof"
 upgrade_database_name="orbitfactory_fact21_upgrade_proof"
+nooverwrite_database_name="orbitfactory_fact21_nooverwrite_proof"
 database_user="orbitfactory"
 database_password="fact21-local-proof"
 created_container="false"
@@ -60,6 +61,9 @@ export ORBITFACTORY_FACT21_PROOF_DATABASE="$database_name"
 docker exec "$container_name" createdb --username "$database_user" "$upgrade_database_name"
 export ORBITFACTORY_FACT21_UPGRADE_DATABASE="$upgrade_database_name"
 export ORBITFACTORY_FACT21_UPGRADE_DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$upgrade_database_name"
+docker exec "$container_name" createdb --username "$database_user" "$nooverwrite_database_name"
+export ORBITFACTORY_FACT21_NOOVERWRITE_PROOF_DATABASE="$nooverwrite_database_name"
+export ORBITFACTORY_FACT21_NOOVERWRITE_DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$nooverwrite_database_name"
 
 # Clean-install proof first (uses the fresh main database)
 node --experimental-strip-types --test test/postgres/workflow-templates.test.mjs

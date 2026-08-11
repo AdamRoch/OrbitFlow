@@ -4,6 +4,14 @@ import {
   type WorkflowGraph,
 } from "@/lib/workflow/graph-contract";
 import { canonicalWorkflowGraphJson } from "@/lib/workflow/graph-contract";
+import { evaluateGraph, type GraphEvaluation } from "@/lib/workflow/graph";
+
+function assertDispatch(evaluation: GraphEvaluation, expectedNodeId: string): void {
+  expect(evaluation.kind).toBe("dispatch");
+  if (evaluation.kind === "dispatch") {
+    expect(evaluation.node.id).toBe(expectedNodeId);
+  }
+}
 
 /**
  * FACT-21 template graphs, reproduced from the migration SQL for pure in-process
@@ -228,29 +236,66 @@ describe("FACT-21 Research Pipeline graph contract", () => {
   });
 });
 
-describe("FACT-21 template proof: deleting the testing node yields a valid graph", () => {
-  it("Software Factory without test node still validates", () => {
-    const edited = structuredClone(softwareFactoryGraph);
-    edited.nodes = edited.nodes.filter((n) => n.id !== "test");
-    edited.edges = edited.edges.filter(
-      (e) => e.source !== "test" && e.target !== "test",
-    );
-    // After removing test, the implement node becomes terminal (no outgoing edges)
-    // The graph is valid: implement has no outgoing edges -> terminal is fine
-    expect(() => parseWorkflowGraph(edited)).not.toThrow();
-    expect(edited.edges).toHaveLength(2); // orchestrator->planner, planner->implement
-    expect(edited.nodes).toHaveLength(4);
+describe("FACT-21 template proof: deleting a node yields a valid graph that executes through the engine", () => {
+  describe("Software Factory without test node", () => {
+    const edited = (() => {
+      const g = structuredClone(softwareFactoryGraph);
+      g.nodes = g.nodes.filter((n) => n.id !== "test");
+      g.edges = g.edges.filter(
+        (e) => e.source !== "test" && e.target !== "test",
+      );
+      return g;
+    })();
+
+    it("still validates through parseWorkflowGraph", () => {
+      expect(() => parseWorkflowGraph(edited)).not.toThrow();
+      expect(edited.edges).toHaveLength(2);
+      expect(edited.nodes).toHaveLength(4);
+    });
+
+    it("walks through evaluateGraph from entry to terminal: orchestrator -> planner -> implement -> complete", () => {
+      // orchestrator (entry) dispatches to planner
+      const step1: ReturnType<typeof evaluateGraph> = evaluateGraph(edited, "orchestrator", {});
+      assertDispatch(step1, "planner");
+
+      // planner dispatches to implement
+      const step2 = evaluateGraph(edited, "planner", {});
+      assertDispatch(step2, "implement");
+
+      // implement has no outgoing edges -> terminal
+      const step3 = evaluateGraph(edited, "implement", {});
+      expect(step3.kind).toBe("complete");
+    });
   });
 
-  it("Research Pipeline without review node still validates", () => {
-    const edited = structuredClone(researchPipelineGraph);
-    edited.nodes = edited.nodes.filter((n) => n.id !== "review");
-    edited.edges = edited.edges.filter(
-      (e) => e.source !== "review" && e.target !== "review",
-    );
-    // After removing review, synthesize becomes terminal
-    expect(() => parseWorkflowGraph(edited)).not.toThrow();
-    expect(edited.edges).toHaveLength(2); // orchestrator->research, research->synthesize
-    expect(edited.nodes).toHaveLength(4);
+  describe("Research Pipeline without review node", () => {
+    const edited = (() => {
+      const g = structuredClone(researchPipelineGraph);
+      g.nodes = g.nodes.filter((n) => n.id !== "review");
+      g.edges = g.edges.filter(
+        (e) => e.source !== "review" && e.target !== "review",
+      );
+      return g;
+    })();
+
+    it("still validates through parseWorkflowGraph", () => {
+      expect(() => parseWorkflowGraph(edited)).not.toThrow();
+      expect(edited.edges).toHaveLength(2);
+      expect(edited.nodes).toHaveLength(4);
+    });
+
+    it("walks through evaluateGraph from entry to terminal: orchestrator -> research -> synthesize -> complete", () => {
+      // orchestrator (entry) dispatches to research
+      const step1 = evaluateGraph(edited, "orchestrator", {});
+      assertDispatch(step1, "research");
+
+      // research dispatches to synthesize
+      const step2 = evaluateGraph(edited, "research", {});
+      assertDispatch(step2, "synthesize");
+
+      // synthesize has no outgoing edges -> terminal
+      const step3 = evaluateGraph(edited, "synthesize", {});
+      expect(step3.kind).toBe("complete");
+    });
   });
 });
