@@ -84,3 +84,13 @@ export function RadarIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+export function OrbitIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="2.2" />
+      <ellipse cx="12" cy="12" rx="9" ry="4.2" transform="rotate(-24 12 12)" />
+      <circle cx="19.1" cy="8.8" r="1" />
+    </svg>
+  );
+}

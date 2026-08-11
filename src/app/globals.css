@@ -1,4 +1,38 @@
 @import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+.react-flow__controls,
+.react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.8rem;
+  background: rgba(11, 17, 31, 0.94);
+}
+
+.react-flow__controls-button {
+  border-bottom-color: var(--border);
+  background: transparent;
+  fill: var(--foreground-muted);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--surface-hover);
+}
+
+@media (max-width: 639px) {
+  .react-flow__minimap,
+  .react-flow__minimap-svg {
+    width: 120px;
+    height: 90px;
+  }
+}
+
+.react-flow__edge:focus-visible .react-flow__edge-path,
+.react-flow__node:focus-visible > div {
+  stroke: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
 
 /*
  * OrbitFactory design tokens — a deep-space / UFO glass theme.

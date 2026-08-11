@@ -6,6 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The OrbitFactory ticket foundation is adapted from OrbitTrack commit `589e04165a0744be10b7fc1b05984c6a3bff234c`; `docs/fact-5-orbittrack-inventory.md` owns its keep/delete boundary and provenance.
 - The durable PostgreSQL contract and disposable clean-database proof live in `docs/postgres-schema.md`; apply it with `DATABASE_URL=... npm run db:migrate`.
 - FACT-9's producer, routing transaction, polling, and cleanup contracts live in `docs/message-bus.md`; prove them with `npm run fact9:proof`.
+- FACT-20's engine-compatible graph schema, visual editor boundary, and proof commands live in `docs/workflow-builder.md`; no builder translation model or migration exists.
 - FACT-10's pure graph, durable dispatch, fan-out, lifecycle, and mock-runtime contracts live in `docs/workflow-engine.md`; prove them with `npm run fact10:proof`.
 - FACT-11's OpenClaw sync, wake, failure, credential, and fake-provider proof contracts live in `docs/openclaw-runtime-adapter.md`; prove them with `npm run fact11:proof`.
 

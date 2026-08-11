@@ -4,13 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { UfoIcon, AlienIcon, StarIcon, CometIcon, SignalIcon } from "@/components/icons";
+import { UfoIcon, AlienIcon, StarIcon, CometIcon, OrbitIcon, SignalIcon } from "@/components/icons";
 
 const LINKS = [
   { href: "/", label: "Tickets", Icon: StarIcon },
   { href: "/frontier", label: "Frontier", Icon: CometIcon },
   { href: "/monitoring", label: "Monitoring", Icon: SignalIcon },
   { href: "/agents", label: "Agents", Icon: UfoIcon },
+  { href: "/workflows", label: "Workflows", Icon: OrbitIcon },
   { href: "/labels", label: "Labels", Icon: AlienIcon },
 ];
 

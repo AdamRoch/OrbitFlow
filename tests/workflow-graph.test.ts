@@ -5,6 +5,7 @@ import {
   parseWorkflowGraph,
   predicateMatches,
 } from "../src/lib/workflow/graph";
+import { parseWorkflowGraph as parseControlPlaneWorkflowGraph } from "../src/lib/workflow/graph-contract";
 
 const graphValue = {
   nodes: [
@@ -28,6 +29,11 @@ const graphValue = {
 };
 
 describe("pure workflow graph evaluation", () => {
+  it("uses the control-plane parser without projecting stored graph JSON", () => {
+    expect(parseWorkflowGraph).toBe(parseControlPlaneWorkflowGraph);
+    expect(parseWorkflowGraph(graphValue)).toBe(graphValue);
+  });
+
   it("traverses a rejection cycle without special-casing the loop", () => {
     const graph = parseWorkflowGraph(graphValue);
     const first = evaluateGraph(graph, "implement", { artifact: "change" });
@@ -88,7 +94,7 @@ describe("pure workflow graph evaluation", () => {
     ).toThrow(/exactly one entry node/);
     expect(() =>
       parseWorkflowGraph({
-        nodes: [{ id: "only", agentId: 1, config: { entry: true, fanOut: { maxConcurrency: 0 } } }],
+        nodes: [{ id: "only", agentId: 1, config: { entry: true, fanOut: { over: "openTickets", maxConcurrency: 0 } } }],
         edges: [],
       }),
     ).toThrow(/maxConcurrency/);

@@ -45,4 +45,33 @@ describe("SiteNav mobile dialog", () => {
     expect(document.querySelector("main")?.hasAttribute("inert")).toBe(false);
     expect(document.activeElement).toBe(toggle);
   });
+
+  it("keeps closed mobile navigation out of the accessibility tree and Tab order", () => {
+    expect(
+      container.querySelector('nav[aria-label="Mobile navigation"]'),
+    ).toBeNull();
+    expect(
+      container.querySelectorAll('nav[aria-label="Mobile navigation"] a'),
+    ).toHaveLength(0);
+  });
+
+  it("exposes mobile destinations when the menu opens", async () => {
+    const menuButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Toggle menu"]',
+    )!;
+
+    await act(async () => menuButton.click());
+
+    const mobileNavigation = container.querySelector<HTMLElement>(
+      'nav[aria-label="Mobile navigation"]',
+    );
+    expect(mobileNavigation).not.toBeNull();
+    expect(mobileNavigation?.querySelector('a[href="/agents"]')?.textContent).toContain(
+      "Agents",
+    );
+    expect(mobileNavigation?.querySelector('a[href="/workflows"]')?.textContent).toContain(
+      "Workflows",
+    );
+    expect(mobileNavigation?.querySelectorAll("a")).toHaveLength(7);
+  });
 });

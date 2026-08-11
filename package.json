@@ -34,6 +34,7 @@
     "coding-tool": "node bin/orbit-coding-tool.mjs"
   },
   "dependencies": {
+    "@xyflow/react": "^12.11.2",
     "better-sqlite3": "^12.11.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
