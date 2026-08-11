@@ -9,6 +9,7 @@ import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
 import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
 import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
 import { DELETE as deleteWorkflow, GET as getWorkflow, PATCH as patchWorkflow } from "@/app/api/workflows/[id]/route";
+import { GET as getMonitoring } from "@/app/api/monitoring/route";
 import {
   ControlPlaneRepository,
   getControlPlaneRepository,
@@ -364,5 +365,108 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       ]);
       expect([first.status, second.status].sort()).toEqual([200, 409]);
     }
+  });
+
+  it("FACT-22 reads bounded board, trail, durable agent state, and exact costs from PostgreSQL", async () => {
+    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('FACT', 'OrbitFactory', 4) RETURNING id");
+    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Monitoring proof', 'FACT-22', '{}') RETURNING id");
+    const [waitingAgent, workingAgent, zeroSpendAgent] = await Promise.all([
+      pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Question owner', 'worker', 'Ask when blocked.', 'test', '{"costLimit":0.3}', '{}', '{}') RETURNING id`),
+      pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Active owner', 'worker', 'Keep working.', 'test', '{"costLimit":1}', '{}', '{}') RETURNING id`),
+      pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('No spend owner', 'worker', 'Remain visible without a cost event.', 'test', '{"costLimit":0.7}', '{}', '{}') RETURNING id`),
+    ]);
+    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    const [questionTicket, activeTicket] = await Promise.all([
+      pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (1, 'FACT-1', $1, $2, 'Needs an answer', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, waitingAgent.rows[0].id]),
+      pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (2, 'FACT-2', $1, $2, 'Still executing', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, workingAgent.rows[0].id]),
+    ]);
+    await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (3, 'FACT-3', $1, $2, 'No cost yet', 'todo', $3)`, [project.rows[0].id, run.rows[0].id, zeroSpendAgent.rows[0].id]);
+    await pool.query(`INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload, handoff_brief)
+      VALUES ($1, $2, 'agent:' || $3, 'telegram:adam', 'question', '{"body":"Need a decision"}', 'Handoff before escalation'),
+             ($1, $4, 'agent:' || $5, 'agent:next', 'output', '{"body":"Implementation update"}', 'Continue from this checkpoint'),
+             ($1, $2, 'system:worker', 'agent:' || $3, 'system', '{"body":"Still waiting"}', NULL),
+             ($1, NULL, 'telegram:adam', 'agent:' || $3, 'channel_inbound', '{"body":"Telegram reply"}', NULL)`, [run.rows[0].id, questionTicket.rows[0].id, waitingAgent.rows[0].id, activeTicket.rows[0].id, workingAgent.rows[0].id]);
+    await pool.query(`INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost)
+      VALUES ($1, $2, 'test', 101, 11, 0.10000001), ($1, $2, 'test', 202, 22, 0.20000002), ($1, $3, 'test', 9, 3, 0.50000000)`, [run.rows[0].id, waitingAgent.rows[0].id, workingAgent.rows[0].id]);
+
+    const all = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
+    expect(all.status).toBe(200);
+    expect(all.body.board.map((ticket: { identifier: string }) => ticket.identifier).sort()).toEqual(["FACT-1", "FACT-2", "FACT-3"]);
+    expect(all.body.trail.map((message: { type: string }) => message.type)).toEqual(["channel_inbound", "system", "output", "question"]);
+    expect(all.body.agents.map((agent: { name: string; status: string }) => [agent.name, agent.status])).toEqual([["Active owner", "working"], ["No spend owner", "idle"], ["Question owner", "waiting-on-question"]]);
+    expect(all.body.agentCosts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentName: "Question owner", tokensIn: "303", tokensOut: "33", totalTokens: "336", totalCost: "0.30000003", costLimit: "0.3", overCostLimit: true }),
+      expect.objectContaining({ agentName: "Active owner", totalCost: "0.50000000", costLimit: "1", overCostLimit: false }),
+      expect.objectContaining({ agentName: "No spend owner", tokensIn: "0", tokensOut: "0", totalTokens: "0", totalCost: "0", costLimit: "0.7", overCostLimit: false }),
+    ]));
+    expect(all.body.runCosts).toEqual([expect.objectContaining({ runId: String(run.rows[0].id), tokensIn: "312", tokensOut: "36", totalTokens: "348", totalCost: "0.80000003" })]);
+
+    const filtered = await response(await getMonitoring(new Request(`http://orbitfactory.test/api/monitoring?runId=${run.rows[0].id}&agentId=${waitingAgent.rows[0].id}&messageType=question`)));
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.trail).toEqual([expect.objectContaining({ type: "question", ticketId: String(questionTicket.rows[0].id) })]);
+    expect(filtered.body.agentCosts).toEqual([expect.objectContaining({ agentName: "Question owner", totalCost: "0.30000003" })]);
+    expect(filtered.body.agentOptions.map((agent: { name: string }) => agent.name)).toEqual(["Active owner", "No spend owner", "Question owner"]);
+    expect(filtered.body.runCosts).toEqual([expect.objectContaining({ totalCost: "0.30000003", totalTokens: "336" })]);
+    const directQuestionSum = await pool.query("SELECT SUM(computed_cost)::text AS total_cost FROM cost_events WHERE run_id = $1 AND agent_id = $2", [run.rows[0].id, waitingAgent.rows[0].id]);
+    expect(filtered.body.runCosts[0].totalCost).toBe(directQuestionSum.rows[0].total_cost);
+    expect((await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring?messageType=nope")))).status).toBe(400);
+
+    const otherRun = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    const otherAgent = await pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Other run owner', 'worker', 'Do not leak into selected run.', 'test', '{}', '{}', '{}') RETURNING id`);
+    await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (4, 'FACT-4', $1, $2, 'Another run', 'in_progress', $3)`, [project.rows[0].id, otherRun.rows[0].id, otherAgent.rows[0].id]);
+    const selectedRun = await response(await getMonitoring(new Request(`http://orbitfactory.test/api/monitoring?runId=${run.rows[0].id}`)));
+    expect(selectedRun.body.agents.map((agent: { name: string }) => agent.name)).not.toContain("Other run owner");
+
+    await pool.query("INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload) VALUES ($1, $2, 'telegram:adam', $3, 'answer', '{}')", [run.rows[0].id, questionTicket.rows[0].id, `agent:${waitingAgent.rows[0].id}`]);
+    const resolved = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
+    expect(resolved.body.agents.find((agent: { name: string }) => agent.name === "Question owner")).toMatchObject({ status: "working" });
+  });
+
+  it("FACT-22 keeps every panel in one repeatable-read snapshot while another client commits", async () => {
+    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('SNAP', 'Snapshot proof', 3) RETURNING id");
+    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Snapshot workflow', 'FACT-22', '{}') RETURNING id");
+    const agent = await pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Snapshot agent', 'worker', 'Read consistent data.', 'test', '{"costLimit":1}', '{}', '{}') RETURNING id`);
+    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (1, 'SNAP-1', $1, $2, 'Before commit', 'in_progress', $3)`, [project.rows[0].id, run.rows[0].id, agent.rows[0].id]);
+    let committed = false;
+    const repository = new ControlPlaneRepository(pool, { afterMonitoringPanelRead: async (panel) => {
+      if (panel !== "runs" || committed) return;
+      committed = true;
+      await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (2, 'SNAP-2', $1, $2, 'Committed during read', 'in_progress', $3)`, [project.rows[0].id, run.rows[0].id, agent.rows[0].id]);
+      await pool.query("INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost) VALUES ($1, $2, 'test', 7, 5, 0.25000000)", [run.rows[0].id, agent.rows[0].id]);
+    }});
+    const consistent = await repository.getMonitoringSnapshot({ runId: String(run.rows[0].id), agentId: null, messageType: null });
+    expect(committed).toBe(true);
+    expect(consistent.board.map((ticket) => ticket.identifier)).toEqual(["SNAP-1"]);
+    expect(consistent.runCosts).toEqual([expect.objectContaining({ totalCost: "0", totalTokens: "0" })]);
+    const after = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: String(run.rows[0].id), agentId: null, messageType: null });
+    expect(after.board.map((ticket) => ticket.identifier)).toContain("SNAP-2");
+    expect(after.runCosts).toEqual([expect.objectContaining({ totalCost: "0.25000000", totalTokens: "12" })]);
+  });
+
+  it("FACT-22 exposes truncation metadata for capped board, agents, and agent costs", async () => {
+    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('CAP', 'Cap proof', 202) RETURNING id");
+    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Cap workflow', 'FACT-22', '{}') RETURNING id");
+    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    await pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) SELECT 'Cap agent ' || n, 'worker', 'Bounded result proof.', 'test', '{"costLimit":1}', '{}', '{}' FROM generate_series(1, 201) AS n`);
+    await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) SELECT n, 'CAP-' || n, $1, $2, 'Cap ticket ' || n, 'in_progress', agent.id FROM generate_series(1, 201) AS n JOIN agents AS agent ON agent.name = 'Cap agent ' || n`, [project.rows[0].id, run.rows[0].id]);
+    const capped = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: String(run.rows[0].id), agentId: null, messageType: null });
+    expect(capped.board).toHaveLength(200);
+    expect(capped.agents).toHaveLength(200);
+    expect(capped.agentCosts).toHaveLength(200);
+    expect(capped).toMatchObject({ boardTruncated: true, agentsTruncated: true, agentCostsTruncated: true, trailTruncated: false });
+  });
+
+  it("FACT-22 marks per-run costs truncated when the retained run set exceeds 100", async () => {
+    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Run cap workflow', 'FACT-22', '{}') RETURNING id");
+    const agent = await pool.query("INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Run cap agent', 'worker', 'Prove retained-run cost truncation.', 'test', '{}', '{}', '{}') RETURNING id");
+    await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) SELECT $1, 'running', 'ui', '{}' FROM generate_series(1, 101)", [workflow.rows[0].id]);
+    await pool.query("INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost) SELECT run.id, $2, 'test', 1, 2, 0.01000000 FROM workflow_runs AS run WHERE run.workflow_id = $1", [workflow.rows[0].id, agent.rows[0].id]);
+
+    const capped = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: null, agentId: null, messageType: null });
+
+    expect(capped.runs).toHaveLength(100);
+    expect(capped.runCosts).toHaveLength(100);
+    expect(capped).toMatchObject({ runsTruncated: true, runCostsTruncated: true });
   });
 });

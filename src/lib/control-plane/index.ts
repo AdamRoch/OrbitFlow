@@ -11,7 +11,13 @@ export function getControlPlaneRepository(): ControlPlaneRepository {
   if (!connectionString) {
     throw new Error("DATABASE_URL is required for the PostgreSQL control plane");
   }
-  pool = new Pool({ connectionString, application_name: "orbitfactory-control-plane" });
+  pool = new Pool({
+    connectionString,
+    application_name: "orbitfactory-control-plane",
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 5_000,
+    statement_timeout: 5_000,
+  });
   repository = new ControlPlaneRepository(pool);
   return repository;
 }
