@@ -42,6 +42,11 @@ const expectedColumns = {
     "created_at",
     "updated_at",
   ],
+  workflow_questions: [
+    "id", "run_id", "ticket_id", "originating_dispatch_id", "question_message_id",
+    "answer_message_id", "outbound_message_id", "kind", "boundary", "route",
+    "target_agent_id", "question_text", "status", "created_at", "answered_at", "updated_at",
+  ],
   skills: [
     "id",
     "name",
@@ -195,6 +200,7 @@ const expectedColumns = {
     "failure_reason",
     "created_at",
     "updated_at",
+    "answering_question_id",
   ],
   workflow_thread_states: [
     "id",
@@ -264,6 +270,10 @@ const expectedEnums = {
   workflow_thread_status: ["running", "paused"],
   telegram_outbound_delivery_status: ["sending", "sent", "indeterminate"],
   channel_intake_status: ["collecting", "ready", "failed"],
+  workflow_question_kind: ["question", "approval"],
+  workflow_question_boundary: ["worker", "before", "after"],
+  workflow_question_route: ["agent", "human-via-channel", "human-via-UI"],
+  workflow_question_status: ["pending", "answered"],
 };
 
 const requiredConstraints = [
@@ -334,6 +344,9 @@ const requiredConstraints = [
   "workflow_dispatches_state_complete",
   "workflow_thread_states_identity_unique",
   "workflow_thread_states_pause_complete",
+  "workflow_questions_text_not_blank",
+  "workflow_questions_agent_target_complete",
+  "workflow_questions_answer_complete",
 ];
 
 const requiredIndexes = [
@@ -368,6 +381,8 @@ const requiredIndexes = [
   "idx_workflow_dispatches_claim",
   "idx_workflow_dispatches_fanout_status",
   "idx_workflow_dispatches_run_status",
+  "idx_workflow_questions_pending",
+  "idx_workflow_questions_ticket_history",
 ];
 
 async function rejectWithCode(client, text, values, code) {
@@ -769,6 +784,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         tickets_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         workflow_dispatches_agent_id_fkey:
           "REFERENCES agents(id) ON DELETE RESTRICT",
+        workflow_dispatches_answering_question_id_fkey:
+          "REFERENCES workflow_questions(id) ON DELETE RESTRICT",
         workflow_dispatches_fanout_group_id_fkey:
           "REFERENCES workflow_fanout_groups(id) ON DELETE RESTRICT",
         workflow_dispatches_output_message_id_fkey:
@@ -788,6 +805,20 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         workflow_fanout_members_fanout_group_id_fkey:
           "REFERENCES workflow_fanout_groups(id) ON DELETE RESTRICT",
         workflow_fanout_members_ticket_id_fkey:
+          "REFERENCES tickets(id) ON DELETE RESTRICT",
+        workflow_questions_answer_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        workflow_questions_originating_dispatch_id_fkey:
+          "REFERENCES workflow_dispatches(id) ON DELETE RESTRICT",
+        workflow_questions_outbound_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        workflow_questions_question_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        workflow_questions_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        workflow_questions_target_agent_id_fkey:
+          "REFERENCES agents(id) ON DELETE RESTRICT",
+        workflow_questions_ticket_id_fkey:
           "REFERENCES tickets(id) ON DELETE RESTRICT",
         workflow_thread_states_run_id_fkey:
           "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
@@ -863,6 +894,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           "messages_90_notify_state_stream",
           "tickets_10_enforce_message_runs",
           "tickets_90_notify_state_stream",
+          "workflow_questions_90_notify_state_stream",
           "workflow_runs_30_initialize_message_consumer",
           "workflow_runs_90_notify_state_stream",
         ],

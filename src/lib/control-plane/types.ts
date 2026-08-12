@@ -130,6 +130,20 @@ export interface MonitoringTicketDTO {
   assigneeAgentId: string | null;
   assigneeName: string | null;
   updatedAt: string;
+  questionCount?: number;
+  pendingQuestionCount?: number;
+}
+
+export interface MonitoringQuestionDTO {
+  id: string;
+  runId: string;
+  ticketId: string | null;
+  ticketIdentifier: string | null;
+  kind: "question" | "approval";
+  boundary: "worker" | "before" | "after";
+  route: "agent" | "human-via-channel" | "human-via-UI";
+  questionText: string;
+  createdAt: string;
 }
 
 export interface MonitoringMessageDTO {
@@ -186,6 +200,7 @@ export interface MonitoringSnapshot {
   readAt: string;
   runs: MonitoringRunDTO[];
   board: MonitoringTicketDTO[];
+  pendingQuestions?: MonitoringQuestionDTO[];
   trail: MonitoringMessageDTO[];
   /** Every capped collection reports whether an authoritative continuation exists. */
   runsTruncated: boolean;

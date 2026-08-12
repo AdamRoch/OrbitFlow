@@ -82,6 +82,30 @@ describe("MonitoringDashboard", () => {
     expect(replaceMock).toHaveBeenCalledWith("/monitoring?tab=cost");
   });
 
+  it("surfaces a pending UI approval and posts its correlated approving answer", async () => {
+    const withApproval: MonitoringSnapshot = {
+      ...snapshot,
+      pendingQuestions: [{
+        id: "24", runId: "9", ticketId: "11", ticketIdentifier: "FACT-11",
+        kind: "approval", boundary: "before", route: "human-via-UI",
+        questionText: "Approve starting workflow node implement?", createdAt: "2026-08-10T12:00:00.000Z",
+      }],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).startsWith("/api/monitoring")
+      ? new Response(JSON.stringify(withApproval), { status: 200 })
+      : new Response(JSON.stringify({ replayed: false }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => FakeEventSource.instances[0]!.emit("state", JSON.stringify({ schemaVersion: 1, type: "question.created", runId: "9", agentId: null, ticketId: "11", occurredAt: "2026-08-10T12:00:01.000Z" })));
+    expect(container.textContent).toContain("Approve starting workflow node implement?");
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Approve")!;
+    await act(async () => button.click());
+    expect(fetchMock).toHaveBeenCalledWith("/api/questions/24/answer", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ answer: "Approved", approved: true }),
+    }));
+    expect(container.textContent).toContain("Submitted");
+  });
+
   it("keeps the displayed snapshot and declares degradation when refetching fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
     await act(async () => FakeEventSource.instances[0]!.emit("state", JSON.stringify({ schemaVersion: 1, type: "cost.created", runId: "9", agentId: "2", ticketId: null, occurredAt: "2026-08-10T12:00:01.000Z" })));

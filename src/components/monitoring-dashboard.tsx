@@ -251,16 +251,46 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
 }
 
 function Board({ snapshot }: { snapshot: MonitoringSnapshot }) {
-  return <section aria-label="Board" className="ticket-panel rounded-[1.75rem] p-1.5"><div className="glass-core overflow-hidden p-0">
+  const pendingQuestions = snapshot.pendingQuestions ?? [];
+  return <section aria-label="Board" className="space-y-3">
+    {pendingQuestions.length > 0 && <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+      {pendingQuestions.map((question) => <PendingQuestion key={question.id} question={question} />)}
+    </div>}
+    <div className="ticket-panel rounded-[1.75rem] p-1.5"><div className="glass-core overflow-hidden p-0">
     {snapshot.board.length === 0 ? <Empty label="No durable tickets match this run." /> : <div className="divide-y divide-[--border]">
       {snapshot.board.map((ticket) => <article key={ticket.id} className="grid min-w-0 gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
-        <div className="min-w-0"><p className="break-words text-sm font-medium text-[--foreground] sm:truncate">{ticket.identifier} · {ticket.title}</p><p className="mt-0.5 text-xs text-[--foreground-subtle]">Run {ticket.runId ?? "unassigned"} · updated {formatTime(ticket.updatedAt)}</p></div>
+        <div className="min-w-0"><p className="break-words text-sm font-medium text-[--foreground] sm:truncate">{ticket.identifier} · {ticket.title}</p><p className="mt-0.5 text-xs text-[--foreground-subtle]">Run {ticket.runId ?? "unassigned"} · {(ticket.questionCount ?? 0)} Q&amp;A events · {(ticket.pendingQuestionCount ?? 0)} pending · updated {formatTime(ticket.updatedAt)}</p></div>
         <span className={`text-xs font-medium ${statusClass(ticket.status)}`}>{ticket.status.replace("_", " ")}</span>
         <span className="text-xs text-[--foreground-muted]">{ticket.assigneeName ?? "Unassigned"}</span>
       </article>)}
     </div>}
     {snapshot.boardTruncated && <p className="border-t border-[--border] px-4 py-3 text-xs text-[--foreground-subtle]">Showing the first 200 matching tickets. Refine filters to keep the authoritative snapshot bounded.</p>}
-  </div></section>;
+  </div></div></section>;
+}
+
+function PendingQuestion({ question }: { question: NonNullable<MonitoringSnapshot["pendingQuestions"]>[number] }) {
+  const [answer, setAnswer] = useState(question.kind === "approval" ? "Approved" : "");
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!answer.trim() || state === "sending") return;
+    setState("sending");
+    try {
+      const response = await fetch(`/api/questions/${question.id}/answer`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answer: answer.trim(), ...(question.kind === "approval" ? { approved: true } : {}) }),
+      });
+      setState(response.ok ? "sent" : "failed");
+    } catch {
+      setState("failed");
+    }
+  };
+  return <form onSubmit={submit} className="min-w-0 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4">
+    <div className="flex flex-wrap items-center gap-2 text-xs"><span className="font-medium uppercase tracking-wide text-amber-200">{question.kind}</span><span className="text-[--foreground-subtle]">{question.ticketIdentifier ?? `Run ${question.runId}`} · {question.boundary} · {question.route}</span></div>
+    <p className="mt-2 break-words text-sm text-[--foreground]">{question.questionText}</p>
+    {question.route === "human-via-UI" ? <div className="mt-3 flex min-w-0 gap-2"><input aria-label={`Answer question ${question.id}`} value={answer} onChange={(event) => setAnswer(event.target.value)} disabled={state === "sent"} className="min-w-0 flex-1 rounded-lg border border-[--border-strong] bg-[--background]/60 px-3 py-2 text-sm"/><button disabled={!answer.trim() || state === "sending" || state === "sent"} className="shrink-0 rounded-lg bg-[--accent] px-3 py-2 text-xs font-semibold text-[#04121a] disabled:opacity-50">{state === "sent" ? "Submitted" : question.kind === "approval" ? "Approve" : "Answer"}</button></div> : <p className="mt-3 text-xs text-[--foreground-muted]">Waiting for {question.route === "agent" ? "the configured answering agent" : "a reply in the originating Telegram chat"}.</p>}
+    {state === "failed" && <p role="alert" className="mt-2 text-xs text-[--danger]">Answer was not accepted. Check the Trail and retry.</p>}
+  </form>;
 }
 
 function Trail({ snapshot }: { snapshot: MonitoringSnapshot }) {

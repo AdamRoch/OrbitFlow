@@ -122,7 +122,8 @@ const expectedColumns = {
   agent_wake_events: ["id","run_id","agent_id","dispatch_id","lease_generation","created_at","updated_at"],
   workflow_fanout_groups: ["id","run_id","source_message_id","node_id","agent_id","agent_model","node_config","max_concurrency","created_at","updated_at"],
   workflow_fanout_members: ["fanout_group_id","position","ticket_id","created_at"],
-  workflow_dispatches: ["id","run_id","node_id","agent_id","agent_model","ticket_id","source_message_id","fanout_group_id","status","input","idempotency_key","attempt_count","lease_generation","runtime_generation","lease_owner","lease_expires_at","runtime_session_id","output_message_id","reconciliation_reason","failure_reason","created_at","updated_at"],
+  workflow_dispatches: ["id","run_id","node_id","agent_id","agent_model","ticket_id","source_message_id","fanout_group_id","status","input","idempotency_key","attempt_count","lease_generation","runtime_generation","lease_owner","lease_expires_at","runtime_session_id","output_message_id","reconciliation_reason","failure_reason","created_at","updated_at","answering_question_id"],
+  workflow_questions: ["id","run_id","ticket_id","originating_dispatch_id","question_message_id","answer_message_id","outbound_message_id","kind","boundary","route","target_agent_id","question_text","status","created_at","answered_at","updated_at"],
   workflow_thread_states: ["id","run_id","ticket_id","status","pause_reason","created_at","updated_at"],
   schedules: ["id","cron_expression","workflow_id","agent_id","task_prompt","enabled","created_at","updated_at"],
   schedule_ticks: ["id","schedule_id","tick_key","run_id","message_id","created_at"],
@@ -139,6 +140,10 @@ const expectedEnums = {
   workflow_thread_status: ["running","paused"],
   telegram_outbound_delivery_status: ["sending","sent","indeterminate"],
   channel_intake_status: ["collecting","ready","failed"],
+  workflow_question_kind: ["question","approval"],
+  workflow_question_boundary: ["worker","before","after"],
+  workflow_question_route: ["agent","human-via-channel","human-via-UI"],
+  workflow_question_status: ["pending","answered"],
 };
 
 const requiredConstraints = [
@@ -173,6 +178,8 @@ const requiredConstraints = [
   "workflow_dispatches_output_message_id_key","workflow_dispatches_runtime_generation_positive",
   "workflow_dispatches_state_complete","workflow_thread_states_identity_unique",
   "workflow_thread_states_pause_complete",
+  "workflow_questions_text_not_blank","workflow_questions_agent_target_complete",
+  "workflow_questions_answer_complete",
 ];
 
 const requiredIndexes = [
@@ -192,6 +199,7 @@ const requiredIndexes = [
   "idx_workflow_fanout_groups_run_node","idx_workflow_fanout_members_ticket",
   "idx_workflow_dispatches_claim","idx_workflow_dispatches_fanout_status",
   "idx_workflow_dispatches_run_status",
+  "idx_workflow_questions_pending","idx_workflow_questions_ticket_history",
 ];
 
 process.stderr.write("TAP version 13\n");
@@ -346,6 +354,7 @@ try {
       tickets_project_id_fkey: "REFERENCES projects(id) ON DELETE RESTRICT",
       tickets_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
       workflow_dispatches_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
+      workflow_dispatches_answering_question_id_fkey: "REFERENCES workflow_questions(id) ON DELETE RESTRICT",
       workflow_dispatches_fanout_group_id_fkey: "REFERENCES workflow_fanout_groups(id) ON DELETE RESTRICT",
       workflow_dispatches_output_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
       workflow_dispatches_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
@@ -356,6 +365,13 @@ try {
       workflow_fanout_groups_source_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
       workflow_fanout_members_fanout_group_id_fkey: "REFERENCES workflow_fanout_groups(id) ON DELETE RESTRICT",
       workflow_fanout_members_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE RESTRICT",
+      workflow_questions_answer_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
+      workflow_questions_originating_dispatch_id_fkey: "REFERENCES workflow_dispatches(id) ON DELETE RESTRICT",
+      workflow_questions_outbound_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
+      workflow_questions_question_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
+      workflow_questions_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+      workflow_questions_target_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
+      workflow_questions_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE RESTRICT",
       workflow_thread_states_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
       workflow_thread_states_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE RESTRICT",
       workflow_runs_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",
@@ -394,6 +410,7 @@ try {
       "messages_20_assign_sequence","messages_30_track_consumption",
       "messages_40_refresh_ready_run","messages_90_notify_state_stream",
       "tickets_10_enforce_message_runs","tickets_90_notify_state_stream",
+      "workflow_questions_90_notify_state_stream",
       "workflow_runs_30_initialize_message_consumer","workflow_runs_90_notify_state_stream",
     ]);
   });

@@ -251,6 +251,125 @@ async function ticketInput(
   } as JsonObject;
 }
 
+function questionRoute(node: WorkflowNode): { target: "agent" | "human-via-channel" | "human-via-UI"; agentId: string | null } {
+  const escalation = node.config.questionEscalation;
+  const target = escalation?.target ?? "human-via-UI";
+  return {
+    target,
+    agentId: target === "agent" ? positiveId(escalation!.agentId! as DatabaseId, "question escalation agentId") : null,
+  };
+}
+
+async function pauseThreadInTransaction(
+  transaction: PoolClient,
+  runId: string,
+  ticketId: string | null,
+  reason: string,
+): Promise<void> {
+  await transaction.query(
+    `INSERT INTO workflow_thread_states (run_id, ticket_id, status, pause_reason)
+     VALUES ($1, $2, 'paused', $3)
+     ON CONFLICT ON CONSTRAINT workflow_thread_states_identity_unique
+     DO UPDATE SET status = 'paused', pause_reason = EXCLUDED.pause_reason,
+                   updated_at = clock_timestamp()`,
+    [runId, ticketId, reason],
+  );
+}
+
+async function openWorkflowQuestion(
+  transaction: PoolClient,
+  input: {
+    runId: string;
+    ticketId: string | null;
+    dispatchId: string;
+    node: WorkflowNode;
+    kind: "question" | "approval";
+    boundary: "worker" | "before" | "after";
+    text: string;
+    sender: string;
+    questionMessage?: MessageRow;
+  },
+): Promise<string> {
+  const route = questionRoute(input.node);
+  if (route.target === "agent") {
+    const graph = await transaction.query<{ graph_snapshot: unknown }>(
+      "SELECT graph_snapshot FROM workflow_runs WHERE id = $1 FOR KEY SHARE",
+      [input.runId],
+    );
+    const answeringNode = parseWorkflowGraph(graph.rows[0]!.graph_snapshot).nodes.find(
+      (node) => String(node.agentId) === route.agentId && node.config.may_answer_questions === true,
+    );
+    if (!answeringNode) {
+      throw new WorkflowGraphError(`question escalation agent ${route.agentId} may not answer questions`);
+    }
+  }
+  const questionMessage = input.questionMessage ?? await insertMessage(transaction, {
+    runId: input.runId,
+    ticketId: input.ticketId,
+    sender: input.sender,
+    recipient: route.target === "agent" ? `agent:${route.agentId}` : route.target,
+    type: "question",
+    payload: { question: input.text, kind: input.kind, boundary: input.boundary },
+    handoffBrief: input.text,
+  });
+  const existing = await transaction.query<{ id: string }>(
+    "SELECT id FROM workflow_questions WHERE question_message_id = $1",
+    [questionMessage.id],
+  );
+  if (existing.rows[0]) return existing.rows[0].id;
+  const created = await transaction.query<{ id: string }>(
+    `INSERT INTO workflow_questions (
+       run_id, ticket_id, originating_dispatch_id, question_message_id,
+       kind, boundary, route, target_agent_id, question_text
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id`,
+    [input.runId, input.ticketId, input.dispatchId, questionMessage.id, input.kind,
+      input.boundary, route.target, route.agentId, input.text],
+  );
+  const questionId = created.rows[0]!.id;
+  await pauseThreadInTransaction(transaction, input.runId, input.ticketId, `waiting on question ${questionId}`);
+
+  if (route.target === "human-via-channel") {
+    const run = await transaction.query<{ chat_id: string | null }>(
+      "SELECT spec #>> '{channelContext,chat,id}' AS chat_id FROM workflow_runs WHERE id = $1",
+      [input.runId],
+    );
+    const chatId = run.rows[0]?.chat_id;
+    if (!chatId) throw new WorkflowGraphError("human-via-channel question has no originating channel chat");
+    const outbound = await insertMessage(transaction, {
+      runId: input.runId,
+      ticketId: input.ticketId,
+      sender: "system:workflow-engine",
+      recipient: `telegram:chat:${chatId}`,
+      type: "channel_outbound",
+      payload: { provider: "telegram", chatId, text: input.text, questionId },
+      handoffBrief: input.text,
+    });
+    await transaction.query("UPDATE workflow_questions SET outbound_message_id = $2 WHERE id = $1", [questionId, outbound.id]);
+  } else if (route.target === "agent") {
+    const graph = await transaction.query<{ graph_snapshot: unknown; spec: JsonObject }>(
+      "SELECT graph_snapshot, spec FROM workflow_runs WHERE id = $1",
+      [input.runId],
+    );
+    const answeringNode = parseWorkflowGraph(graph.rows[0]!.graph_snapshot).nodes.find(
+      (node) => String(node.agentId) === route.agentId && node.config.may_answer_questions === true,
+    )!;
+    const agent = await transaction.query<{ model: string }>("SELECT model FROM agents WHERE id = $1", [route.agentId]);
+    await transaction.query(
+      `INSERT INTO workflow_dispatches (
+         run_id, node_id, agent_id, agent_model, ticket_id, source_message_id,
+         input, idempotency_key, answering_question_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (answering_question_id) DO NOTHING`,
+      [input.runId, answeringNode.id, route.agentId, agent.rows[0]!.model, input.ticketId,
+        questionMessage.id, { runSpec: graph.rows[0]!.spec, nodeConfig: answeringNode.config,
+          questionContext: { questionId, question: input.text, originatingDispatchId: input.dispatchId } },
+        `workflow:${input.runId}:question:${questionId}:answer`, questionId],
+    );
+  }
+  return questionId;
+}
+
 async function insertDispatch(
   transaction: PoolClient,
   input: {
@@ -263,6 +382,7 @@ async function insertDispatch(
     sourceOutput: JsonObject | null;
     ticketId: string | null;
     fanoutGroupId: string | null;
+    skipBeforeApproval?: boolean;
   },
 ): Promise<number> {
   const ticket = await ticketInput(transaction, input.ticketId);
@@ -304,6 +424,13 @@ async function insertDispatch(
     ],
   );
   const inserted = result.rowCount ?? 0;
+  if (inserted === 1 && input.node.config.approvalGates?.pauseBefore === true && !input.skipBeforeApproval) {
+    await openWorkflowQuestion(transaction, {
+      runId: input.runId, ticketId: input.ticketId, dispatchId: result.rows[0].id,
+      node: input.node, kind: "approval", boundary: "before",
+      text: `Approve starting workflow node ${input.node.id}?`, sender: "system:workflow-engine",
+    });
+  }
   if (inserted === 1 && input.ticketId !== null) {
     await transaction.query(
       `UPDATE tickets
@@ -340,9 +467,13 @@ async function materializeFanoutCapacity(
   );
   const materialized = await transaction.query<{ count: number }>(
     `SELECT count(*)::int AS count
-     FROM workflow_dispatches
-     WHERE run_id = $1 AND node_id = $2
-       AND status IN ('pending', 'dispatching', 'reconciling', 'active')`,
+     FROM workflow_dispatches AS dispatch
+     JOIN workflow_thread_states AS thread
+       ON thread.run_id = dispatch.run_id
+      AND thread.ticket_id IS NOT DISTINCT FROM dispatch.ticket_id
+     WHERE dispatch.run_id = $1 AND dispatch.node_id = $2
+       AND dispatch.status IN ('pending', 'dispatching', 'reconciling', 'active')
+       AND (thread.status = 'running' OR dispatch.answering_question_id IS NOT NULL)`,
     [runId, nodeId],
   );
   const available = maxConcurrency - materialized.rows[0].count;
@@ -405,6 +536,7 @@ async function enqueueNode(
     sourceMessage: MessageRow | null;
     sourceOutput: JsonObject | null;
     inheritedTicketId: string | null;
+    skipBeforeApproval?: boolean;
   },
 ): Promise<number> {
   const agent = await transaction.query<{ model: string }>(
@@ -424,6 +556,7 @@ async function enqueueNode(
       sourceHandoffBrief: input.sourceMessage?.handoffBrief ?? null,
       ticketId: input.inheritedTicketId,
       fanoutGroupId: null,
+      skipBeforeApproval: input.skipBeforeApproval,
     });
   }
 
@@ -852,15 +985,16 @@ async function claimDispatch(
       id: string;
       run_id: string;
       thread_id: string;
+      answering_question_id: string | null;
     }>(
-      `SELECT dispatch.id, dispatch.run_id, thread.id AS thread_id
+      `SELECT dispatch.id, dispatch.run_id, thread.id AS thread_id, dispatch.answering_question_id
        FROM workflow_dispatches AS dispatch
        JOIN workflow_runs AS run ON run.id = dispatch.run_id
        JOIN workflow_thread_states AS thread
          ON thread.run_id = dispatch.run_id
         AND thread.ticket_id IS NOT DISTINCT FROM dispatch.ticket_id
        WHERE run.status = 'running'
-         AND thread.status = 'running'
+         AND (thread.status = 'running' OR dispatch.answering_question_id IS NOT NULL)
          AND (
            dispatch.status = 'pending'
            OR (
@@ -895,7 +1029,7 @@ async function claimDispatch(
         "SELECT status FROM workflow_thread_states WHERE id = $1 FOR UPDATE",
         [candidate.thread_id],
       );
-      if (lockedThread.rows[0]?.status !== "running") continue;
+      if (lockedThread.rows[0]?.status !== "running" && candidate.answering_question_id === null) continue;
       const locked = await transaction.query(
         `SELECT dispatch.*
          FROM workflow_dispatches AS dispatch
@@ -905,7 +1039,7 @@ async function claimDispatch(
           AND thread.ticket_id IS NOT DISTINCT FROM dispatch.ticket_id
          WHERE dispatch.id = $1
            AND run.status = 'running'
-           AND thread.status = 'running'
+           AND (thread.status = 'running' OR dispatch.answering_question_id IS NOT NULL)
            AND (
              dispatch.status = 'pending'
              OR (
@@ -1294,6 +1428,157 @@ async function handleChannelIntakeOutput(
   return { kind: "ready", spec };
 }
 
+async function resumeThreadInTransaction(
+  transaction: PoolClient,
+  runId: string,
+  ticketId: string | null,
+): Promise<void> {
+  await transaction.query(
+    `UPDATE workflow_thread_states
+     SET status = 'running', pause_reason = NULL, updated_at = clock_timestamp()
+     WHERE run_id = $1 AND ticket_id IS NOT DISTINCT FROM $2`,
+    [runId, ticketId],
+  );
+}
+
+async function routeQuestionMessage(transaction: PoolClient, message: MessageRow): Promise<void> {
+  const known = await transaction.query("SELECT id FROM workflow_questions WHERE question_message_id = $1", [message.id]);
+  if (known.rows[0]) return;
+  const match = /^agent:([1-9]\d*)$/.exec(message.sender);
+  if (!match) throw new WorkflowGraphError("question sender must be an agent");
+  const text = typeof message.payload.question === "string" && message.payload.question.trim()
+    ? message.payload.question.trim()
+    : message.handoffBrief?.trim();
+  if (!text) throw new WorkflowGraphError("question must contain non-blank payload.question or handoffBrief");
+  const dispatchResult = await transaction.query(
+    `SELECT dispatch.*, run.graph_snapshot
+     FROM workflow_dispatches AS dispatch
+     JOIN workflow_runs AS run ON run.id = dispatch.run_id
+     WHERE dispatch.run_id = $1 AND dispatch.ticket_id IS NOT DISTINCT FROM $2
+       AND dispatch.agent_id = $3 AND dispatch.status = 'active'
+       AND dispatch.answering_question_id IS NULL
+     ORDER BY dispatch.id DESC LIMIT 1
+     FOR UPDATE OF dispatch, run`,
+    [message.runId, message.ticketId, match[1]],
+  );
+  const dispatch = dispatchResult.rows[0];
+  if (!dispatch) throw new WorkflowGraphError("question does not match an active worker dispatch");
+  const graph = parseWorkflowGraph(dispatch.graph_snapshot);
+  const node = graph.nodes.find((candidate) => candidate.id === dispatch.node_id)!;
+  const questionId = await openWorkflowQuestion(transaction, {
+    runId: message.runId, ticketId: message.ticketId, dispatchId: dispatch.id,
+    node, kind: "question", boundary: "worker", text, sender: message.sender,
+    questionMessage: message,
+  });
+  await transaction.query(
+    `UPDATE workflow_dispatches
+     SET status = 'completed', output_message_id = $2,
+         lease_owner = NULL, lease_expires_at = NULL,
+         reconciliation_reason = NULL, updated_at = clock_timestamp()
+     WHERE id = $1 AND status = 'active'`,
+    [dispatch.id, message.id],
+  );
+  await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);
+  await transaction.query(
+    "UPDATE workflow_questions SET updated_at = clock_timestamp() WHERE id = $1",
+    [questionId],
+  );
+}
+
+function approvingAnswer(message: MessageRow): boolean {
+  if (message.payload.approved === true) return true;
+  const answer = typeof message.payload.answer === "string" ? message.payload.answer.trim().toLowerCase() : "";
+  return ["approve", "approved", "yes", "y"].includes(answer);
+}
+
+async function routeAnswerMessage(transaction: PoolClient, message: MessageRow): Promise<void> {
+  const questionId = positiveId(message.payload.questionId as DatabaseId, "answer payload.questionId");
+  const result = await transaction.query(
+    `SELECT question.*, dispatch.node_id, dispatch.agent_id AS originating_agent_id,
+            dispatch.agent_model, dispatch.output_message_id, run.graph_snapshot, run.spec
+     FROM workflow_questions AS question
+     JOIN workflow_dispatches AS dispatch ON dispatch.id = question.originating_dispatch_id
+     JOIN workflow_runs AS run ON run.id = question.run_id
+     WHERE question.id = $1 AND question.run_id = $2
+     FOR UPDATE OF question, dispatch, run`,
+    [questionId, message.runId],
+  );
+  const question = result.rows[0];
+  if (!question) throw new WorkflowGraphError(`answer references unknown question ${questionId}`);
+  if (message.ticketId !== question.ticket_id) throw new WorkflowGraphError("answer ticket does not match question ticket");
+  if (question.status === "answered") return;
+  if (question.route === "agent" && message.sender !== `agent:${question.target_agent_id}`) {
+    throw new WorkflowGraphError("answer sender is not the configured escalation agent");
+  }
+  if (question.route === "human-via-channel" && !message.sender.startsWith("telegram:chat:")) {
+    throw new WorkflowGraphError("channel answer sender is not Telegram");
+  }
+  if (question.route === "human-via-UI" && message.sender !== "human:ui") {
+    throw new WorkflowGraphError("UI answer sender is invalid");
+  }
+  if (question.kind === "approval" && !approvingAnswer(message)) return;
+
+  await transaction.query(
+    `UPDATE workflow_questions
+     SET status = 'answered', answer_message_id = $2, answered_at = clock_timestamp(),
+         updated_at = clock_timestamp()
+     WHERE id = $1 AND status = 'pending'`,
+    [questionId, message.id],
+  );
+  if (question.route === "agent" && message.payload.answeringDispatchId !== undefined) {
+    const answeringDispatchId = positiveId(message.payload.answeringDispatchId as DatabaseId, "answeringDispatchId");
+    const generation = positiveId(message.payload.dispatchGeneration as DatabaseId, "answer dispatchGeneration");
+    const sessionId = nonBlank(message.payload.sessionId, "answer sessionId");
+    const completedAnswer = await transaction.query(
+      `UPDATE workflow_dispatches
+       SET status = 'completed', output_message_id = $2, runtime_session_id = $5,
+           lease_owner = NULL, lease_expires_at = NULL,
+           reconciliation_reason = NULL, updated_at = clock_timestamp()
+       WHERE id = $1 AND answering_question_id = $3
+         AND runtime_generation = $4
+         AND status IN ('dispatching', 'reconciling', 'active')`,
+      [answeringDispatchId, message.id, questionId, generation, sessionId],
+    );
+    if (completedAnswer.rowCount !== 1) throw new WorkflowGraphError("answer does not match the active answering dispatch");
+  }
+  await resumeThreadInTransaction(transaction, message.runId, question.ticket_id);
+  const graph = parseWorkflowGraph(question.graph_snapshot);
+  const originNode = graph.nodes.find((node) => node.id === question.node_id)!;
+  if (question.boundary === "worker") {
+    await insertDispatch(transaction, {
+      runId: message.runId,
+      spec: asJsonObject(question.spec, "workflow run spec"),
+      node: originNode,
+      agentModel: question.agent_model,
+      sourceMessageId: message.id,
+      sourceHandoffBrief: message.handoffBrief,
+      sourceOutput: { answer: message.payload.answer as string, questionId },
+      ticketId: question.ticket_id,
+      fanoutGroupId: null,
+      skipBeforeApproval: true,
+    });
+  } else if (question.boundary === "after") {
+    const outputMessage = await transaction.query("SELECT * FROM messages WHERE id = $1", [question.output_message_id]);
+    const source = outputMessage.rows[0];
+    const sourceMessage: MessageRow = {
+      id: source.id, runId: source.run_id, ticketId: source.ticket_id,
+      sequenceNumber: source.sequence_number, sender: source.sender, recipient: source.recipient,
+      type: source.type, payload: source.payload, handoffBrief: source.handoff_brief,
+      tokenUsage: source.token_usage, createdAt: source.created_at, updatedAt: source.updated_at,
+    };
+    const parsed = parseOutputMessage(sourceMessage);
+    const evaluation = evaluateGraph(graph, question.node_id, parsed.output);
+    if (evaluation.kind === "dispatch") {
+      await enqueueNode(transaction, {
+        runId: message.runId, spec: asJsonObject(question.spec, "workflow run spec"),
+        node: evaluation.node, sourceMessage, sourceOutput: parsed.output,
+        inheritedTicketId: question.ticket_id,
+      });
+    }
+  }
+  await finishRunIfIdle(transaction, message.runId);
+}
+
 /**
  * FACT-9 calls this inside its routing transaction. Every graph mutation,
  * dispatch row, cost event, receipt, and cursor advance therefore commits or
@@ -1303,6 +1588,36 @@ export async function routeWorkflowMessage(
   transaction: PoolClient,
   message: MessageRow,
 ): Promise<void> {
+  if (message.type === "question") {
+    await transaction.query("SAVEPOINT workflow_question_route");
+    try {
+      await routeQuestionMessage(transaction, message);
+      await transaction.query("RELEASE SAVEPOINT workflow_question_route");
+    } catch (error) {
+      if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;
+      await transaction.query("ROLLBACK TO SAVEPOINT workflow_question_route");
+      await transaction.query("RELEASE SAVEPOINT workflow_question_route");
+      await failRun(transaction, message.runId, "workflow_question_invalid", boundedReason(error));
+    }
+    return;
+  }
+  if (message.type === "answer") {
+    await transaction.query("SAVEPOINT workflow_answer_route");
+    try {
+      await routeAnswerMessage(transaction, message);
+      await transaction.query("RELEASE SAVEPOINT workflow_answer_route");
+    } catch (error) {
+      if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;
+      await transaction.query("ROLLBACK TO SAVEPOINT workflow_answer_route");
+      await transaction.query("RELEASE SAVEPOINT workflow_answer_route");
+      await insertMessage(transaction, {
+        runId: message.runId, ticketId: message.ticketId,
+        sender: "system:workflow-engine", recipient: "system:operators", type: "system",
+        payload: { code: "workflow_answer_rejected", message: boundedReason(error), answerMessageId: message.id },
+      });
+    }
+    return;
+  }
   if (message.type === "cron_tick") {
     cronTickForEngine(message);
     const run = await transaction.query<{ trigger_type: string }>(
@@ -1465,6 +1780,16 @@ export async function routeWorkflowMessage(
     await routeScheduledStandup(transaction, run, message, parsed);
     if (intake.kind === "waiting" || intake.kind === "already_ready") return;
     await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);
+    const completedNode = graph.nodes.find((node) => node.id === dispatch.node_id)!;
+    if (completedNode.config.approvalGates?.pauseAfter === true) {
+      await openWorkflowQuestion(transaction, {
+        runId: message.runId, ticketId: dispatch.ticket_id, dispatchId: dispatch.id,
+        node: completedNode, kind: "approval", boundary: "after",
+        text: `Approve the result of workflow node ${completedNode.id}?`,
+        sender: "system:workflow-engine",
+      });
+      return;
+    }
     if (evaluation?.kind === "dispatch") {
       await enqueueNode(transaction, {
         runId: message.runId,
