@@ -53,3 +53,12 @@ test("Telegram runtime fails closed on a blank token before it reaches the datab
   assert.match(output, /TELEGRAM_BOT_TOKEN is required/);
   assert.doesNotMatch(output, /not-used-before-token-guard/);
 });
+
+test("Telegram Compose proof renders each credential case from an isolated interpolation file", async () => {
+  const proof = await readFile(path.join(repository, "scripts/fact-32-telegram-compose-proof.sh"), "utf8");
+  assert.match(proof, /write_env_file "\$missing_token_env_file" ""/);
+  assert.match(proof, /write_env_file "\$invalid_token_env_file" "fact32-invalid-token"/);
+  assert.match(proof, /compose_with_env "\$missing_token_env_file" run --rm --no-deps telegram/);
+  assert.match(proof, /compose_with_env "\$invalid_token_env_file" run --rm --no-deps telegram/);
+  assert.doesNotMatch(proof, /-e TELEGRAM_BOT_TOKEN=/);
+});

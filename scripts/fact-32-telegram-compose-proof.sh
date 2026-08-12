@@ -3,6 +3,8 @@ set -euo pipefail
 
 project="orbitflow-fact32-proof-$$"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitflow-fact32-env.XXXXXX")"
+missing_token_env_file="$(mktemp "${TMPDIR:-/tmp}/orbitflow-fact32-missing-token-env.XXXXXX")"
+invalid_token_env_file="$(mktemp "${TMPDIR:-/tmp}/orbitflow-fact32-invalid-token-env.XXXXXX")"
 started="false"
 
 cleanup() {
@@ -14,7 +16,7 @@ cleanup() {
     # and judge cleanup from the label-scoped postcondition below.
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
-  rm -f "$env_file" || status=1
+  rm -f "$env_file" "$missing_token_env_file" "$invalid_token_env_file" || status=1
   for kind in container network volume; do
     local ids
     if [[ "$kind" == "container" ]]; then
@@ -48,22 +50,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$env_file" <<EOF
+write_env_file() {
+  local destination="$1"
+  local telegram_token="$2"
+
+  cat >"$destination" <<EOF
 POSTGRES_DB=orbitflow_fact32_proof
 POSTGRES_USER=orbitflow
 POSTGRES_PASSWORD=fact32-local-password
 OPENROUTER_API_KEY=not-a-real-key-for-fact32-proof
-TELEGRAM_BOT_TOKEN=fact32-present-token
+TELEGRAM_BOT_TOKEN=$telegram_token
 ORBITFACTORY_APP_PORT=$((41000 + ($$ % 1000)))
 ORBITFACTORY_ENGINE_HOST_PORT=$((42000 + ($$ % 1000)))
 ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db
 EOF
+}
 
-compose() {
+write_env_file "$env_file" "fact32-present-token"
+write_env_file "$missing_token_env_file" ""
+write_env_file "$invalid_token_env_file" "fact32-invalid-token"
+
+compose_with_env() {
+  local interpolation_file="$1"
+  shift
+
   env -i PATH="$PATH" HOME="${HOME:?HOME is required}" \
-    docker compose --project-name "$project" --env-file "$env_file" \
+    docker compose --project-name "$project" --env-file "$interpolation_file" \
       -f compose.yaml -f docker/fact32-telegram-proof.compose.yaml "$@"
 }
+
+compose() { compose_with_env "$env_file" "$@"; }
 
 compose --profile telegram config --quiet
 started="true"
@@ -76,7 +92,7 @@ sleep 2
 [[ "$(docker inspect --format '{{.State.Running}}' "$telegram_id")" == "true" ]]
 compose logs telegram-api-stub | grep -F "fake Telegram accepted getMe" >/dev/null
 
-if missing_output="$(compose run --rm --no-deps -e TELEGRAM_BOT_TOKEN= telegram 2>&1)"; then
+if missing_output="$(compose_with_env "$missing_token_env_file" run --rm --no-deps telegram 2>&1)"; then
   echo "Telegram missing-token process unexpectedly exited successfully" >&2
   exit 1
 fi
@@ -90,7 +106,7 @@ if [[ "$missing_output" == *"fact32-present-token"* ]]; then
 fi
 
 invalid_token="fact32-invalid-token"
-if invalid_output="$(compose run --rm --no-deps -e "TELEGRAM_BOT_TOKEN=$invalid_token" telegram 2>&1)"; then
+if invalid_output="$(compose_with_env "$invalid_token_env_file" run --rm --no-deps telegram 2>&1)"; then
   echo "Telegram invalid-token process unexpectedly exited successfully" >&2
   exit 1
 fi
