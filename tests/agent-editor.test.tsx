@@ -54,6 +54,7 @@ describe("AgentEditor regressions", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -193,5 +194,79 @@ describe("AgentEditor regressions", () => {
 
     await openDialog("Delete agent");
     await openDialog("Delete");
+  });
+
+  it("only sends a manual trigger after a deliberate click and gives each click a fresh request identity", async () => {
+    const requestBodies: { idempotencyKey: string }[] = [];
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce("first-click").mockReturnValueOnce("second-click");
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Trigger Agent")]));
+      if (url === "/api/skills") return Promise.resolve(json([]));
+      if (url === "/api/agents/1/schedules") return Promise.resolve(json([schedule("7", "1", "Run the standing task")]));
+      if (url === "/api/schedules/7/trigger" && init?.method === "POST") {
+        requestBodies.push(JSON.parse(String(init.body)));
+        return Promise.resolve(json({ kind: "created", scheduleId: "7", tickKey: "manual:test", runId: String(41 + requestBodies.length), messageId: "9" }));
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await renderAndLoad();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/trigger"))).toBe(false);
+
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Trigger Agent"))!));
+    await act(async () => { await Promise.resolve(); });
+    const triggerButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Trigger now")!;
+    await act(async () => click(triggerButton));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent === "Trigger now")!));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(requestBodies).toEqual([{ idempotencyKey: "schedule-trigger:first-click" }, { idempotencyKey: "schedule-trigger:second-click" }]);
+    expect(container.textContent).toContain("Run #43 created.");
+    const createdRunLink = [...container.querySelectorAll("a")].find((link) => link.textContent === "View in Monitoring");
+    expect(createdRunLink?.getAttribute("href")).toBe("/monitoring?tab=board&runId=43");
+  });
+
+  it("blocks a second click until the first trigger request completes", async () => {
+    const pending = deferred<Response>();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("one-click");
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Trigger Agent")]));
+      if (url === "/api/skills") return Promise.resolve(json([]));
+      if (url === "/api/agents/1/schedules") return Promise.resolve(json([schedule("7", "1", "Run the standing task")]));
+      if (url === "/api/schedules/7/trigger" && init?.method === "POST") return pending.promise;
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await renderAndLoad();
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Trigger Agent"))!));
+    await act(async () => { await Promise.resolve(); });
+    const triggerButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Trigger now")!;
+    await act(async () => { click(triggerButton); click(triggerButton); });
+
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/schedules/7/trigger")).toHaveLength(1);
+    expect(container.textContent).toContain("Triggering…");
+    expect(triggerButton.disabled).toBe(true);
+
+    await act(async () => { pending.resolve(json({ kind: "duplicate", scheduleId: "7", tickKey: "manual:one-click", runId: "42", messageId: "9" })); await Promise.resolve(); });
+    expect(container.textContent).toContain("Existing run #42 returned for this request.");
+    const duplicateRunLink = [...container.querySelectorAll("a")].find((link) => link.textContent === "View in Monitoring");
+    expect(duplicateRunLink?.getAttribute("href")).toBe("/monitoring?tab=board&runId=42");
+  });
+
+  it("shows an honest trigger failure beside the schedule", async () => {
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("fails");
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/agents") return Promise.resolve(json([agent("1", "Trigger Agent")]));
+      if (url === "/api/skills") return Promise.resolve(json([]));
+      if (url === "/api/agents/1/schedules") return Promise.resolve(json([schedule("7", "1", "Run the standing task")]));
+      if (url === "/api/schedules/7/trigger" && init?.method === "POST") return Promise.resolve(json({ error: { message: "Schedule service unavailable" } }, 503));
+      throw new Error(`unexpected request: ${url}`);
+    });
+    await renderAndLoad();
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Trigger Agent"))!));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent === "Trigger now")!));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Trigger failed: Schedule service unavailable");
   });
 });

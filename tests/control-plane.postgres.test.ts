@@ -5,6 +5,7 @@ import { DELETE as deleteAgent, GET as getAgent, PATCH as patchAgent } from "@/a
 import { DELETE as detachSkill, PUT as attachSkill } from "@/app/api/agents/[id]/skills/[skillId]/route";
 import { GET as listAgentSchedules, POST as createAgentSchedule } from "@/app/api/agents/[id]/schedules/route";
 import { DELETE as deleteSchedule, PATCH as patchSchedule } from "@/app/api/schedules/[id]/route";
+import { POST as triggerSchedule } from "@/app/api/schedules/[id]/trigger/route";
 import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
 import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
 import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
@@ -185,6 +186,23 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       expectedUpdatedAt: created.body.updatedAt,
     }), context(created.body.id)))).toMatchObject({ status: 409, body: { error: { code: "stale_update" } } });
     expect((await response(await deleteSchedule(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+  });
+
+  it("exposes manual schedule triggering with an idempotent request identity", async () => {
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const schedule = await response(await createAgentSchedule(jsonRequest({
+      cronExpression: "0 9 * * 1-5",
+      taskPrompt: "Run the scheduled check.",
+      enabled: true,
+    }), context(agent.body.id)));
+
+    const first = await response(await triggerSchedule(jsonRequest({ idempotencyKey: "fact-33-first" }), context(schedule.body.id)));
+    const duplicate = await response(await triggerSchedule(jsonRequest({ idempotencyKey: "fact-33-first" }), context(schedule.body.id)));
+    expect(first).toMatchObject({ status: 200, body: { kind: "created", scheduleId: schedule.body.id } });
+    expect(duplicate).toMatchObject({ status: 200, body: { kind: "duplicate", runId: first.body.runId, messageId: first.body.messageId } });
+    expect(await response(await triggerSchedule(jsonRequest({}), context(schedule.body.id)))).toMatchObject({
+      status: 400, body: { error: { code: "invalid_idempotency_key" } },
+    });
   });
 
   it("accepts only the documented cron grammar and refuses workflow schedule mutation", async () => {
@@ -446,17 +464,51 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (2, 'FACT-2', $1, $2, 'Still executing', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, workingAgent.rows[0].id]),
     ]);
     await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (3, 'FACT-3', $1, $2, 'No cost yet', 'todo', $3)`, [project.rows[0].id, run.rows[0].id, zeroSpendAgent.rows[0].id]);
-    await pool.query(`INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload, handoff_brief)
+    const messages = await pool.query(`INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload, handoff_brief)
       VALUES ($1, $2, 'agent:' || $3, 'telegram:adam', 'question', '{"body":"Need a decision"}', 'Handoff before escalation'),
              ($1, $4, 'agent:' || $5, 'agent:next', 'output', '{"body":"Implementation update"}', 'Continue from this checkpoint'),
              ($1, $2, 'system:worker', 'agent:' || $3, 'system', '{"body":"Still waiting"}', NULL),
-             ($1, NULL, 'telegram:adam', 'agent:' || $3, 'channel_inbound', '{"body":"Telegram reply"}', NULL)`, [run.rows[0].id, questionTicket.rows[0].id, waitingAgent.rows[0].id, activeTicket.rows[0].id, workingAgent.rows[0].id]);
+             ($1, NULL, 'telegram:adam', 'agent:' || $3, 'channel_inbound', '{"body":"Telegram reply"}', NULL)
+       RETURNING id, type`, [run.rows[0].id, questionTicket.rows[0].id, waitingAgent.rows[0].id, activeTicket.rows[0].id, workingAgent.rows[0].id]);
     await pool.query(`INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost)
       VALUES ($1, $2, 'test', 101, 11, 0.10000001), ($1, $2, 'test', 202, 22, 0.20000002), ($1, $3, 'test', 9, 3, 0.50000000)`, [run.rows[0].id, waitingAgent.rows[0].id, workingAgent.rows[0].id]);
+
+    // FACT-24 intentionally stopped inferring a Board-blocked agent from a
+    // Trail message. This is the falsifiable legacy state: it has the old
+    // question message, but no durable pending-question correlation record.
+    const legacyQuestionOnly = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
+    expect(legacyQuestionOnly.body.agents.find((agent: { name: string }) => agent.name === "Question owner")).toMatchObject({ status: "working" });
+    expect(legacyQuestionOnly.body.board.find((ticket: { id: string }) => ticket.id === String(questionTicket.rows[0].id))).toMatchObject({ pendingQuestionCount: 0 });
+
+    const questionMessage = messages.rows.find((message) => message.type === "question")!;
+    const dispatch = await pool.query(
+      `INSERT INTO workflow_dispatches (
+         run_id, node_id, agent_id, agent_model, ticket_id, status, input,
+         idempotency_key, runtime_generation, runtime_session_id, output_message_id
+       ) VALUES ($1, 'question-owner', $2, 'test', $3, 'completed', '{}'::jsonb,
+                 'fact22-question-owner', 1, 'fact22-question-owner', $4)
+       RETURNING id`,
+      [run.rows[0].id, waitingAgent.rows[0].id, questionTicket.rows[0].id, questionMessage.id],
+    );
+    const pendingQuestion = await pool.query(
+      `INSERT INTO workflow_questions (
+         run_id, ticket_id, originating_dispatch_id, question_message_id,
+         kind, boundary, route, question_text
+       ) VALUES ($1, $2, $3, $4, 'question', 'worker', 'human-via-UI', 'Need a decision')
+       RETURNING id`,
+      [run.rows[0].id, questionTicket.rows[0].id, dispatch.rows[0].id, questionMessage.id],
+    );
+    await pool.query(
+      `INSERT INTO workflow_thread_states (run_id, ticket_id, status, pause_reason)
+       VALUES ($1, $2, 'paused', $3)`,
+      [run.rows[0].id, questionTicket.rows[0].id, `waiting on question ${pendingQuestion.rows[0].id}`],
+    );
 
     const all = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
     expect(all.status).toBe(200);
     expect(all.body.board.map((ticket: { identifier: string }) => ticket.identifier).sort()).toEqual(["FACT-1", "FACT-2", "FACT-3"]);
+    expect(all.body.board.find((ticket: { id: string }) => ticket.id === String(questionTicket.rows[0].id))).toMatchObject({ questionCount: 1, pendingQuestionCount: 1 });
+    expect(all.body.pendingQuestions).toEqual([expect.objectContaining({ id: String(pendingQuestion.rows[0].id), ticketId: String(questionTicket.rows[0].id), route: "human-via-UI" })]);
     expect(all.body.trail.map((message: { type: string }) => message.type)).toEqual(["channel_inbound", "system", "output", "question"]);
     expect(all.body.agents.map((agent: { name: string; status: string }) => [agent.name, agent.status])).toEqual([["Active owner", "working"], ["No spend owner", "idle"], ["Question owner", "waiting-on-question"]]);
     expect(all.body.agentCosts).toEqual(expect.arrayContaining([
@@ -482,9 +534,21 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     const selectedRun = await response(await getMonitoring(new Request(`http://orbitfactory.test/api/monitoring?runId=${run.rows[0].id}`)));
     expect(selectedRun.body.agents.map((agent: { name: string }) => agent.name)).not.toContain("Other run owner");
 
-    await pool.query("INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload) VALUES ($1, $2, 'telegram:adam', $3, 'answer', '{}')", [run.rows[0].id, questionTicket.rows[0].id, `agent:${waitingAgent.rows[0].id}`]);
+    const answer = await pool.query(
+      "INSERT INTO messages (run_id, ticket_id, sender, recipient, type, payload) VALUES ($1, $2, 'human:ui', 'workflow-engine', 'answer', $3) RETURNING id",
+      [run.rows[0].id, questionTicket.rows[0].id, { questionId: pendingQuestion.rows[0].id, answer: "Proceed with the decision." }],
+    );
+    await pool.query(
+      "UPDATE workflow_questions SET status = 'answered', answer_message_id = $2, answered_at = clock_timestamp() WHERE id = $1",
+      [pendingQuestion.rows[0].id, answer.rows[0].id],
+    );
+    await pool.query(
+      "UPDATE workflow_thread_states SET status = 'running', pause_reason = NULL WHERE run_id = $1 AND ticket_id = $2",
+      [run.rows[0].id, questionTicket.rows[0].id],
+    );
     const resolved = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
     expect(resolved.body.agents.find((agent: { name: string }) => agent.name === "Question owner")).toMatchObject({ status: "working" });
+    expect(resolved.body.board.find((ticket: { id: string }) => ticket.id === String(questionTicket.rows[0].id))).toMatchObject({ questionCount: 1, pendingQuestionCount: 0 });
   });
 
   it("FACT-22 keeps every panel in one repeatable-read snapshot while another client commits", async () => {
