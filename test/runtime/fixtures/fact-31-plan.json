@@ -1,0 +1,16 @@
+[
+  {
+    "mode": "success",
+    "output": {
+      "artifact": { "accepted": true, "source": "fact-31-production-entrypoint" },
+      "handoff_brief": "FACT-31 production adapter turn completed",
+      "events": [{ "type": "proof", "fact": 31 }]
+    },
+    "usage": {
+      "input": 11,
+      "output": 7,
+      "total": 18,
+      "cost": { "total": "0" }
+    }
+  }
+]

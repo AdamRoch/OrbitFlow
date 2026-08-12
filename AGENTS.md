@@ -18,6 +18,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - FACT-17's grounded Telegram status and final-report paths, durable completion wake, and exactly-once logical report contract live in `docs/orchestrator-channel-intake.md`; prove them with `npm run fact17:proof`.
 - FACT-26's five PRD critical paths are consolidated in `test/postgres/critical-paths.test.ts`; prove exactly those paths with `npm run fact26:proof` on credentialless disposable PostgreSQL.
 - FACT-24's durable question, escalation, exact-thread resumption, and approval-gate contracts live in `docs/workflow-questions.md`; prove them with `npm run fact24:proof`.
+- FACT-31's Compose `engine` runs the production PostgreSQL consumer, dispatcher, scheduler, and OpenClaw adapter; readiness requires successful consumer and dispatcher polls. Prove it with `npm run fact31:proof`.
 
 ## CodingToolAdapter (PRD §5)
 

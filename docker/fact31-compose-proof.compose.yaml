@@ -1,0 +1,7 @@
+services:
+  engine:
+    environment:
+      ORBITFLOW_OPENCLAW_MODULE: /app/test/runtime/fixtures/fake-openclaw.mjs
+      ORBITFLOW_ENGINE_POLL_INTERVAL_MS: "25"
+    volumes:
+      - ./test/runtime/fixtures/fact-31-plan.json:/var/lib/orbitflow/runtime/state/fake-plan.json:ro

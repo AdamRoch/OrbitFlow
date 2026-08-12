@@ -189,7 +189,8 @@ fi
 compose exec -T openclaw node /app/openclaw.mjs --version | grep -F "2026.4.15" >/dev/null
 compose exec -T openclaw node -e "fetch('http://127.0.0.1:18789/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 compose exec -T engine opencode --version | grep -Fx "1.18.4" >/dev/null
-compose exec -T engine node -e "if ('OPENROUTER_API_KEY' in process.env) throw new Error('engine readiness process received a provider credential')"
+engine_readiness="$(node -e "fetch('http://127.0.0.1:$engine_host_port/readyz').then(async (response) => { const body = await response.json(); if (!response.ok) process.exit(1); process.stdout.write(JSON.stringify(body)); })")"
+node -e 'const body = JSON.parse(process.argv[1]); if (body.status !== "ready" || body.workflowEngine !== "operational") process.exit(1)' "$engine_readiness"
 compose exec -T engine node scripts/opencode-structural-proof.mjs | grep -Fx "OpenCode adapter missing-credential contract verified" >/dev/null
 
 # This is the literal evaluator command from the runbook. The hermetic proof

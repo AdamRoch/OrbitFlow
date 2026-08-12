@@ -91,6 +91,7 @@ export interface RuntimeAdapter {
 }
 
 export interface WorkflowEngineWorker {
+  readonly ready: Promise<void>;
   readonly done: Promise<void>;
   stop(): Promise<void>;
 }
@@ -1938,6 +1939,7 @@ export async function runWorkflowDispatchWorker(
     signal?: AbortSignal;
     pollIntervalMs?: number;
     leaseMs?: number;
+    onOperational?: () => void;
   },
 ): Promise<void> {
   const pollIntervalMs = interval(
@@ -1945,8 +1947,13 @@ export async function runWorkflowDispatchWorker(
     DEFAULT_POLL_INTERVAL_MS,
     "pollIntervalMs",
   );
+  let operational = false;
   while (!options.signal?.aborted) {
     const dispatched = await dispatchNextWorkflowNode(pool, runtime, options);
+    if (!operational) {
+      operational = true;
+      options.onOperational?.();
+    }
     if (dispatched) continue;
     try {
       await delay(pollIntervalMs, undefined, { signal: options.signal });
@@ -1963,22 +1970,45 @@ export function startWorkflowEngine(
   options: WorkflowEngineOptions,
 ): WorkflowEngineWorker {
   const controller = new AbortController();
+  let markMessageOperational!: () => void;
+  let markDispatchOperational!: () => void;
+  const messageOperational = new Promise<void>((resolve) => { markMessageOperational = resolve; });
+  const dispatchOperational = new Promise<void>((resolve) => { markDispatchOperational = resolve; });
   const messageWorker = runMessageBusWorker(pool, routeWorkflowMessage, {
     consumerId: nonBlank(options.consumerId, "consumerId"),
     signal: controller.signal,
     pollIntervalMs: options.pollIntervalMs,
     retryIntervalMs: options.retryIntervalMs,
+    onOperational: markMessageOperational,
   });
   const dispatchWorker = runWorkflowDispatchWorker(pool, runtime, {
     workerId: nonBlank(options.dispatcherId, "dispatcherId"),
     signal: controller.signal,
     pollIntervalMs: options.pollIntervalMs,
     leaseMs: options.dispatchLeaseMs,
+    onOperational: markDispatchOperational,
   });
-  const scheduler: ScheduleWorker = startScheduleWorker(pool, () => controller.abort());
-  const done = Promise.all([messageWorker, dispatchWorker, scheduler.done]).then(() => undefined);
+  let rejectScheduler!: (error: unknown) => void;
+  const schedulerFailure = new Promise<never>((_resolve, reject) => {
+    rejectScheduler = reject;
+  });
+  const scheduler: ScheduleWorker = startScheduleWorker(pool, (error) => {
+    controller.abort();
+    rejectScheduler(error);
+    void scheduler.stop();
+  });
+  const done = Promise.race([
+    Promise.all([messageWorker, dispatchWorker, scheduler.done]).then(() => undefined),
+    schedulerFailure,
+  ]);
+  const operational = Promise.all([messageOperational, dispatchOperational]).then(() => undefined);
+  const ready = Promise.race([
+    operational,
+    done.then(() => { throw new Error("workflow engine stopped before becoming operational"); }),
+  ]);
   void done.catch(() => controller.abort());
   return {
+    ready,
     done,
     async stop() {
       controller.abort();
