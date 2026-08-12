@@ -36,6 +36,7 @@
     "test:scheduling": "node --experimental-strip-types --test test/postgres/scheduling.test.mjs",
     "fact15:proof": "bash scripts/fact-15-telegram-proof.sh",
     "fact25:proof": "bash scripts/fact-25-scheduling-proof.sh",
+    "fact26:proof": "bash scripts/fact-26-critical-paths-proof.sh",
     "test:channel-intake": "node --experimental-strip-types --test test/postgres/channel-intake.test.mjs",
     "fact16:proof": "bash scripts/fact-16-channel-intake-proof.sh",
     "test:channel-status-reports": "node --experimental-strip-types --test test/postgres/channel-status-reports.test.mjs",
