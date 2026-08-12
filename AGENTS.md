@@ -16,6 +16,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - FACT-15's grammY long-poll adapter, Telegram binding, durable inbound/outbound receipts, and fail-closed outbound recovery live in `docs/telegram-adapter.md`; prove them with `npm run fact15:proof`. OpenClaw Telegram is explicitly disabled in `docker/openclaw/openclaw.json`.
 - FACT-16's restart-safe channel intake, clarification, validated run-spec, and ordinary engine kickoff contracts live in `docs/orchestrator-channel-intake.md`; prove them with `npm run fact16:proof`.
 - FACT-17's grounded Telegram status and final-report paths, durable completion wake, and exactly-once logical report contract live in `docs/orchestrator-channel-intake.md`; prove them with `npm run fact17:proof`.
+- FACT-26's five PRD critical paths are consolidated in `test/postgres/critical-paths.test.ts`; prove exactly those paths with `npm run fact26:proof` on credentialless disposable PostgreSQL.
 
 ## CodingToolAdapter (PRD §5)
 
