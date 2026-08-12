@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AgentDTO, JsonObject, ScheduleDTO, SkillDTO } from "@/lib/control-plane/types";
@@ -44,6 +45,13 @@ type EditorForm = {
 
 type ScheduleForm = { cronExpression: string; taskPrompt: string; enabled: boolean };
 type PendingDelete = { kind: "agent"; id: string; name: string } | { kind: "schedule"; id: string; name: string };
+type ScheduleTriggerResult =
+  | { kind: "created" | "duplicate"; scheduleId: string; tickKey: string; runId: string; messageId: string }
+  | { kind: "disabled"; scheduleId: string };
+type ScheduleTriggerState =
+  | { kind: "created" | "duplicate"; runId: string }
+  | { kind: "disabled" }
+  | { kind: "error"; message: string };
 
 const templates = [
   {
@@ -229,6 +237,8 @@ export function AgentEditor() {
   const [agentsLoadError, setAgentsLoadError] = useState("");
   const [schedulesLoading, setSchedulesLoading] = useState(false);
   const [schedulesLoadError, setSchedulesLoadError] = useState("");
+  const [triggeringScheduleIds, setTriggeringScheduleIds] = useState<Set<string>>(() => new Set());
+  const [scheduleTriggerStates, setScheduleTriggerStates] = useState<Record<string, ScheduleTriggerState>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -236,6 +246,7 @@ export function AgentEditor() {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const selectedAgentId = useRef<string | null>(null);
   const scheduleRequestGeneration = useRef(0);
+  const triggeringScheduleIdsRef = useRef(new Set<string>());
   const deleteDialogRef = useRef<HTMLDivElement>(null);
   const deleteOpenerRef = useRef<HTMLElement | null>(null);
   const [modalRoot, setModalRoot] = useState<HTMLDivElement | null>(null);
@@ -435,6 +446,44 @@ export function AgentEditor() {
     } finally { setSaving(false); }
   };
 
+  const triggerSchedule = async (schedule: ScheduleDTO) => {
+    // This ref closes the small gap before React has rendered the disabled
+    // state, so a double-click still sends exactly one deliberate request.
+    if (triggeringScheduleIdsRef.current.has(schedule.id)) return;
+    triggeringScheduleIdsRef.current.add(schedule.id);
+    setTriggeringScheduleIds((current) => new Set(current).add(schedule.id));
+    setScheduleTriggerStates((current) => {
+      const next = { ...current };
+      delete next[schedule.id];
+      return next;
+    });
+    try {
+      const idempotencyKey = `schedule-trigger:${crypto.randomUUID()}`;
+      const result = await request<ScheduleTriggerResult>(`/api/schedules/${schedule.id}/trigger`, {
+        method: "POST",
+        body: JSON.stringify({ idempotencyKey }),
+      });
+      setScheduleTriggerStates((current) => ({
+        ...current,
+        [schedule.id]: result.kind === "disabled"
+          ? { kind: "disabled" }
+          : { kind: result.kind, runId: result.runId },
+      }));
+    } catch (triggerError) {
+      setScheduleTriggerStates((current) => ({
+        ...current,
+        [schedule.id]: { kind: "error", message: triggerError instanceof Error ? triggerError.message : "Unable to trigger this schedule." },
+      }));
+    } finally {
+      triggeringScheduleIdsRef.current.delete(schedule.id);
+      setTriggeringScheduleIds((current) => {
+        const next = new Set(current);
+        next.delete(schedule.id);
+        return next;
+      });
+    }
+  };
+
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setSaving(true); setError("");
@@ -518,7 +567,7 @@ export function AgentEditor() {
 
           {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><UfoIcon className="h-4 w-4 text-[--accent]" /> Attached skills</h3><p className="mt-1 text-xs text-[--foreground-muted]">Attachments use the FACT-8 skill endpoints; skill definitions remain managed by the control plane.</p><div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2">{skills.length === 0 ? <p className="text-sm text-[--foreground-muted]">No skills exist yet.</p> : skills.map((skill) => { const attached = attachedSkillIds.has(skill.id); return <button key={skill.id} type="button" aria-pressed={attached} onClick={() => void toggleSkill(skill, attached)} className={`min-w-0 rounded-xl border p-3 text-left text-sm transition-colors ${attached ? "border-[--accent]/50 bg-[--accent]/10" : "border-[--border] bg-[--surface-2]/35 hover:bg-[--surface-hover]"}`}><span className="block truncate font-medium text-[--foreground]">{skill.name}</span><span className="mt-1 block truncate text-xs text-[--foreground-muted]">{attached ? "Attached · click to detach" : "Click to attach"}</span></button>; })}</div></section>}
 
-          {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><CometIcon className="h-4 w-4 text-[--accent]" /> Schedule associations</h3><p className="mt-1 text-xs text-[--foreground-muted]">Enabled schedules are picked up by the platform engine without a restart.</p><div className="mt-3 space-y-2">{schedulesLoading ? <p className="rounded-xl border border-[--border] p-3 text-sm text-[--foreground-muted]">Loading schedules…</p> : schedulesLoadError ? <div className="rounded-xl border border-[--danger]/45 p-3 text-sm text-[--danger]"><p>Could not load schedules.</p><Button className="mt-2" size="sm" onClick={() => void loadSchedules(selected.id)}>Retry schedules</Button></div> : schedules.length === 0 ? <p className="rounded-xl border border-dashed border-[--border] p-3 text-sm text-[--foreground-muted]">No schedules are associated with this agent.</p> : schedules.map((schedule) => <div key={schedule.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-[--accent]">{schedule.cronExpression}</p><p className="mt-1 truncate text-sm text-[--foreground]">{schedule.taskPrompt}</p><p className="mt-1 text-xs text-[--foreground-muted]">{schedule.enabled ? "Enabled" : "Disabled"}</p></div><div className="flex gap-2"><Button size="sm" onClick={() => { setEditingSchedule(schedule); setScheduleForm({ cronExpression: schedule.cronExpression, taskPrompt: schedule.taskPrompt ?? "", enabled: schedule.enabled }); }}>Edit</Button><Button variant="danger" size="sm" onClick={() => beginDelete({ kind: "schedule", id: schedule.id, name: schedule.taskPrompt ?? schedule.cronExpression })}>Delete</Button></div></div>)}</div><form onSubmit={(event) => void submitSchedule(event)} className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/25 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-medium text-[--foreground]">{editingSchedule ? "Edit schedule" : "Add schedule"}</h4>{editingSchedule && <Button size="sm" onClick={() => { setEditingSchedule(null); setScheduleForm(blankSchedule()); }}>Cancel edit</Button>}</div><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Cron expression" htmlFor="schedule-cron"><Input id="schedule-cron" value={scheduleForm.cronExpression} onChange={(event) => setScheduleForm((current) => ({ ...current, cronExpression: event.target.value }))} required /></Field><label className="flex items-end gap-2 pb-2 text-sm text-[--foreground]"><input id="schedule-enabled" name="scheduleEnabled" type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} className="h-4 w-4 accent-[--accent]" /> Enabled</label></div><p className="mt-2 text-xs text-[--foreground-subtle]">Use five numeric fields: minute hour day-of-month month day-of-week. Example: 0 9 * * 1-5.</p><div className="mt-3"><Field label="Standing task" htmlFor="schedule-task"><Textarea id="schedule-task" className="min-h-24" value={scheduleForm.taskPrompt} onChange={(event) => setScheduleForm((current) => ({ ...current, taskPrompt: event.target.value }))} required /></Field></div><Button className="mt-3" type="submit" size="sm" disabled={saving}>{editingSchedule ? "Save schedule" : "Add schedule"}</Button></form></section>}
+          {selected && <section className="mt-8 border-t border-[--border] pt-6"><h3 className="flex items-center gap-2 text-base font-semibold text-[--foreground]"><CometIcon className="h-4 w-4 text-[--accent]" /> Schedule associations</h3><p className="mt-1 text-xs text-[--foreground-muted]">Enabled schedules are picked up by the platform engine without a restart. Trigger now creates one immediate run only when you click it.</p><div className="mt-3 space-y-2">{schedulesLoading ? <p className="rounded-xl border border-[--border] p-3 text-sm text-[--foreground-muted]">Loading schedules…</p> : schedulesLoadError ? <div className="rounded-xl border border-[--danger]/45 p-3 text-sm text-[--danger]"><p>Could not load schedules.</p><Button className="mt-2" size="sm" onClick={() => void loadSchedules(selected.id)}>Retry schedules</Button></div> : schedules.length === 0 ? <p className="rounded-xl border border-dashed border-[--border] p-3 text-sm text-[--foreground-muted]">No schedules are associated with this agent.</p> : schedules.map((schedule) => <ScheduleRow key={schedule.id} schedule={schedule} triggering={triggeringScheduleIds.has(schedule.id)} triggerState={scheduleTriggerStates[schedule.id]} onTrigger={() => void triggerSchedule(schedule)} onEdit={() => { setEditingSchedule(schedule); setScheduleForm({ cronExpression: schedule.cronExpression, taskPrompt: schedule.taskPrompt ?? "", enabled: schedule.enabled }); }} onDelete={() => beginDelete({ kind: "schedule", id: schedule.id, name: schedule.taskPrompt ?? schedule.cronExpression })} />)}</div><form onSubmit={(event) => void submitSchedule(event)} className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/25 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-medium text-[--foreground]">{editingSchedule ? "Edit schedule" : "Add schedule"}</h4>{editingSchedule && <Button size="sm" onClick={() => { setEditingSchedule(null); setScheduleForm(blankSchedule()); }}>Cancel edit</Button>}</div><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Cron expression" htmlFor="schedule-cron"><Input id="schedule-cron" value={scheduleForm.cronExpression} onChange={(event) => setScheduleForm((current) => ({ ...current, cronExpression: event.target.value }))} required /></Field><label className="flex items-end gap-2 pb-2 text-sm text-[--foreground]"><input id="schedule-enabled" name="scheduleEnabled" type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} className="h-4 w-4 accent-[--accent]" /> Enabled</label></div><p className="mt-2 text-xs text-[--foreground-subtle]">Use five numeric fields: minute hour day-of-month month day-of-week. Example: 0 9 * * 1-5.</p><div className="mt-3"><Field label="Standing task" htmlFor="schedule-task"><Textarea id="schedule-task" className="min-h-24" value={scheduleForm.taskPrompt} onChange={(event) => setScheduleForm((current) => ({ ...current, taskPrompt: event.target.value }))} required /></Field></div><Button className="mt-3" type="submit" size="sm" disabled={saving}>{editingSchedule ? "Save schedule" : "Add schedule"}</Button></form></section>}
         </div>
       </div>
 
@@ -547,4 +596,23 @@ function Section({ title, icon, children }: { title: string; icon: React.ReactNo
 
 function Advanced({ label, id, value, onChange, description }: { label: string; id: string; value: string; onChange: (value: string) => void; description: string }) {
   return <details className="mt-4 rounded-xl border border-[--border] bg-[--surface-2]/20 p-3"><summary className="cursor-pointer text-xs font-medium text-[--foreground-muted]">{label}</summary><p className="mt-2 text-xs text-[--foreground-subtle]">{description}</p><Label className="mt-3" htmlFor={id}>JSON object</Label><Textarea id={id} className="min-h-28 font-mono text-xs" value={value} onChange={(event) => onChange(event.target.value)} /></details>;
+}
+
+function ScheduleRow({ schedule, triggering, triggerState, onTrigger, onEdit, onDelete }: {
+  schedule: ScheduleDTO;
+  triggering: boolean;
+  triggerState: ScheduleTriggerState | undefined;
+  onTrigger: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2]/35 p-3">
+    <div className="min-w-0"><p className="truncate font-mono text-xs text-[--accent]">{schedule.cronExpression}</p><p className="mt-1 truncate text-sm text-[--foreground]">{schedule.taskPrompt}</p><p className="mt-1 text-xs text-[--foreground-muted]">{schedule.enabled ? "Enabled" : "Disabled"}</p>
+      {triggerState?.kind === "created" && <p role="status" className="mt-2 text-xs text-[--success]">Run #{triggerState.runId} created. <Button asChild size="sm" className="ml-2 align-middle"><Link href={`/monitoring?tab=board&runId=${encodeURIComponent(triggerState.runId)}`}>View in Monitoring</Link></Button></p>}
+      {triggerState?.kind === "duplicate" && <p role="status" className="mt-2 text-xs text-amber-200">Existing run #{triggerState.runId} returned for this request. <Button asChild size="sm" className="ml-2 align-middle"><Link href={`/monitoring?tab=board&runId=${encodeURIComponent(triggerState.runId)}`}>View in Monitoring</Link></Button></p>}
+      {triggerState?.kind === "disabled" && <p role="status" className="mt-2 text-xs text-amber-200">This schedule is disabled. No run was created.</p>}
+      {triggerState?.kind === "error" && <p role="alert" className="mt-2 text-xs text-[--danger]">Trigger failed: {triggerState.message}</p>}
+    </div>
+    <div className="flex flex-wrap gap-2"><Button variant="primary" size="sm" onClick={onTrigger} disabled={triggering}>{triggering ? "Triggering…" : "Trigger now"}</Button><Button size="sm" onClick={onEdit}>Edit</Button><Button variant="danger" size="sm" onClick={onDelete}>Delete</Button></div>
+  </div>;
 }

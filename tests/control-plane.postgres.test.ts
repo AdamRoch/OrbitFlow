@@ -5,6 +5,7 @@ import { DELETE as deleteAgent, GET as getAgent, PATCH as patchAgent } from "@/a
 import { DELETE as detachSkill, PUT as attachSkill } from "@/app/api/agents/[id]/skills/[skillId]/route";
 import { GET as listAgentSchedules, POST as createAgentSchedule } from "@/app/api/agents/[id]/schedules/route";
 import { DELETE as deleteSchedule, PATCH as patchSchedule } from "@/app/api/schedules/[id]/route";
+import { POST as triggerSchedule } from "@/app/api/schedules/[id]/trigger/route";
 import { GET as listSkills, POST as createSkill } from "@/app/api/skills/route";
 import { DELETE as deleteSkill, GET as getSkill, PATCH as patchSkill } from "@/app/api/skills/[id]/route";
 import { GET as listWorkflows, POST as createWorkflow } from "@/app/api/workflows/route";
@@ -185,6 +186,23 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
       expectedUpdatedAt: created.body.updatedAt,
     }), context(created.body.id)))).toMatchObject({ status: 409, body: { error: { code: "stale_update" } } });
     expect((await response(await deleteSchedule(new Request("http://orbitfactory.test"), context(created.body.id)))).status).toBe(204);
+  });
+
+  it("exposes manual schedule triggering with an idempotent request identity", async () => {
+    const agent = await response(await createAgent(jsonRequest(agentBody)));
+    const schedule = await response(await createAgentSchedule(jsonRequest({
+      cronExpression: "0 9 * * 1-5",
+      taskPrompt: "Run the scheduled check.",
+      enabled: true,
+    }), context(agent.body.id)));
+
+    const first = await response(await triggerSchedule(jsonRequest({ idempotencyKey: "fact-33-first" }), context(schedule.body.id)));
+    const duplicate = await response(await triggerSchedule(jsonRequest({ idempotencyKey: "fact-33-first" }), context(schedule.body.id)));
+    expect(first).toMatchObject({ status: 200, body: { kind: "created", scheduleId: schedule.body.id } });
+    expect(duplicate).toMatchObject({ status: 200, body: { kind: "duplicate", runId: first.body.runId, messageId: first.body.messageId } });
+    expect(await response(await triggerSchedule(jsonRequest({}), context(schedule.body.id)))).toMatchObject({
+      status: 400, body: { error: { code: "invalid_idempotency_key" } },
+    });
   });
 
   it("accepts only the documented cron grammar and refuses workflow schedule mutation", async () => {
