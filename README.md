@@ -73,8 +73,17 @@ docker compose up --build
 The one Compose command starts PostgreSQL, a one-shot migrator, the board/API,
 the OpenClaw gateway, and the engine readiness service. The app is published
 only on localhost at `http://127.0.0.1:${ORBITFACTORY_APP_PORT}`. The Telegram
-adapter and one-shot coding-adapter wrapper are opt-in profiles; their exact
-commands and boundaries are in [the Compose runbook](docs/fact-7-docker-compose.md).
+adapter is opt-in. After filling in the required variables below, its canonical
+demo command is:
+
+```sh
+docker compose --profile telegram up --build
+```
+
+Set `TELEGRAM_BOT_TOKEN` in `.env` before running that command. The default
+`docker compose up --build` topology does not start a Telegram consumer. The
+one-shot coding-adapter wrapper is also opt-in; its boundary is in [the Compose
+runbook](docs/fact-7-docker-compose.md).
 
 | Variable | Class | Used by | Notes |
 | --- | --- | --- | --- |

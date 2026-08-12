@@ -1,0 +1,18 @@
+services:
+  telegram:
+    environment:
+      ORBITFLOW_TELEGRAM_API_ROOT: http://telegram-api-stub:8080
+
+  telegram-api-stub:
+    image: node:22.22.2-bookworm-slim
+    command: ["node", "test/runtime/fixtures/fake-telegram-api.mjs"]
+    environment:
+      FAKE_TELEGRAM_ACCEPTED_TOKEN: fact32-present-token
+    volumes:
+      - ./:/app:ro
+    working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080').then(() => process.exit(0)).catch(() => process.exit(1))\""]
+      interval: 1s
+      timeout: 3s
+      retries: 15
