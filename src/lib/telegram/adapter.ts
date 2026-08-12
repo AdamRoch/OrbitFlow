@@ -12,6 +12,7 @@ import {
 } from "../workflow/graph.ts";
 import { collectingChannelSpec } from "../channel-intake.ts";
 import { isChannelStatusRequest } from "../channel-reporting.ts";
+import { telegramQuestionForReply } from "../postgres/workflow-questions.ts";
 
 export interface TelegramInboundUpdate {
   updateId: number;
@@ -29,6 +30,7 @@ export interface TelegramInboundUpdate {
     lastName?: string;
   };
   text?: string;
+  replyToMessageId?: number;
 }
 
 export type TelegramInboundResult =
@@ -107,6 +109,9 @@ function inboundPayload(update: TelegramInboundUpdate & { text: string }): JsonO
         }
       : {}),
     text: update.text.trim(),
+    ...(update.replyToMessageId === undefined ? {} : {
+      replyToMessageId: positiveInteger(update.replyToMessageId, "replyToMessageId"),
+    }),
     ...(isChannelStatusRequest(update.text) ? { channelRequest: "status" } : {}),
   };
 }
@@ -172,8 +177,40 @@ export async function ingestTelegramInbound(
       return { kind: "duplicate", runId: existing.rows[0].run_id, messageId: existing.rows[0].message_id };
     }
 
-    const target = await boundEntry(transaction);
     const chat = payload.chat as JsonObject;
+    const replyToMessageId = payload.replyToMessageId as string | undefined;
+    if (replyToMessageId) {
+      const question = await telegramQuestionForReply(
+        transaction,
+        chat.id as string,
+        replyToMessageId,
+      );
+      if (question) {
+        const answer = await insertMessage(transaction, {
+          runId: question.run_id,
+          ticketId: question.ticket_id,
+          sender: `telegram:chat:${chat.id as string}`,
+          recipient: "workflow-engine",
+          type: "answer",
+          payload: {
+            provider: "telegram",
+            questionId: question.id,
+            answer: payload.text as string,
+            updateId,
+            replyToMessageId,
+          },
+          handoffBrief: payload.text as string,
+        });
+        await transaction.query(
+          `INSERT INTO telegram_inbound_updates (update_id, run_id, message_id)
+           VALUES ($1, $2, $3)`,
+          [updateId, question.run_id, answer.id],
+        );
+        return { kind: "accepted", runId: question.run_id, messageId: answer.id };
+      }
+    }
+
+    const target = await boundEntry(transaction);
     const text = payload.text as string;
     const conversationKey = chat.id as string;
     await transaction.query(

@@ -460,14 +460,28 @@ export class ControlPlaneRepository {
 
       const board = await client.query<Row>(
         `SELECT ticket.id, ticket.run_id, ticket.identifier, ticket.title, ticket.status, ticket.priority,
-                ticket.assignee_agent_id, agent.name AS assignee_name, ticket.updated_at
+                ticket.assignee_agent_id, agent.name AS assignee_name, ticket.updated_at,
+                count(question.id)::int AS question_count,
+                count(question.id) FILTER (WHERE question.status = 'pending')::int AS pending_question_count
          FROM tickets AS ticket LEFT JOIN agents AS agent ON agent.id = ticket.assignee_agent_id
+         LEFT JOIN workflow_questions AS question ON question.ticket_id = ticket.id
          WHERE ticket.run_id = ANY($1::bigint[])
            AND ($2::bigint IS NULL OR ticket.assignee_agent_id = $2::bigint)
+         GROUP BY ticket.id, agent.name
          ORDER BY ticket.priority DESC, ticket.updated_at DESC, ticket.id DESC LIMIT $3`,
         [scopedRuns, filters.agentId, MONITORING_LIMIT + 1],
       );
       await this.options.afterMonitoringPanelRead?.("board");
+      const pendingQuestions = await client.query<Row>(
+        `SELECT question.*, ticket.identifier AS ticket_identifier
+         FROM workflow_questions AS question
+         LEFT JOIN tickets AS ticket ON ticket.id = question.ticket_id
+         WHERE question.run_id = ANY($1::bigint[]) AND question.status = 'pending'
+           AND ($2::bigint IS NULL OR question.target_agent_id = $2::bigint
+             OR ticket.assignee_agent_id = $2::bigint)
+         ORDER BY question.created_at, question.id LIMIT $3`,
+        [scopedRuns, filters.agentId, MONITORING_LIMIT + 1],
+      );
       const messages = await client.query<Row>(
         `SELECT message.id, message.run_id, message.ticket_id, message.sequence_number, message.sender,
                 message.recipient, message.type, message.payload, message.handoff_brief, message.created_at
@@ -501,13 +515,9 @@ export class ControlPlaneRepository {
            ORDER BY (ticket.status = 'in_progress') DESC, ticket.updated_at DESC, ticket.id DESC LIMIT 1
          ) AS task ON true
          LEFT JOIN LATERAL (
-           SELECT question.id FROM messages AS question
-           WHERE question.ticket_id = task.id AND question.type = 'question'
-             AND NOT EXISTS (
-               SELECT 1 FROM messages AS answer WHERE answer.ticket_id = task.id AND answer.type = 'answer'
-                 AND answer.sequence_number > question.sequence_number
-             )
-           ORDER BY question.sequence_number DESC LIMIT 1
+           SELECT question.id FROM workflow_questions AS question
+           WHERE question.ticket_id = task.id AND question.status = 'pending'
+           ORDER BY question.created_at DESC, question.id DESC LIMIT 1
          ) AS unanswered_question ON true
          LEFT JOIN LATERAL (
            SELECT jsonb_agg(to_jsonb(log_row) ORDER BY log_row.sequence_number DESC) AS messages FROM (
@@ -582,6 +592,14 @@ export class ControlPlaneRepository {
         identifier: String(row.identifier), title: String(row.title), status: String(row.status),
         priority: Number(row.priority), assigneeAgentId: row.assignee_agent_id === null ? null : String(row.assignee_agent_id),
         assigneeName: row.assignee_name === null ? null : String(row.assignee_name), updatedAt: iso(row.updated_at),
+        questionCount: Number(row.question_count), pendingQuestionCount: Number(row.pending_question_count),
+      })),
+      pendingQuestions: pendingQuestions.rows.slice(0, MONITORING_LIMIT).map((row) => ({
+        id: String(row.id), runId: String(row.run_id), ticketId: row.ticket_id === null ? null : String(row.ticket_id),
+        ticketIdentifier: row.ticket_identifier === null ? null : String(row.ticket_identifier),
+        kind: row.kind as "question" | "approval", boundary: row.boundary as "worker" | "before" | "after",
+        route: row.route as "agent" | "human-via-channel" | "human-via-UI", questionText: String(row.question_text),
+        createdAt: iso(row.created_at),
       })),
       trail: messages.rows.slice(0, MONITORING_LIMIT).map(monitoringMessageFromRow),
       trailTruncated: messages.rows.length > MONITORING_LIMIT,

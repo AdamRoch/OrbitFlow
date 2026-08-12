@@ -4,6 +4,8 @@ export const STATE_EVENT_TYPES = [
   "ticket.updated",
   "ticket.deleted",
   "message.created",
+  "question.created",
+  "question.updated",
   "run.created",
   "run.updated",
   "run.deleted",
