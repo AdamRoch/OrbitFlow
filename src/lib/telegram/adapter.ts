@@ -11,6 +11,7 @@ import {
   workflowEntryNodeId,
 } from "../workflow/graph.ts";
 import { collectingChannelSpec } from "../channel-intake.ts";
+import { isChannelStatusRequest } from "../channel-reporting.ts";
 
 export interface TelegramInboundUpdate {
   updateId: number;
@@ -106,6 +107,7 @@ function inboundPayload(update: TelegramInboundUpdate & { text: string }): JsonO
         }
       : {}),
     text: update.text.trim(),
+    ...(isChannelStatusRequest(update.text) ? { channelRequest: "status" } : {}),
   };
 }
 
@@ -186,7 +188,21 @@ export async function ingestTelegramInbound(
        FOR UPDATE`,
       [conversationKey, target.workflow_id],
     );
-    const existingRunId = collecting.rows[0]?.run_id;
+    const active = collecting.rows[0]
+      ? null
+      : await transaction.query<{ run_id: string }>(
+        `SELECT intake.run_id
+         FROM channel_intakes AS intake
+         JOIN workflow_runs AS run ON run.id = intake.run_id
+         WHERE intake.provider = 'telegram' AND intake.conversation_key = $1
+           AND intake.workflow_id = $2 AND intake.status = 'ready'
+           AND run.status IN ('running', 'paused')
+         ORDER BY intake.updated_at DESC, intake.run_id DESC
+         FOR KEY SHARE OF intake, run
+         LIMIT 1`,
+        [conversationKey, target.workflow_id],
+      );
+    const existingRunId = collecting.rows[0]?.run_id ?? active?.rows[0]?.run_id;
     const run = await transaction.query<{ id: string }>(
       existingRunId
         ? "SELECT $1::bigint AS id"
@@ -218,7 +234,7 @@ export async function ingestTelegramInbound(
        VALUES ($1, $2, $3)`,
       [updateId, runId, message.id],
     );
-    if (existingRunId) {
+    if (collecting.rows[0]) {
       await transaction.query(
         `UPDATE channel_intakes
          SET last_inbound_message_id = $2, last_question = NULL,
@@ -236,7 +252,7 @@ export async function ingestTelegramInbound(
          WHERE id = $1`,
         [runId, JSON.stringify([{ messageId: payload.messageId, updateId, text }])],
       );
-    } else {
+    } else if (!existingRunId) {
       await transaction.query(
         `INSERT INTO channel_intakes (
            run_id, workflow_id, provider, conversation_key, last_inbound_message_id

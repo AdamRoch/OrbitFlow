@@ -141,6 +141,9 @@ const expectedColumns = {
     "last_inbound_message_id", "last_question", "clarification_count",
     "validated_spec", "created_at", "updated_at",
   ],
+  channel_completion_events: [
+    "run_id", "completion_message_id", "final_outbound_message_id", "created_at", "reported_at",
+  ],
   agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
   agent_wake_events: [
     "id",
@@ -298,6 +301,7 @@ const requiredConstraints = [
   "channel_intakes_provider_not_blank",
   "channel_intakes_spec_object",
   "channel_intakes_state_complete",
+  "channel_completion_events_state_complete",
   "schedules_exactly_one_target",
   "schedule_ticks_key_not_blank",
   "schedule_ticks_schedule_key_unique",
@@ -742,6 +746,12 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         channel_intakes_workflow_id_fkey:
           "REFERENCES workflows(id) ON DELETE RESTRICT",
         channel_intakes_last_inbound_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        channel_completion_events_run_id_fkey:
+          "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        channel_completion_events_completion_message_id_fkey:
+          "REFERENCES messages(id) ON DELETE RESTRICT",
+        channel_completion_events_final_outbound_message_id_fkey:
           "REFERENCES messages(id) ON DELETE RESTRICT",
         schedules_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         schedules_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",

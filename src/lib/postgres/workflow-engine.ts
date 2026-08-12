@@ -25,6 +25,12 @@ import {
 import { telegramInboundForEngine } from "../telegram/adapter.ts";
 import { cronTickForEngine, startScheduleWorker, type ScheduleWorker } from "./scheduling.ts";
 import { parseChannelIntakeDecision } from "../channel-intake.ts";
+import {
+  channelStatusRequestForEngine,
+  enqueueChannelCompletionEvent,
+  routeChannelCompletionEvent,
+  routeChannelStatusRequest,
+} from "../channel-reporting.ts";
 
 export type WorkflowRunStatus =
   | "pending"
@@ -1184,13 +1190,14 @@ async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<
     [runId],
   );
   if (outstanding.rows[0].count === "0") {
-    await transaction.query(
+    const completed = await transaction.query(
       `UPDATE workflow_runs
        SET status = 'completed', ended_at = clock_timestamp(),
            updated_at = clock_timestamp()
        WHERE id = $1 AND status IN ('running', 'paused')`,
       [runId],
     );
+    if (completed.rowCount === 1) await enqueueChannelCompletionEvent(transaction, runId);
   }
 }
 
@@ -1311,6 +1318,7 @@ export async function routeWorkflowMessage(
     await routeChannelInbound(transaction, message);
     return;
   }
+  if (message.type === "system" && await routeChannelCompletionEvent(transaction, message)) return;
   if (message.type !== "output") return;
   const runResult = await transaction.query(
     `SELECT run.*
@@ -1548,6 +1556,10 @@ async function routeChannelInbound(
     if (message.recipient !== `agent:${entryNode.agentId}`) {
       throw new WorkflowGraphError("channel inbound recipient does not match workflow entry agent");
     }
+    if (channelStatusRequestForEngine(message)) {
+      await routeChannelStatusRequest(transaction, message);
+      return;
+    }
     if (run.status === "pending") {
       await transaction.query(
         `UPDATE workflow_runs
@@ -1572,12 +1584,13 @@ async function routeChannelInbound(
       inheritedTicketId: null,
     });
     if (inserted === 0) {
-      await transaction.query(
+      const completed = await transaction.query(
         `UPDATE workflow_runs
          SET status = 'completed', ended_at = clock_timestamp(), updated_at = clock_timestamp()
-         WHERE id = $1`,
+         WHERE id = $1 AND status IN ('running', 'paused')`,
         [message.runId],
       );
+      if (completed.rowCount === 1) await enqueueChannelCompletionEvent(transaction, message.runId);
     }
   } catch (error) {
     if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;

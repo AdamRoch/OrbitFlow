@@ -38,6 +38,8 @@
     "fact25:proof": "bash scripts/fact-25-scheduling-proof.sh",
     "test:channel-intake": "node --experimental-strip-types --test test/postgres/channel-intake.test.mjs",
     "fact16:proof": "bash scripts/fact-16-channel-intake-proof.sh",
+    "test:channel-status-reports": "node --experimental-strip-types --test test/postgres/channel-status-reports.test.mjs",
+    "fact17:proof": "bash scripts/fact-17-status-reports-proof.sh",
     "test:templates": "node --experimental-strip-types --test test/postgres/workflow-templates.test.mjs",
     "test:state-stream": "node --experimental-strip-types --test test/postgres/state-stream.test.mjs",
     "fact18:proof": "bash scripts/fact-18-state-stream-proof.sh",
