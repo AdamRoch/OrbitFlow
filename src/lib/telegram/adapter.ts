@@ -10,6 +10,7 @@ import {
   parseWorkflowGraph,
   workflowEntryNodeId,
 } from "../workflow/graph.ts";
+import { collectingChannelSpec } from "../channel-intake.ts";
 
 export interface TelegramInboundUpdate {
   updateId: number;
@@ -172,14 +173,36 @@ export async function ingestTelegramInbound(
     const target = await boundEntry(transaction);
     const chat = payload.chat as JsonObject;
     const text = payload.text as string;
+    const conversationKey = chat.id as string;
+    await transaction.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`orbitflow:channel-intake:telegram:${conversationKey}:${target.workflow_id}`],
+    );
+    const collecting = await transaction.query<{ run_id: string }>(
+      `SELECT run_id
+       FROM channel_intakes
+       WHERE provider = 'telegram' AND conversation_key = $1
+         AND workflow_id = $2 AND status = 'collecting'
+       FOR UPDATE`,
+      [conversationKey, target.workflow_id],
+    );
+    const existingRunId = collecting.rows[0]?.run_id;
     const run = await transaction.query<{ id: string }>(
-      `INSERT INTO workflow_runs (workflow_id, trigger_type, spec)
-       VALUES ($1, 'channel', $2)
-       RETURNING id`,
-      [
-        target.workflow_id,
-        { provider: "telegram", chat, text, inboundMessageId: payload.messageId },
-      ],
+      existingRunId
+        ? "SELECT $1::bigint AS id"
+        : `INSERT INTO workflow_runs (workflow_id, trigger_type, spec)
+           VALUES ($1, 'channel', $2)
+           RETURNING id`,
+      existingRunId
+        ? [existingRunId]
+        : [target.workflow_id, collectingChannelSpec({
+            provider: "telegram",
+            chat,
+            ...(payload.from ? { from: payload.from as JsonObject } : {}),
+            messageId: payload.messageId as string,
+            updateId,
+            text,
+          })],
     );
     const runId = run.rows[0]!.id;
     const message = await insertMessage(transaction, {
@@ -195,6 +218,32 @@ export async function ingestTelegramInbound(
        VALUES ($1, $2, $3)`,
       [updateId, runId, message.id],
     );
+    if (existingRunId) {
+      await transaction.query(
+        `UPDATE channel_intakes
+         SET last_inbound_message_id = $2, last_question = NULL,
+             updated_at = clock_timestamp()
+         WHERE run_id = $1 AND status = 'collecting'`,
+        [runId, message.id],
+      );
+      await transaction.query(
+        `UPDATE workflow_runs
+         SET spec = jsonb_set(
+           spec,
+           '{channelContext,inboundMessages}',
+           COALESCE(spec #> '{channelContext,inboundMessages}', '[]'::jsonb) || $2::jsonb
+         ), updated_at = clock_timestamp()
+         WHERE id = $1`,
+        [runId, JSON.stringify([{ messageId: payload.messageId, updateId, text }])],
+      );
+    } else {
+      await transaction.query(
+        `INSERT INTO channel_intakes (
+           run_id, workflow_id, provider, conversation_key, last_inbound_message_id
+         ) VALUES ($1, $2, 'telegram', $3, $4)`,
+        [runId, target.workflow_id, conversationKey, message.id],
+      );
+    }
     return { kind: "accepted", runId, messageId: message.id };
   });
 }
