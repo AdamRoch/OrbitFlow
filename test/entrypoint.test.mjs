@@ -37,3 +37,19 @@ test("Telegram remains an opt-in profile with the option-bearing Node command", 
   assert.match(compose, /telegram:\n    profiles: \["telegram"\]/);
   assert.match(compose, /command: \["node", "--experimental-strip-types", "src\/runtime\/telegram\.ts"\]/);
 });
+
+test("Telegram runtime fails closed on a blank token before it reaches the database or provider", () => {
+  const result = spawnSync(process.execPath, ["--experimental-strip-types", "src/runtime/telegram.ts"], {
+    cwd: repository,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DATABASE_URL: "postgresql://not-used-before-token-guard@127.0.0.1:1/orbitflow",
+      TELEGRAM_BOT_TOKEN: "   ",
+    },
+  });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.notEqual(result.status, 0);
+  assert.match(output, /TELEGRAM_BOT_TOKEN is required/);
+  assert.doesNotMatch(output, /not-used-before-token-guard/);
+});

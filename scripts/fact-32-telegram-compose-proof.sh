@@ -76,16 +76,30 @@ sleep 2
 [[ "$(docker inspect --format '{{.State.Running}}' "$telegram_id")" == "true" ]]
 compose logs telegram-api-stub | grep -F "fake Telegram accepted getMe" >/dev/null
 
-missing_output="$(compose run --rm --no-deps -e TELEGRAM_BOT_TOKEN= telegram 2>&1 || true)"
-if [[ "$missing_output" != *"TELEGRAM_BOT_TOKEN is required" ]] || [[ "$missing_output" == *"fact32-present-token"* ]]; then
-  echo "Telegram missing-token failure was not explicit and credential-safe" >&2
+if missing_output="$(compose run --rm --no-deps -e TELEGRAM_BOT_TOKEN= telegram 2>&1)"; then
+  echo "Telegram missing-token process unexpectedly exited successfully" >&2
+  exit 1
+fi
+if [[ "$missing_output" != *"TELEGRAM_BOT_TOKEN is required" ]]; then
+  echo "Telegram missing-token failure did not reach the adapter guard" >&2
+  exit 1
+fi
+if [[ "$missing_output" == *"fact32-present-token"* ]]; then
+  echo "Compose wrapper exposed the controlled Telegram token" >&2
   exit 1
 fi
 
 invalid_token="fact32-invalid-token"
-invalid_output="$(compose run --rm --no-deps -e "TELEGRAM_BOT_TOKEN=$invalid_token" telegram 2>&1 || true)"
-if [[ "$invalid_output" != *"Unauthorized" ]] || [[ "$invalid_output" == *"$invalid_token"* ]]; then
-  echo "Telegram invalid-token failure was not explicit and credential-safe" >&2
+if invalid_output="$(compose run --rm --no-deps -e "TELEGRAM_BOT_TOKEN=$invalid_token" telegram 2>&1)"; then
+  echo "Telegram invalid-token process unexpectedly exited successfully" >&2
+  exit 1
+fi
+if [[ "$invalid_output" != *"Unauthorized" ]]; then
+  echo "Telegram invalid-token failure did not reach the fake Telegram boundary" >&2
+  exit 1
+fi
+if [[ "$invalid_output" == *"$invalid_token"* ]]; then
+  echo "Telegram invalid-token failure exposed the controlled token" >&2
   exit 1
 fi
 
