@@ -15,6 +15,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - FACT-14's strict Software Factory E2E gate (real OpenClaw + OpenRouter, shipped-template prompt, bounded output-token budget) lives in `scripts/fact-14-e2e-proof.mjs`; prove it with `npm run fact14:proof`. The Factory Implementer prompt is owned by `db/migrations/0015-factory-implementer-prompt.sql`, which replaces only the exact 0013-seeded prompt.
 - FACT-15's grammY long-poll adapter, Telegram binding, durable inbound/outbound receipts, and fail-closed outbound recovery live in `docs/telegram-adapter.md`; prove them with `npm run fact15:proof`. OpenClaw Telegram is explicitly disabled in `docker/openclaw/openclaw.json`.
 - FACT-16's restart-safe channel intake, clarification, validated run-spec, and ordinary engine kickoff contracts live in `docs/orchestrator-channel-intake.md`; prove them with `npm run fact16:proof`.
+- FACT-17's grounded Telegram status and final-report paths, durable completion wake, and exactly-once logical report contract live in `docs/orchestrator-channel-intake.md`; prove them with `npm run fact17:proof`.
 
 ## CodingToolAdapter (PRD §5)
 
