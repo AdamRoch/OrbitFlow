@@ -62,3 +62,32 @@ test("Telegram Compose proof renders each credential case from an isolated inter
   assert.match(proof, /compose_with_env "\$invalid_token_env_file" run --rm --no-deps telegram/);
   assert.doesNotMatch(proof, /-e TELEGRAM_BOT_TOKEN=/);
 });
+
+test("Telegram Compose proof diagnostics classify failures and redact every controlled credential", () => {
+  const sample = [
+    "TELEGRAM_BOT_TOKEN=fact32-present-token",
+    "OPENROUTER_API_KEY=not-a-real-key-for-fact32-proof",
+    "POSTGRES_PASSWORD=fact32-local-password",
+    "postgresql://orbitflow:fact32-local-password@postgres:5432/orbitflow_fact32_proof",
+    "invalid token: fact32-invalid-token",
+  ].join("\n");
+  const result = spawnSync("bash", ["-c", 'source scripts/fact-32-telegram-compose-proof.sh; redact_controlled_diagnostic "$1"', "proof", sample], {
+    cwd: repository,
+    encoding: "utf8",
+    env: { ...process.env, FACT32_PROOF_TEST_LIB: "1" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /fact32-(present-token|invalid-token|local-password)/);
+  assert.doesNotMatch(result.stdout, /not-a-real-key-for-fact32-proof/);
+  assert.match(result.stdout, /TELEGRAM_BOT_TOKEN=\[REDACTED\]/);
+  assert.match(result.stdout, /OPENROUTER_API_KEY=\[REDACTED\]/);
+  assert.match(result.stdout, /POSTGRES_PASSWORD=\[REDACTED\]/);
+  assert.match(result.stdout, /postgresql:\/\/orbitflow:\[REDACTED\]@postgres/);
+});
+
+test("Telegram Compose proof keeps missing-token diagnostics bounded and tied to a nonzero exit", async () => {
+  const proof = await readFile(path.join(repository, "scripts/fact-32-telegram-compose-proof.sh"), "utf8");
+  assert.match(proof, /emit_negative_diagnostic "missing-token" "\$missing_exit" "\$missing_output"/);
+  assert.match(proof, /compose_run_exit=%s/);
+  assert.match(proof, /tail -n 40/);
+});

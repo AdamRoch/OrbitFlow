@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+redact_controlled_diagnostic() {
+  local output="$1"
+
+  printf '%s' "$output" | sed -E \
+    -e 's/(TELEGRAM_BOT_TOKEN|OPENROUTER_API_KEY|POSTGRES_PASSWORD)=[^[:space:]]+/\1=[REDACTED]/g' \
+    -e 's#(postgresql://[^:[:space:]]+:)[^@[:space:]]+@#\1[REDACTED]@#g' \
+    -e 's/fact32-present-token/[REDACTED]/g' \
+    -e 's/fact32-invalid-token/[REDACTED]/g' \
+    -e 's/fact32-local-password/[REDACTED]/g' \
+    -e 's/not-a-real-key-for-fact32-proof/[REDACTED]/g'
+}
+
+emit_negative_diagnostic() {
+  local case_name="$1"
+  local exit_status="$2"
+  local output="$3"
+
+  printf 'FACT-32 %s diagnostic: compose_run_exit=%s; captured stdout/stderr follows (last 40 lines, controlled credentials redacted)\n' "$case_name" "$exit_status" >&2
+  redact_controlled_diagnostic "$output" | tail -n 40 >&2
+}
+
+if [[ "${FACT32_PROOF_TEST_LIB:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 project="orbitflow-fact32-proof-$$"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitflow-fact32-env.XXXXXX")"
 missing_token_env_file="$(mktemp "${TMPDIR:-/tmp}/orbitflow-fact32-missing-token-env.XXXXXX")"
@@ -92,15 +117,24 @@ sleep 2
 [[ "$(docker inspect --format '{{.State.Running}}' "$telegram_id")" == "true" ]]
 compose logs telegram-api-stub | grep -F "fake Telegram accepted getMe" >/dev/null
 
+missing_exit=0
 if missing_output="$(compose_with_env "$missing_token_env_file" run --rm --no-deps telegram 2>&1)"; then
+  :
+else
+  missing_exit=$?
+fi
+if [[ "$missing_exit" -eq 0 ]]; then
+  emit_negative_diagnostic "missing-token" "$missing_exit" "$missing_output"
   echo "Telegram missing-token process unexpectedly exited successfully" >&2
   exit 1
 fi
 if [[ "$missing_output" != *"TELEGRAM_BOT_TOKEN is required" ]]; then
+  emit_negative_diagnostic "missing-token" "$missing_exit" "$missing_output"
   echo "Telegram missing-token failure did not reach the adapter guard" >&2
   exit 1
 fi
 if [[ "$missing_output" == *"fact32-present-token"* ]]; then
+  emit_negative_diagnostic "missing-token" "$missing_exit" "$missing_output"
   echo "Compose wrapper exposed the controlled Telegram token" >&2
   exit 1
 fi
