@@ -5,8 +5,12 @@ profile. It has no public listener or webhook. Start it only after setting
 `TELEGRAM_BOT_TOKEN`:
 
 ```sh
-docker compose --profile telegram up
+docker compose --profile telegram up --build
 ```
+
+This is the canonical Telegram-enabled demo command. It requires the normal
+Compose variables plus `TELEGRAM_BOT_TOKEN` in `.env`; the default Compose
+command deliberately leaves this adapter off.
 
 `src/runtime/telegram.ts` maps text-only Telegram updates to
 `ingestTelegramInbound`. The adapter stores the chat and sender identity, text,

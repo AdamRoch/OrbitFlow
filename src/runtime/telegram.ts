@@ -8,6 +8,7 @@ import {
 const { Pool } = pg;
 const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
 const databaseUrl = process.env.DATABASE_URL;
+const apiRoot = process.env.ORBITFLOW_TELEGRAM_API_ROOT?.trim();
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required for the Telegram adapter");
 if (!databaseUrl) throw new Error("DATABASE_URL is required for the Telegram adapter");
 
@@ -15,7 +16,7 @@ const pool = new Pool({
   connectionString: databaseUrl,
   application_name: "orbitflow-telegram",
 });
-const bot = new Bot(token);
+const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : undefined);
 const outbound = startTelegramOutboundWorker(pool, {
   async sendMessage(chatId, text) {
     const sent = await bot.api.sendMessage(chatId, text);
