@@ -91,3 +91,32 @@ test("Telegram Compose proof keeps missing-token diagnostics bounded and tied to
   assert.match(proof, /compose_run_exit=%s/);
   assert.match(proof, /tail -n 40/);
 });
+
+test("Telegram Compose proof uses exact substring checks for retained provider formatting", async () => {
+  const fixture = await readFile(path.join(repository, "test/fixtures/fact32-missing-token-diagnostic.txt"), "utf8");
+  assert.doesNotMatch(fixture, /\u001B/);
+
+  const legacyPattern = spawnSync("bash", ["-c", '[[ "$1" != *"TELEGRAM_BOT_TOKEN is required" ]]', "proof", fixture], {
+    cwd: repository,
+    encoding: "utf8",
+  });
+  assert.equal(legacyPattern.status, 0, "the former missing trailing wildcard misclassifies the retained output");
+
+  for (const expected of ["TELEGRAM_BOT_TOKEN is required", "Unauthorized"]) {
+    const positive = spawnSync("bash", ["-c", '[[ "$1" == *"$2"* ]]', "proof", `before ${expected} after`, expected], {
+      cwd: repository,
+      encoding: "utf8",
+    });
+    assert.equal(positive.status, 0, `must recognize text before and after ${expected}`);
+
+    const negative = spawnSync("bash", ["-c", '[[ "$1" == *"$2"* ]]', "proof", "before a different failure after", expected], {
+      cwd: repository,
+      encoding: "utf8",
+    });
+    assert.equal(negative.status, 1, `must not broaden ${expected}`);
+  }
+
+  const proof = await readFile(path.join(repository, "scripts/fact-32-telegram-compose-proof.sh"), "utf8");
+  assert.match(proof, /\[\[ "\$missing_output" != \*"TELEGRAM_BOT_TOKEN is required"\* \]\]/);
+  assert.match(proof, /\[\[ "\$invalid_output" != \*"Unauthorized"\* \]\]/);
+});

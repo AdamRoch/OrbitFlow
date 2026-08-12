@@ -128,7 +128,7 @@ if [[ "$missing_exit" -eq 0 ]]; then
   echo "Telegram missing-token process unexpectedly exited successfully" >&2
   exit 1
 fi
-if [[ "$missing_output" != *"TELEGRAM_BOT_TOKEN is required" ]]; then
+if [[ "$missing_output" != *"TELEGRAM_BOT_TOKEN is required"* ]]; then
   emit_negative_diagnostic "missing-token" "$missing_exit" "$missing_output"
   echo "Telegram missing-token failure did not reach the adapter guard" >&2
   exit 1
@@ -144,7 +144,7 @@ if invalid_output="$(compose_with_env "$invalid_token_env_file" run --rm --no-de
   echo "Telegram invalid-token process unexpectedly exited successfully" >&2
   exit 1
 fi
-if [[ "$invalid_output" != *"Unauthorized" ]]; then
+if [[ "$invalid_output" != *"Unauthorized"* ]]; then
   echo "Telegram invalid-token failure did not reach the fake Telegram boundary" >&2
   exit 1
 fi
