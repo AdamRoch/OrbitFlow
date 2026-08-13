@@ -1,0 +1,42 @@
+command=npm run fact17:proof
+started_utc=2026-08-13T16:25:20Z
+
+> orbitfactory@0.1.0 fact17:proof
+> bash scripts/fact-17-status-reports-proof.sh
+
+
+> orbitfactory@0.1.0 test:channel-status-reports
+> node --experimental-strip-types --test test/postgres/channel-status-reports.test.mjs
+
+TAP version 13
+# Subtest: FACT-17 durable Telegram status and final reports
+    # Subtest: grounds a mid-run status request in PostgreSQL and records both bus messages
+    ok 1 - grounds a mid-run status request in PostgreSQL and records both bus messages
+      ---
+      duration_ms: 110.895542
+      type: 'test'
+      ...
+    # Subtest: does not create a completion report for a non-channel run
+    ok 2 - does not create a completion report for a non-channel run
+      ---
+      duration_ms: 37.264375
+      type: 'test'
+      ...
+    1..2
+ok 1 - FACT-17 durable Telegram status and final reports
+  ---
+  duration_ms: 337.209792
+  type: 'test'
+  ...
+1..1
+# tests 3
+# suites 0
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 430.49475
+FACT-17 status reports proof passed
+exit_code=0
+finished_utc=2026-08-13T16:25:22Z

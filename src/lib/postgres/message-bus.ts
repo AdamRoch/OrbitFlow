@@ -72,6 +72,7 @@ export interface RunWorkerOptions extends ConsumeOptions {
   pollIntervalMs?: number;
   retryIntervalMs?: number;
   onError?: (error: unknown) => void | Promise<void>;
+  onOperational?: () => void;
 }
 
 export interface MessageBusWorker {
@@ -494,11 +495,16 @@ export async function runMessageBusWorker(
     "retryIntervalMs",
   );
   const signal = options.signal;
+  let operational = false;
 
   while (!signal?.aborted) {
     let consumed: ConsumedMessage | null;
     try {
       consumed = await consumeNextMessage(pool, handler, options);
+      if (!operational) {
+        operational = true;
+        options.onOperational?.();
+      }
     } catch (error) {
       if (!options.onError) throw error;
       await options.onError(error);

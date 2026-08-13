@@ -1,0 +1,8 @@
+command=npm run lint
+started_utc=2026-08-13T16:14:53Z
+
+> orbitfactory@0.1.0 lint
+> eslint
+
+exit_code=0
+finished_utc=2026-08-13T16:14:57Z

@@ -951,7 +951,7 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
           invocationId: "timeout",
           nodeId: "timeout",
           nodeSystemPrompt: "This fake turn hangs.",
-          timeoutMs: 150,
+          timeoutMs: 500,
         }),
       (error) =>
         error instanceof RuntimeAdapterError && error.code === "openclaw_timeout",

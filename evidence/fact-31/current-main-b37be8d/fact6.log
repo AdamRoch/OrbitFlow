@@ -1,0 +1,31 @@
+command=npm run fact6:proof
+started_utc=2026-08-13T16:15:14Z
+
+> orbitfactory@0.1.0 fact6:proof
+> bash scripts/fact-6-postgres-proof.sh
+
+TAP version 13
+# applies the complete chain from empty and then no-ops
+ok 1 - applies the complete chain from empty and then no-ops
+# fails closed on migration history drift, lock contention, and failed SQL
+ok 2 - fails closed on migration history drift, lock contention, and failed SQL
+# matches tables, columns, native types, constraints, keys, and indexes
+ok 3 - matches tables, columns, native types, constraints, keys, and indexes
+# preserves retained board, label, blocker, and frontier query shapes
+ok 4 - preserves retained board, label, blocker, and frontier query shapes
+# enforces message ticket ownership while allowing null-run tickets
+ok 5 - enforces message ticket ownership while allowing null-run tickets
+# reconstructs every message field in deterministic run order
+ok 6 - reconstructs every message field in deterministic run order
+# does not let a consumer cursor skip an earlier late commit
+ok 7 - does not let a consumer cursor skip an earlier late commit
+# rejects invalid, orphaned, negative, and destructive writes
+ok 8 - rejects invalid, orphaned, negative, and destructive writes
+
+1..8
+# tests 8
+# pass 8
+# fail 0
+orbitfactory-fact6-postgres-proof
+exit_code=0
+finished_utc=2026-08-13T16:15:17Z

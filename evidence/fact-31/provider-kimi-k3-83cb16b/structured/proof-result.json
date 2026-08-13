@@ -1,0 +1,216 @@
+{
+  "run": {
+    "id": "1",
+    "status": "completed",
+    "failureReason": null,
+    "totalTokens": "130033",
+    "totalCost": "0.03282840"
+  },
+  "messageCount": 12,
+  "messages": [
+    {
+      "id": "1",
+      "type": "system",
+      "sender": "agent:1",
+      "recipient": "system:ticket-stream",
+      "hasTokenUsage": false,
+      "payload": "{\"runId\":\"1\",\"action\":\"create_ticket\",\"agentId\":\"1\",\"ticketId\":\"1\",\"idempotencyKey\":\"orch-create-1\"}"
+    },
+    {
+      "id": "2",
+      "type": "system",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "handoffBrief": "Intake complete. The objective is concrete and testable: create hello.txt with exact content 'Hello from OrbitFlow Software Factory!' and no trailing newline. One implementation ticket (FACT-1) has been created and is ready for the planner/implementer.",
+      "hasTokenUsage": true,
+      "payload": "{\"kind\":\"openclaw_invocation_result\",\"state\":\"completed\",\"usage\":{\"input\":5782,\"total\":11566,\"output\":408,\"cacheRead\":5376,\"cacheWrite\":0,\"computedCost\":\"0\"},\"output\":{\"events\":[{\"type\":\"ticket_created\",\"ticketId\":\"1\",\"identifier\":\"FACT-1\"}],\"artifact\":{\"intake\":{\"spec\":{\"objective\":\"Create hello.txt containing exactly the bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline.\",\"constraints\":[],\"acceptanceCriteria\":[\"File hello.txt exists in the workspace root\",\"File contains exactly the 40 bytes 'Hello from OrbitFlow Software Factory!'\",\"File has no trailing newline, BOM, or additional whitespace\"]},\"status\":\"ready\"},\"ticket\":{\"id\":\"1\",\"title\":\"Create hello.txt with exact content\",\"status\":\"todo\",\"priority\":1,\"identifier\":\"FACT-1\"}},\"handoff_brief\":\"Intake complete. The objective is concrete and testable: create hello.txt with exact content 'Hello from OrbitFlow Software Factory!' and no trailing newline. One implementation ticket (FACT-1) has been created and is ready for the planner/implementer.\"},\"version\":1,\"attempts\":1,\"completion\":{\"model\":\"moonshotai/kimi-k3\",\"status\":\"stop\",\"exitCode\":0,\"provider\":\"openrouter\",\"sessionId\":\"orbitflow-8b26b84360b415ce165830ade449f6e2\"},\"costEventId\":\"-8108409356067710884\",\"invocationKey\":\"f086db5961dea7a3521535dbb00d7398162e11de4bf8794e4817e96be6152b5c\",\"requestFingerprint\":\"836f5dafcefb3904d2874efab0403b53f48826650eb09d1c2ba30763911b2800\"}"
+    },
+    {
+      "id": "3",
+      "type": "output",
+      "sender": "agent:1",
+      "recipient": "workflow-engine",
+      "handoffBrief": "Intake complete. The objective is concrete and testable: create hello.txt with exact content 'Hello from OrbitFlow Software Factory!' and no trailing newline. One implementation ticket (FACT-1) has been created and is ready for the planner/implementer.",
+      "hasTokenUsage": false,
+      "payload": "{\"output\":{\"events\":[{\"type\":\"ticket_created\",\"ticketId\":\"1\",\"identifier\":\"FACT-1\"}],\"artifact\":{\"intake\":{\"spec\":{\"objective\":\"Create hello.txt containing exactly the bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline.\",\"constraints\":[],\"acceptanceCriteria\":[\"File hello.txt exists in the workspace root\",\"File contains exactly the 40 bytes 'Hello from OrbitFlow Software Factory!'\",\"File has no trailing newline, BOM, or additional whitespace\"]},\"status\":\"ready\"},\"ticket\":{\"id\":\"1\",\"title\":\"Create hello.txt with exact content\",\"status\":\"todo\",\"priority\":1,\"identifier\":\"FACT-1\"}},\"handoff_brief\":\"Intake complete. The objective is concrete and testable: create hello.txt with exact content 'Hello from OrbitFlow Software Factory!' and no trailing newline. One implementation ticket (FACT-1) has been created and is ready for the planner/implementer.\"},\"sessionId\":\"orbitflow-session-7beda66fb4cce914\",\"dispatchId\":\"1\",\"dispatchGeneration\":\"1\"}"
+    },
+    {
+      "id": "4",
+      "type": "system",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "handoffBrief": "Planning complete. The board already contains exactly one ticket for this trivial proof; no duplicates were created.\n\nTicket FACT-1 (todo, priority 1): Create hello.txt with exact content — write the file hello.txt containing exactly the bytes \"Hello from OrbitFlow Software Factory!\" with no trailing newline, no BOM, no extra whitespace, and no line-ending conversion.\n\nImplementation guidance: use `printf '%s' 'Hello from OrbitFlow Software Factory!' > hello.txt` (not echo, which appends a newli",
+      "hasTokenUsage": true,
+      "payload": "{\"kind\":\"openclaw_invocation_result\",\"state\":\"completed\",\"usage\":{\"input\":5564,\"total\":11213,\"output\":465,\"cacheRead\":5184,\"cacheWrite\":0,\"computedCost\":\"0\"},\"output\":{\"events\":[{\"type\":\"tickets_listed\",\"detail\":\"Listed board tickets; confirmed FACT-1 exists as the single ticket for this run.\"},{\"type\":\"no_duplicate_created\",\"detail\":\"Per tooling guidance, reused the orchestrator-created ticket FACT-1 instead of creating a new one.\"}],\"artifact\":{\"tickets\":[{\"title\":\"Create hello.txt with exact content\",\"status\":\"todo\",\"priority\":1,\"identifier\":\"FACT-1\",\"assigneeAgentId\":\"1\"}],\"architecture\":\"Single static file artifact. No build system, dependencies, or services required. Implementer writes exact bytes to hello.txt at workspace root using a method that guarantees no trailing newline (e.g., printf or equivalent binary-safe write).\"},\"handoff_brief\":\"Planning complete. The board already contains exactly one ticket for this trivial proof; no duplicates were created.\\n\\nTicket FACT-1 (todo, priority 1): Create hello.txt with exact content — write the file hello.txt containing exactly the bytes \\\"Hello from OrbitFlow Software Factory!\\\" with no trailing newline, no BOM, no extra whitespace, and no line-ending conversion.\\n\\nImplementation guidance: use `printf '%s' 'Hello from OrbitFlow Software Factory!' > hello.txt` (not echo, which appends a newline). Verify with `wc -c hello.txt` (must be 38 bytes) and `xxd hello.txt | tail -1` (last byte must be '!', 0x21).\\n\\nRequirements analysis: the task is a single deterministic file write; no architecture, decomposition, or ordering beyond this one ticket is warranted. Ready for the implementer to pick up FACT-1.\"},\"version\":1,\"attempts\":1,\"completion\":{\"model\":\"moonshotai/kimi-k3\",\"status\":\"stop\",\"exitCode\":0,\"provider\":\"openrouter\",\"sessionId\":\"orbitflow-69f9f3d454e22c901eb88c54bb4f8514\"},\"costEventId\":\"-7072560586183537596\",\"invocationKey\":\"6226c8618fe5f3bbe67b6a3ab9c4b38cfb91e40c13b6f84103611ae02d0d07f5\",\"requestFingerpri"
+    },
+    {
+      "id": "5",
+      "type": "output",
+      "sender": "agent:2",
+      "recipient": "workflow-engine",
+      "handoffBrief": "Planning complete. The board already contains exactly one ticket for this trivial proof; no duplicates were created.\n\nTicket FACT-1 (todo, priority 1): Create hello.txt with exact content — write the file hello.txt containing exactly the bytes \"Hello from OrbitFlow Software Factory!\" with no trailing newline, no BOM, no extra whitespace, and no line-ending conversion.\n\nImplementation guidance: use `printf '%s' 'Hello from OrbitFlow Software Factory!' > hello.txt` (not echo, which appends a newli",
+      "hasTokenUsage": false,
+      "payload": "{\"output\":{\"events\":[{\"type\":\"tickets_listed\",\"detail\":\"Listed board tickets; confirmed FACT-1 exists as the single ticket for this run.\"},{\"type\":\"no_duplicate_created\",\"detail\":\"Per tooling guidance, reused the orchestrator-created ticket FACT-1 instead of creating a new one.\"}],\"artifact\":{\"tickets\":[{\"title\":\"Create hello.txt with exact content\",\"status\":\"todo\",\"priority\":1,\"identifier\":\"FACT-1\",\"assigneeAgentId\":\"1\"}],\"architecture\":\"Single static file artifact. No build system, dependencies, or services required. Implementer writes exact bytes to hello.txt at workspace root using a method that guarantees no trailing newline (e.g., printf or equivalent binary-safe write).\"},\"handoff_brief\":\"Planning complete. The board already contains exactly one ticket for this trivial proof; no duplicates were created.\\n\\nTicket FACT-1 (todo, priority 1): Create hello.txt with exact content — write the file hello.txt containing exactly the bytes \\\"Hello from OrbitFlow Software Factory!\\\" with no trailing newline, no BOM, no extra whitespace, and no line-ending conversion.\\n\\nImplementation guidance: use `printf '%s' 'Hello from OrbitFlow Software Factory!' > hello.txt` (not echo, which appends a newline). Verify with `wc -c hello.txt` (must be 38 bytes) and `xxd hello.txt | tail -1` (last byte must be '!', 0x21).\\n\\nRequirements analysis: the task is a single deterministic file write; no architecture, decomposition, or ordering beyond this one ticket is warranted. Ready for the implementer to pick up FACT-1.\"},\"sessionId\":\"orbitflow-session-b079a7db1a7399dc\",\"dispatchId\":\"2\",\"dispatchGeneration\":\"1\"}"
+    },
+    {
+      "id": "6",
+      "type": "system",
+      "sender": "agent:3",
+      "recipient": "system:ticket-stream",
+      "hasTokenUsage": false,
+      "payload": "{\"runId\":\"1\",\"action\":\"update_ticket\",\"agentId\":\"3\",\"ticketId\":\"1\",\"idempotencyKey\":\"impl-update-3\"}"
+    },
+    {
+      "id": "7",
+      "type": "system",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "handoffBrief": "FACT-1 complete. The coding tool created hello.txt in the run workspace containing exactly 'Hello from OrbitFlow Software Factory!' with no trailing newline, no BOM, and no extra whitespace. Verification: file is exactly 38 bytes; first byte 0x48 ('H'), last byte 0x21 ('!'). Ticket marked done.",
+      "hasTokenUsage": true,
+      "payload": "{\"kind\":\"openclaw_invocation_result\",\"state\":\"completed\",\"usage\":{\"input\":8917,\"total\":50220,\"output\":1111,\"cacheRead\":40192,\"cacheWrite\":0,\"computedCost\":\"0\"},\"output\":{\"events\":[],\"artifact\":{\"path\":\"/Users/adam/.treehouse/orbitflow-b83ab6/5/orbitflow/evidence/fact-31/provider-kimi-k3-83cb16b/workspaces/run-1/hello.txt\",\"bytes\":38,\"files\":[\"hello.txt\"]},\"handoff_brief\":\"FACT-1 complete. The coding tool created hello.txt in the run workspace containing exactly 'Hello from OrbitFlow Software Factory!' with no trailing newline, no BOM, and no extra whitespace. Verification: file is exactly 38 bytes; first byte 0x48 ('H'), last byte 0x21 ('!'). Ticket marked done.\"},\"version\":1,\"attempts\":1,\"completion\":{\"model\":\"moonshotai/kimi-k3\",\"status\":\"stop\",\"exitCode\":0,\"provider\":\"openrouter\",\"sessionId\":\"orbitflow-33ed2b0a8fdbc710b4eb2700a8285bf4\"},\"costEventId\":\"-5762546624731737135\",\"invocationKey\":\"cff8ad9fb8c2ec2e106fe9a4369e5fc12f3210d49baff17bb49f92ddd5091642\",\"requestFingerprint\":\"8c4f251ccb9f6f3a02ea560ad1fbe9875410d80367b92014c578b03281980c33\"}"
+    },
+    {
+      "id": "8",
+      "type": "output",
+      "sender": "agent:3",
+      "recipient": "workflow-engine",
+      "handoffBrief": "FACT-1 complete. The coding tool created hello.txt in the run workspace containing exactly 'Hello from OrbitFlow Software Factory!' with no trailing newline, no BOM, and no extra whitespace. Verification: file is exactly 38 bytes; first byte 0x48 ('H'), last byte 0x21 ('!'). Ticket marked done.",
+      "hasTokenUsage": false,
+      "payload": "{\"output\":{\"events\":[],\"artifact\":{\"path\":\"/Users/adam/.treehouse/orbitflow-b83ab6/5/orbitflow/evidence/fact-31/provider-kimi-k3-83cb16b/workspaces/run-1/hello.txt\",\"bytes\":38,\"files\":[\"hello.txt\"]},\"handoff_brief\":\"FACT-1 complete. The coding tool created hello.txt in the run workspace containing exactly 'Hello from OrbitFlow Software Factory!' with no trailing newline, no BOM, and no extra whitespace. Verification: file is exactly 38 bytes; first byte 0x48 ('H'), last byte 0x21 ('!'). Ticket marked done.\"},\"sessionId\":\"orbitflow-session-8416992178ef785f\",\"dispatchId\":\"3\",\"dispatchGeneration\":\"1\"}"
+    },
+    {
+      "id": "9",
+      "type": "system",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "handoffBrief": "FACT-1 approved. Verified $ORBITFLOW_WORKSPACE_ROOT/run-1/hello.txt contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' — byte-for-byte match confirmed via Python comparison. First byte 0x48 ('H'), last byte 0x21 ('!'). No BOM, no trailing newline, no trailing whitespace, no extra content. Acceptance criteria fully satisfied.",
+      "hasTokenUsage": true,
+      "payload": "{\"kind\":\"openclaw_invocation_result\",\"state\":\"completed\",\"usage\":{\"input\":20919,\"total\":42949,\"output\":1294,\"cacheRead\":20736,\"cacheWrite\":0,\"computedCost\":\"0\"},\"output\":{\"events\":[],\"artifact\":{\"verdict\":\"approved\"},\"handoff_brief\":\"FACT-1 approved. Verified $ORBITFLOW_WORKSPACE_ROOT/run-1/hello.txt contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' — byte-for-byte match confirmed via Python comparison. First byte 0x48 ('H'), last byte 0x21 ('!'). No BOM, no trailing newline, no trailing whitespace, no extra content. Acceptance criteria fully satisfied.\"},\"version\":1,\"attempts\":1,\"completion\":{\"model\":\"moonshotai/kimi-k3\",\"status\":\"stop\",\"exitCode\":0,\"provider\":\"openrouter\",\"sessionId\":\"orbitflow-797a75e6b84703496b0f046a7fcd5f88\"},\"costEventId\":\"-251139276473103885\",\"invocationKey\":\"037c39d76353f60c134ff522f56fcc3c1be31ce40889f74e4974e04a4681ef6c\",\"requestFingerprint\":\"dcada8b5f867df54fbf6fad7c0a4627452818a819c978a1d1a6e22e588da17f6\"}"
+    },
+    {
+      "id": "10",
+      "type": "output",
+      "sender": "agent:4",
+      "recipient": "workflow-engine",
+      "handoffBrief": "FACT-1 approved. Verified $ORBITFLOW_WORKSPACE_ROOT/run-1/hello.txt contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' — byte-for-byte match confirmed via Python comparison. First byte 0x48 ('H'), last byte 0x21 ('!'). No BOM, no trailing newline, no trailing whitespace, no extra content. Acceptance criteria fully satisfied.",
+      "hasTokenUsage": false,
+      "payload": "{\"output\":{\"events\":[],\"artifact\":{\"verdict\":\"approved\"},\"handoff_brief\":\"FACT-1 approved. Verified $ORBITFLOW_WORKSPACE_ROOT/run-1/hello.txt contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' — byte-for-byte match confirmed via Python comparison. First byte 0x48 ('H'), last byte 0x21 ('!'). No BOM, no trailing newline, no trailing whitespace, no extra content. Acceptance criteria fully satisfied.\"},\"sessionId\":\"orbitflow-session-c6e3dbe94237bdb0\",\"dispatchId\":\"4\",\"dispatchGeneration\":\"1\"}"
+    },
+    {
+      "id": "11",
+      "type": "system",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "handoffBrief": "Workflow complete. FACT-1 approved and verified: hello.txt in run-1 workspace contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline. Byte-for-byte match confirmed. Acceptance criteria fully satisfied.",
+      "hasTokenUsage": true,
+      "payload": "{\"kind\":\"openclaw_invocation_result\",\"state\":\"completed\",\"usage\":{\"input\":6343,\"total\":6592,\"output\":249,\"cacheRead\":0,\"cacheWrite\":0,\"computedCost\":\"0\"},\"output\":{\"events\":[{\"type\":\"workflow_complete\",\"status\":\"done\",\"ticketId\":\"1\",\"identifier\":\"FACT-1\"}],\"artifact\":{\"report\":{\"title\":\"Create hello.txt with exact content\",\"status\":\"done\",\"summary\":\"Ticket FACT-1 approved and verified. hello.txt created in run-1 workspace contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' — byte-for-byte match confirmed via Python comparison. First byte 0x48 ('H'), last byte 0x21 ('!'). No BOM, no trailing newline, no trailing whitespace, no extra content. Acceptance criteria fully satisfied.\",\"ticketId\":\"1\",\"identifier\":\"FACT-1\",\"verifiedBy\":\"tester\",\"verificationDetails\":\"Byte-for-byte match confirmed via Python comparison. 38 bytes total, first byte 0x48, last byte 0x21. No BOM, no trailing newline, no trailing whitespace.\"}},\"handoff_brief\":\"Workflow complete. FACT-1 approved and verified: hello.txt in run-1 workspace contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline. Byte-for-byte match confirmed. Acceptance criteria fully satisfied.\"},\"version\":1,\"attempts\":1,\"completion\":{\"model\":\"moonshotai/kimi-k3\",\"status\":\"stop\",\"exitCode\":0,\"provider\":\"openrouter\",\"sessionId\":\"orbitflow-8b26b84360b415ce165830ade449f6e2\"},\"costEventId\":\"-939826002058766364\",\"invocationKey\":\"8d0aeec4fb63681bd21f8f07bc0a76db7ab60b09dc75de64437251756e4300ed\",\"requestFingerprint\":\"3ef4368e7a6b4cf4a5b2eb80fd9378c58b0de55dc954de0f81aaf320f98c38e1\"}"
+    },
+    {
+      "id": "12",
+      "type": "output",
+      "sender": "agent:1",
+      "recipient": "workflow-engine",
+      "handoffBrief": "Workflow complete. FACT-1 approved and verified: hello.txt in run-1 workspace contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline. Byte-for-byte match confirmed. Acceptance criteria fully satisfied.",
+      "hasTokenUsage": false,
+      "payload": "{\"output\":{\"events\":[{\"type\":\"workflow_complete\",\"status\":\"done\",\"ticketId\":\"1\",\"identifier\":\"FACT-1\"}],\"artifact\":{\"report\":{\"title\":\"Create hello.txt with exact content\",\"status\":\"done\",\"summary\":\"Ticket FACT-1 approved and verified. hello.txt created in run-1 workspace contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' — byte-for-byte match confirmed via Python comparison. First byte 0x48 ('H'), last byte 0x21 ('!'). No BOM, no trailing newline, no trailing whitespace, no extra content. Acceptance criteria fully satisfied.\",\"ticketId\":\"1\",\"identifier\":\"FACT-1\",\"verifiedBy\":\"tester\",\"verificationDetails\":\"Byte-for-byte match confirmed via Python comparison. 38 bytes total, first byte 0x48, last byte 0x21. No BOM, no trailing newline, no trailing whitespace.\"}},\"handoff_brief\":\"Workflow complete. FACT-1 approved and verified: hello.txt in run-1 workspace contains exactly the 38 bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline. Byte-for-byte match confirmed. Acceptance criteria fully satisfied.\"},\"sessionId\":\"orbitflow-session-18227652327b39c8\",\"dispatchId\":\"5\",\"dispatchGeneration\":\"1\"}"
+    }
+  ],
+  "ticketCount": 1,
+  "tickets": [
+    {
+      "id": "1",
+      "identifier": "FACT-1",
+      "title": "Create hello.txt with exact content",
+      "status": "done"
+    }
+  ],
+  "costEventCount": 6,
+  "costEvents": [
+    {
+      "id": "-8108409356067710884",
+      "agentId": "1",
+      "model": "moonshotai/kimi-k3",
+      "tokensIn": "5782",
+      "tokensOut": "408",
+      "computedCost": "0.00000000"
+    },
+    {
+      "id": "-7072560586183537596",
+      "agentId": "2",
+      "model": "moonshotai/kimi-k3",
+      "tokensIn": "5564",
+      "tokensOut": "465",
+      "computedCost": "0.00000000"
+    },
+    {
+      "id": "-5762546624731737135",
+      "agentId": "3",
+      "model": "moonshotai/kimi-k3",
+      "tokensIn": "8917",
+      "tokensOut": "1111",
+      "computedCost": "0.00000000"
+    },
+    {
+      "id": "-939826002058766364",
+      "agentId": "1",
+      "model": "moonshotai/kimi-k3",
+      "tokensIn": "6343",
+      "tokensOut": "249",
+      "computedCost": "0.00000000"
+    },
+    {
+      "id": "-251139276473103885",
+      "agentId": "4",
+      "model": "moonshotai/kimi-k3",
+      "tokensIn": "20919",
+      "tokensOut": "1294",
+      "computedCost": "0.00000000"
+    },
+    {
+      "id": "1",
+      "agentId": "3",
+      "model": "openrouter/moonshotai/kimi-k3",
+      "tokensIn": "7321",
+      "tokensOut": "172",
+      "computedCost": "0.03282840"
+    }
+  ],
+  "dispatchCount": 5,
+  "dispatches": [
+    {
+      "id": "1",
+      "nodeId": "orchestrator",
+      "status": "completed",
+      "agentId": "1",
+      "ticketId": null
+    },
+    {
+      "id": "2",
+      "nodeId": "planner",
+      "status": "completed",
+      "agentId": "2",
+      "ticketId": null
+    },
+    {
+      "id": "3",
+      "nodeId": "implement",
+      "status": "completed",
+      "agentId": "3",
+      "ticketId": "1"
+    },
+    {
+      "id": "4",
+      "nodeId": "test",
+      "status": "completed",
+      "agentId": "4",
+      "ticketId": "1"
+    },
+    {
+      "id": "5",
+      "nodeId": "report",
+      "status": "completed",
+      "agentId": "1",
+      "ticketId": "1"
+    }
+  ]
+}

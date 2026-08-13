@@ -1,0 +1,9 @@
+boundary=final-exact-head-deterministic
+head=83cb16b274510529817394f023203e0c16566948
+base=b37be8d2f9bd0904e0d97595b85b810f6f34c81a
+started_utc=2026-08-13T16:19:59Z
+## fm/fact-31-primary-delivery
+?? evidence/fact-31/
+docker_client=29.6.1 docker_server=29.6.1
+Docker Compose version v5.3.0
+[]

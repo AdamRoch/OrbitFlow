@@ -1,0 +1,8 @@
+command=npm run typecheck
+started_utc=2026-08-13T16:14:51Z
+
+> orbitfactory@0.1.0 typecheck
+> tsc --noEmit
+
+exit_code=0
+finished_utc=2026-08-13T16:14:53Z

@@ -1,3 +1,5 @@
+FROM ghcr.io/openclaw/openclaw:2026.4.15 AS openclaw-runtime
+
 FROM node:22.22.2-bookworm-slim AS build
 
 WORKDIR /app
@@ -19,8 +21,9 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app ./
 COPY --chown=root:root docker/app-entrypoint.sh /usr/local/bin/orbitflow-app-entrypoint
 COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitflow-coding-adapter-entrypoint
+COPY --chown=root:root docker/engine-entrypoint.sh /usr/local/bin/orbitflow-engine-entrypoint
 
-RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint
+RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-app-entrypoint"]
 CMD ["npm", "run", "start"]
@@ -35,8 +38,11 @@ RUN apt-get update \
 
 RUN npm ci --prefix coding-adapter --omit=dev
 
+COPY --from=openclaw-runtime /app /opt/openclaw
+
 RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
 
 ENV PATH=/app/coding-adapter/node_modules/.bin:$PATH
 
-CMD ["node", "scripts/engine-readiness.mjs"]
+ENTRYPOINT ["/usr/local/bin/orbitflow-engine-entrypoint"]
+CMD ["node", "--experimental-strip-types", "src/runtime/engine.ts"]

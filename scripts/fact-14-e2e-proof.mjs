@@ -112,7 +112,7 @@ function workspaceToolsFor(agentName, nodeId, projectId, agentId, runId) {
     `# Tools for Tester`,
     `The implementation workspace is $ORBITFLOW_WORKSPACE_ROOT/run-${runId}.`,
     `Do not inspect your OpenClaw agent workspace; it is not the implementation workspace.`,
-    `Use exec to verify $ORBITFLOW_WORKSPACE_ROOT/run-${runId}/hello.txt exists and contains exactly Hello from OrbitFlow Software Factory!`,
+    `Use exec to verify $ORBITFLOW_WORKSPACE_ROOT/run-${runId}/hello.txt contains exactly the bytes Hello from OrbitFlow Software Factory! with no trailing newline.`,
     `If it matches, return artifact {"verdict":"approved"} and an approved handoff. Otherwise return artifact {"verdict":"rejected"} and explain the mismatch.`,
   ].join("\n");
   return null;
@@ -360,7 +360,7 @@ test("FACT-14 Software Factory end-to-end", { timeout: 1_200_000 }, async (_t) =
     const run = await createWorkflowRun(pool, {
       workflowId,
       triggerType: "ui",
-      spec: { task: "Create a hello.txt file containing 'Hello from OrbitFlow Software Factory!'" },
+      spec: { task: "Create hello.txt containing exactly the bytes 'Hello from OrbitFlow Software Factory!' with no trailing newline." },
     });
 
     await startWorkflowRun(pool, run.id);

@@ -1,0 +1,102 @@
+command=npm run fact9:proof
+started_utc=2026-08-13T16:17:25Z
+
+> orbitfactory@0.1.0 fact9:proof
+> bash scripts/fact-9-message-bus-proof.sh
+
+
+> orbitfactory@0.1.0 test:message-bus
+> node --experimental-strip-types --test test/postgres/message-bus.test.mjs
+
+TAP version 13
+# Subtest: FACT-9 durable PostgreSQL message bus
+    # Subtest: validates the sole producer path and joins a caller transaction
+    ok 1 - validates the sole producer path and joins a caller transaction
+      ---
+      duration_ms: 16.68825
+      type: 'test'
+      ...
+    # Subtest: lets two engine connections race one message but commit one route
+    ok 2 - lets two engine connections race one message but commit one route
+      ---
+      duration_ms: 93.238458
+      type: 'test'
+      ...
+    # Subtest: releases a stale run lock before inspecting another ready run
+    ok 3 - releases a stale run lock before inspecting another ready run
+      ---
+      duration_ms: 39.566875
+      type: 'test'
+      ...
+    # Subtest: routes multiple runs concurrently while preserving each run order
+    ok 4 - routes multiple runs concurrently while preserving each run order
+      ---
+      duration_ms: 82.740833
+      type: 'test'
+      ...
+    # Subtest: fairly covers active runs beyond one bounded candidate window
+    ok 5 - fairly covers active runs beyond one bounded candidate window
+      ---
+      duration_ms: 260.933167
+      type: 'test'
+      ...
+    # Subtest: rolls back handler failure, retries after restart, and stays done
+    ok 6 - rolls back handler failure, retries after restart, and stays done
+      ---
+      duration_ms: 24.662084
+      type: 'test'
+      ...
+    # Subtest: replays after a database connection dies before acknowledgement
+    ok 7 - replays after a database connection dies before acknowledgement
+      ---
+      duration_ms: 15.205167
+      type: 'test'
+      ...
+    # Subtest: does not skip an earlier producer or a later blocked commit
+    ok 8 - does not skip an earlier producer or a later blocked commit
+      ---
+      duration_ms: 29.394292
+      type: 'test'
+      ...
+    # Subtest: observes handler failure, retries, and stops cleanly
+    ok 9 - observes handler failure, retries, and stops cleanly
+      ---
+      duration_ms: 24.6305
+      type: 'test'
+      ...
+    # Subtest: cancels an exhausted-pool checkout before BEGIN or handler
+    ok 10 - cancels an exhausted-pool checkout before BEGIN or handler
+      ---
+      duration_ms: 41.168208
+      type: 'test'
+      ...
+    # Subtest: cancels idle polling and waits for an in-flight transaction
+    ok 11 - cancels idle polling and waits for an in-flight transaction
+      ---
+      duration_ms: 48.194709
+      type: 'test'
+      ...
+    # Subtest: bounds ready discovery independently of idle cursors and backlog
+    ok 12 - bounds ready discovery independently of idle cursors and backlog
+      ---
+      duration_ms: 3818.273209
+      type: 'test'
+      ...
+    1..12
+ok 1 - FACT-9 durable PostgreSQL message bus
+  ---
+  duration_ms: 4666.495334
+  type: 'test'
+  ...
+1..1
+# tests 13
+# suites 0
+# pass 13
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4760.530459
+orbitfactory-fact9-postgres-proof
+exit_code=0
+finished_utc=2026-08-13T16:17:32Z
