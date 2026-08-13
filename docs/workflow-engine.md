@@ -21,7 +21,7 @@ It never names the next node.
       "target": "implement",
       "condition": {
         "operator": "equals",
-        "path": ["verdict"],
+        "path": ["artifact", "verdict"],
         "value": "rejected"
       }
     }
@@ -54,7 +54,11 @@ transaction. An output message has this routing envelope:
   "dispatchId": "42",
   "dispatchGeneration": "1",
   "sessionId": "runtime-session-42",
-  "output": { "verdict": "rejected" }
+  "output": {
+    "artifact": { "verdict": "rejected" },
+    "handoff_brief": "The implementation still misses an acceptance criterion.",
+    "events": []
+  }
 }
 ```
 
@@ -63,7 +67,9 @@ identifier into this internal envelope. The generation changes only after
 reconciliation proves an earlier start absent and the engine authorizes a new
 provider start. A fast agent can finish before the dispatcher persists the
 adapter response, while a late worker from an older, reclaimed attempt cannot
-complete or fail the current attempt. The message also requires a non-blank
+complete or fail the current attempt. Edge conditions inspect the complete
+runtime output object, so a verdict inside the fixed OpenClaw envelope uses a
+path such as `["artifact", "verdict"]`. The message also requires a non-blank
 `handoff_brief`; fan-out output must carry
 the same `ticket_id` as its dispatch. The handler validates the active dispatch,
 records usage in `cost_events`, increments run totals, evaluates one edge, and
@@ -110,13 +116,13 @@ ephemeral runtime session.
 `resumeWorkflowRun`, and `getWorkflowRun` expose persisted lifecycle operations.
 Pausing blocks new runtime claims. An already active output may still commit its
 result and next pending dispatch while paused; resume makes that durable work
-eligible again. This is the seam later question and approval work will use. No
-approval UI or question policy is implemented here.
+eligible again. Durable question and approval policy is owned by
+[`docs/workflow-questions.md`](workflow-questions.md).
 
 `pauseWorkflowThread` and `resumeWorkflowThread` apply the same gate to one
 run-level thread or one ticket inside a fan-out. A paused ticket does not consume
 fan-out capacity and does not stop sibling tickets. `listWorkflowThreadStates`
-is the observability seam later approval and question routes can expose.
+is the observability seam those routes expose.
 
 Malformed output, unmatched predicates, and confirmed runtime-start failures
 move the run and all unfinished dispatches to failed and append a bounded system

@@ -50,4 +50,7 @@ The proof first requires the installed `openclaw` executable to report exactly `
 
 Provider execution is disabled by default and retained proof never calls OpenRouter. Setting `ORBITFLOW_FACT11_REAL_PROVIDER_PROOF` to a nonzero value makes the proof refuse to run rather than accidentally spending credentials.
 
-No migration is added. FACT-11 uses the existing `agents.memory`, `agents.openclaw_ref`, `messages`, `cost_events`, and workflow-run aggregate columns.
+FACT-11 itself uses the existing `agents.memory`, `agents.openclaw_ref`,
+`messages`, `cost_events`, and workflow-run aggregate columns. FACT-34 adds
+`0023-openclaw-dispatch-inputs.sql` so the production engine can persist the
+canonical wake input that reconciliation must reuse.
