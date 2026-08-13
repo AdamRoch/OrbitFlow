@@ -16,6 +16,13 @@ credential. `DATABASE_URL` is its only configuration. Every command requires
 an idempotency key and complete agent/run/ticket attribution; ticket creation
 derives the new ticket attribution in the same PostgreSQL transaction.
 
+OpenClaw does not invoke this attribution-bearing CLI directly. Its only
+allowlisted executable is `bin/orbit-openclaw-tool.mjs`, which reads the
+engine-written active-dispatch context from the synchronized agent workspace,
+rejects model-supplied attribution fields, verifies the context against the
+currently leased PostgreSQL dispatch, and invokes this CLI with the bound
+agent, run, and ticket ids plus the gateway's bounded ephemeral environment.
+
 Every CLI invocation enters `dispatchPlatformTool`. That typed dispatcher is the
 one future enforcement point for P5-1 blocked-action policy. It validates the
 closed input schema before opening a transaction, checks the agent, run, and

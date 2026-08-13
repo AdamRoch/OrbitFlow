@@ -1,4 +1,5 @@
 import pg from "pg";
+import { mkdir, writeFile } from "node:fs/promises";
 import {
   createWorkflowRun,
   startWorkflowRun,
@@ -22,6 +23,11 @@ try {
                'Ask the required question, then apply its answer.',
                'openrouter/openai/gpt-4.1-mini') RETURNING id::text`,
     );
+    const otherAgent = await pool.query(
+      `INSERT INTO agents (name, role, system_prompt, model)
+       VALUES ('FACT-34 Other Worker', 'implementer', 'Do not run.',
+               'openrouter/openai/gpt-4.1-mini') RETURNING id::text`,
+    );
     const graph = {
       nodes: [{
         id: "implement",
@@ -34,6 +40,11 @@ try {
       "INSERT INTO workflows (name, description, graph) VALUES ('FACT-34 Compose workflow', 'Production adapter question proof', $1) RETURNING id::text",
       [graph],
     );
+    const otherRun = await createWorkflowRun(pool, {
+      workflowId: workflow.rows[0].id,
+      triggerType: "ui",
+      spec: { objective: "Cross-run attribution rejection target" },
+    });
     const run = await createWorkflowRun(pool, {
       workflowId: workflow.rows[0].id,
       triggerType: "ui",
@@ -56,6 +67,8 @@ try {
       runId: run.id,
       agentId: agent.rows[0].id,
       projectId: project.rows[0].id,
+      otherAgentId: otherAgent.rows[0].id,
+      otherRunId: otherRun.id,
     })}\n`);
   } else if (command === "deliver") {
     let sent = null;
@@ -92,8 +105,72 @@ try {
          (SELECT count(*)::int FROM message_enqueues) AS pending_messages`,
     );
     process.stdout.write(`${JSON.stringify(result.rows[0])}\n`);
+  } else if (command === "tool-proof") {
+    const result = await pool.query(
+      `SELECT idempotency_key
+       FROM agent_tool_invocations
+       WHERE idempotency_key LIKE 'fact34-%'
+       ORDER BY idempotency_key`,
+    );
+    process.stdout.write(`${JSON.stringify({ keys: result.rows.map((row) => row.idempotency_key) })}\n`);
+  } else if (command === "prepare-tool-proof") {
+    const target = await pool.query(
+      `SELECT dispatch.run_id::text, dispatch.agent_id::text, dispatch.ticket_id::text
+       FROM workflow_dispatches AS dispatch
+       JOIN agents AS agent ON agent.id = dispatch.agent_id
+       WHERE agent.name = 'FACT-34 Compose Worker'
+       ORDER BY dispatch.id
+       LIMIT 1`,
+    );
+    if (target.rowCount !== 1) throw new Error("FACT-34 proof dispatch target is missing");
+    const { run_id: runId, agent_id: agentId, ticket_id: ticketId } = target.rows[0];
+    const inserted = await pool.query(
+      `INSERT INTO workflow_dispatches (
+         run_id, node_id, agent_id, agent_model, ticket_id, status, input,
+         idempotency_key, attempt_count, lease_generation, runtime_generation,
+         lease_owner, lease_expires_at, runtime_session_id
+       ) VALUES ($1, 'tool-boundary-proof', $2, 'openrouter/openai/gpt-4.1-mini', $3,
+                 'dispatching', '{}'::jsonb, 'fact34-tool-boundary-dispatch', 1, 1, 1,
+                 'fact34-tool-boundary-proof', clock_timestamp() + interval '1 hour',
+                 'fact34-tool-boundary-session')
+       RETURNING id::text`,
+      [runId, agentId, ticketId],
+    );
+    const dispatchId = inserted.rows[0].id;
+    const workspace = `/var/lib/orbitflow/runtime/workspaces/orbitflow-${agentId}`;
+    const context = {
+      version: 1,
+      agentId,
+      dispatchGeneration: "1",
+      dispatchId,
+      dispatchSessionId: "fact34-tool-boundary-session",
+      invocationId: "fact34-tool-boundary-invocation",
+      nodeId: "tool-boundary-proof",
+      runId,
+      ticketId,
+      workspace,
+    };
+    await pool.query(
+      `INSERT INTO openclaw_dispatch_inputs (dispatch_id, runtime_generation, wake_input)
+       VALUES ($1, 1, jsonb_build_object('toolContext', $2::jsonb))`,
+      [dispatchId, context],
+    );
+    await mkdir(workspace, { recursive: true });
+    await writeFile(`${workspace}/.orbitflow-tool-context.json`, `${JSON.stringify(context)}\n`, { mode: 0o600 });
+    process.stdout.write(`${JSON.stringify({ dispatchId })}\n`);
+  } else if (command === "cleanup-tool-proof") {
+    await pool.query(
+      `DELETE FROM openclaw_dispatch_inputs
+       WHERE dispatch_id = (
+         SELECT id FROM workflow_dispatches WHERE idempotency_key = 'fact34-tool-boundary-dispatch'
+       )`,
+    );
+    await pool.query(
+      "DELETE FROM workflow_dispatches WHERE idempotency_key = 'fact34-tool-boundary-dispatch'",
+    );
+    process.stdout.write(`${JSON.stringify({ cleaned: true })}\n`);
   } else {
-    throw new Error("usage: fact-34-compose-fixture.mjs <seed|deliver|answer|snapshot>");
+    throw new Error("usage: fact-34-compose-fixture.mjs <seed|deliver|answer|snapshot|tool-proof|prepare-tool-proof|cleanup-tool-proof>");
   }
 } finally {
   await pool.end();

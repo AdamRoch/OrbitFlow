@@ -73,14 +73,8 @@ seeded="$(compose exec -T engine node --experimental-strip-types scripts/fact-34
 run_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).runId))' "$seeded")"
 agent_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).agentId))' "$seeded")"
 project_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).projectId))' "$seeded")"
-
-projects="$(compose exec -T openclaw /app/bin/orbit-agent-tools.mjs list_projects "{\"agentId\":\"$agent_id\",\"runId\":\"$run_id\",\"limit\":10,\"idempotencyKey\":\"fact34-compose-projects\"}")"
-node -e 'const value=JSON.parse(process.argv[1]);const project=value.result.projects.find(candidate=>candidate.id===process.argv[2]);if(!value.ok||project?.key!=="CMP")process.exit(1)' "$projects" "$project_id"
-
-workspace="$(compose exec -T openclaw /app/bin/orbit-coding-tool.mjs start_run_workspace "{\"runId\":\"$run_id\"}")"
-node -e 'const value=JSON.parse(process.argv[1]);if(!value.ok||value.result.workspace!==`/var/lib/orbitflow/run-workspaces/run-${process.argv[2]}`)process.exit(1)' "$workspace" "$run_id"
-compose exec -T openclaw test -d "/var/lib/orbitflow/run-workspaces/run-$run_id"
-compose exec -T engine test -d "/var/lib/orbitflow/run-workspaces/run-$run_id"
+other_agent_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).otherAgentId))' "$seeded")"
+other_run_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).otherRunId))' "$seeded")"
 
 compose exec -T openclaw node -e '
   const fs=require("node:fs");
@@ -88,10 +82,76 @@ compose exec -T openclaw node -e '
   const approvals=JSON.parse(fs.readFileSync("/home/node/.openclaw/exec-approvals.json","utf8"));
   const patterns=approvals.agents["*"].allowlist.map(entry=>entry.pattern).sort();
   if(config.tools.exec.security!=="allowlist"||config.tools.exec.ask!=="off")process.exit(1);
-  if(JSON.stringify(patterns)!==JSON.stringify(["/app/bin/orbit-agent-tools.mjs","/app/bin/orbit-coding-tool.mjs"]))process.exit(1);
+  if(JSON.stringify(patterns)!==JSON.stringify(["/app/bin/orbit-openclaw-tool.mjs"]))process.exit(1);
 '
 pending="$(wait_for_snapshot 'value.run_status === "running" && value.questions === 1 && value.pending_questions === 1 && value.question_messages === 1 && value.outbound_messages === 1 && value.invocations === 1')"
 node -e 'const value=JSON.parse(process.argv[1]);if(value.dispatches!==1||value.completed_dispatches!==1)process.exit(1)' "$pending"
+
+agent_workspace="/var/lib/orbitflow/runtime/workspaces/orbitflow-$agent_id"
+for proof_agent in "orbitflow-$agent_id" "orbitflow-$agent_id-deny-unlisted" "orbitflow-$agent_id-deny-assignment"; do
+  if ! agent_setup="$(compose exec -T --user node openclaw node /opt/openclaw/openclaw.mjs agents add \
+    "$proof_agent" --workspace "$agent_workspace" \
+    --model openrouter/openai/gpt-4.1-mini --non-interactive --json 2>&1)"; then
+    printf 'Agent-side proof setup failed: %s\n' "$agent_setup" >&2
+    exit 1
+  fi
+done
+compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs prepare-tool-proof >/dev/null
+agent_proof() {
+  local agent_ref="$1"
+  local session_id="$2"
+  local prompt="$3"
+  compose exec -T --user node openclaw sh -c '
+    export OPENCLAW_GATEWAY_TOKEN="$(cat /home/node/.openclaw/gateway-token)"
+    exec node /opt/openclaw/openclaw.mjs agent --agent "$1" --session-id "$2" --message "$3" --timeout 30 --json
+  ' -- "$agent_ref" "$session_id" "$prompt"
+}
+
+if ! allowed="$(agent_proof "orbitflow-$agent_id" fact34-allowed FACT34_ALLOW_PROJECTS 2>&1)"; then
+  printf 'Allowlisted agent-side proof failed: %s\n' "$allowed" >&2
+  exit 1
+fi
+if ! node -e 'if(!process.argv[1].includes("PROOF_RESULT")||!process.argv[1].includes("\\\"ok\\\":true")||!process.argv[1].includes("CMP"))process.exit(1)' "$allowed"; then
+  printf 'Allowlisted agent-side proof returned unexpected output: %s\n' "$allowed" >&2
+  exit 1
+fi
+
+if ! denied_unlisted="$(agent_proof "orbitflow-$agent_id-deny-unlisted" fact34-deny-unlisted FACT34_DENY_UNLISTED 2>&1)"; then
+  printf 'Unlisted-command denial proof failed: %s\n' "$denied_unlisted" >&2
+  exit 1
+fi
+if ! node -e 'if(!/denied|not allowlisted|approval|not permitted/i.test(process.argv[1]))process.exit(1)' "$denied_unlisted"; then
+  printf 'Unlisted-command proof returned unexpected output: %s\n' "$denied_unlisted" >&2
+  exit 1
+fi
+
+if ! denied_assignment="$(agent_proof "orbitflow-$agent_id-deny-assignment" fact34-deny-assignment FACT34_DENY_ASSIGNMENT 2>&1)"; then
+  printf 'Assignment-prefix denial proof failed: %s\n' "$denied_assignment" >&2
+  exit 1
+fi
+if ! node -e 'if(!/denied|not allowlisted|approval|not permitted/i.test(process.argv[1]))process.exit(1)' "$denied_assignment"; then
+  printf 'Assignment-prefix proof returned unexpected output: %s\n' "$denied_assignment" >&2
+  exit 1
+fi
+
+if compose exec -T --user node --workdir "$agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs list_projects \
+  "{\"runId\":\"$other_run_id\",\"limit\":10,\"idempotencyKey\":\"fact34-cross-run\"}" >/dev/null 2>&1; then
+  printf 'Cross-run attribution substitution was accepted\n' >&2
+  exit 1
+fi
+if compose exec -T --user node --workdir "$agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs list_projects \
+  "{\"agentId\":\"$other_agent_id\",\"limit\":10,\"idempotencyKey\":\"fact34-cross-agent\"}" >/dev/null 2>&1; then
+  printf 'Cross-agent attribution substitution was accepted\n' >&2
+  exit 1
+fi
+tool_proof="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs tool-proof)"
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(JSON.stringify(value.keys)!==JSON.stringify(["fact34-agent-side-allowed"]))process.exit(1);
+' "$tool_proof"
+compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs cleanup-tool-proof >/dev/null
 
 delivered="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs deliver)"
 node -e 'const value=JSON.parse(process.argv[1]);if(value.delivered!==true||value.sent.chatId!=="-1003499"||value.sent.telegramMessageId!==34991)process.exit(1)' "$delivered"

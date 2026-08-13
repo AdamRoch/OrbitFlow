@@ -128,10 +128,20 @@ test("FACT-34 question outputs reject discarded artifact and event data", async 
     ephemeral: false,
     input: {},
   };
+  let storedWake = null;
   const pool = {
-    async query(sql) {
-      assert.match(sql, /SELECT system_prompt FROM agents/);
-      return { rows: [{ system_prompt: "Ask only one question." }] };
+    async query(sql, values) {
+      if (sql.includes("FROM openclaw_dispatch_inputs")) {
+        return { rows: storedWake ? [{ wake_input: storedWake, runtime_generation: "1" }] : [] };
+      }
+      if (sql.includes("SELECT system_prompt FROM agents")) {
+        return { rows: [{ system_prompt: "Ask only one question." }] };
+      }
+      if (sql.includes("INSERT INTO openclaw_dispatch_inputs")) {
+        storedWake = JSON.parse(values[2]);
+        return { rows: [{ wake_input: storedWake, runtime_generation: "1" }] };
+      }
+      throw new Error(`unexpected query: ${sql}`);
     },
   };
   for (const [output, reason] of [
@@ -164,10 +174,94 @@ test("FACT-34 question outputs reject discarded artifact and event data", async 
   assert.match(reconciled.reason, /empty artifact/);
 });
 
+test("FACT-34 reconciliation reuses the durable canonical wake input", async () => {
+  const request = {
+    idempotencyKey: "fact34-crash-window",
+    generation: "4",
+    runId: "13",
+    dispatchId: "21",
+    nodeId: "implement",
+    agentId: "7",
+    model: "openrouter/moonshotai/kimi-k3",
+    ticketId: "11",
+    ephemeral: true,
+    input: { upstream: { handoffBrief: "Build the greeting CLI." } },
+  };
+  let storedWake = null;
+  let systemPrompt = "Original durable system prompt.";
+  let failMessageInsert = true;
+  const insertedMessages = [];
+  const pool = {
+    async query(sql, values) {
+      if (sql.includes("FROM openclaw_dispatch_inputs")) {
+        return { rows: storedWake ? [{ wake_input: storedWake, runtime_generation: "4" }] : [] };
+      }
+      if (sql.includes("SELECT system_prompt FROM agents")) {
+        return { rows: [{ system_prompt: systemPrompt }] };
+      }
+      if (sql.includes("INSERT INTO openclaw_dispatch_inputs")) {
+        storedWake = JSON.parse(values[2]);
+        return { rows: [{ wake_input: storedWake, runtime_generation: "4" }] };
+      }
+      if (sql.includes("INSERT INTO messages")) {
+        if (failMessageInsert) {
+          failMessageInsert = false;
+          throw new Error("simulated crash after provider receipt");
+        }
+        insertedMessages.push({ type: values[4], payload: values[5] });
+        return { rows: [{
+          id: "99", run_id: "13", ticket_id: "11", sequence_number: "1",
+          sender: values[2], recipient: values[3], type: values[4], payload: values[5],
+          handoff_brief: values[6], token_usage: values[7], created_at: new Date(), updated_at: new Date(),
+        }] };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+  let providerCalls = 0;
+  let durableReceipt = null;
+  const openclaw = {
+    async wakeAgent(input) {
+      const serialized = JSON.stringify(input);
+      if (durableReceipt) {
+        assert.equal(serialized, durableReceipt.input);
+        return { ...durableReceipt.result, replayed: true };
+      }
+      providerCalls += 1;
+      durableReceipt = {
+        input: serialized,
+        result: {
+          output: {
+            artifact: {},
+            handoff_brief: "Choose whitespace behavior.",
+            events: [{ type: "question", question: "Trim surrounding whitespace?" }],
+          },
+        },
+      };
+      return { ...durableReceipt.result, replayed: false };
+    },
+  };
+  const adapter = new OpenClawEngineAdapter({
+    pool,
+    openclaw,
+    workspaceTools: createProductionWorkspaceTools(),
+  });
+  await assert.rejects(() => adapter.startSession(request), /simulated crash/);
+  systemPrompt = "Mutated prompt that recovery must not fingerprint.";
+  const result = await adapter.reconcileSession(request);
+  assert.equal(result.kind, "started");
+  assert.equal(providerCalls, 1);
+  assert.equal(insertedMessages.length, 1);
+  assert.equal(insertedMessages[0].type, "question");
+  assert.equal(storedWake.nodeSystemPrompt, "Original durable system prompt.");
+  assert.equal(storedWake.agentModel, request.model);
+  assert.equal(storedWake.dispatchGeneration, request.generation);
+  assert.equal(storedWake.toolContext.dispatchId, request.dispatchId);
+});
+
 test("FACT-34 production tools expose the ordinary coding surface", () => {
   const tools = createProductionWorkspaceTools({
-    agentTool: "/app/bin/orbit-agent-tools.mjs",
-    codingTool: "/app/bin/orbit-coding-tool.mjs",
+    tool: "/app/bin/orbit-openclaw-tool.mjs",
   })("7", "implement", "11", "13");
   assert.match(tools, /list_projects/);
   assert.match(tools, /create_ticket/);
@@ -176,7 +270,9 @@ test("FACT-34 production tools expose the ordinary coding surface", () => {
   assert.match(tools, /post_message/);
   assert.match(tools, /start_run_workspace/);
   assert.match(tools, /delegate_coding_task/);
-  assert.match(tools, /ORBITFLOW_RUN_ID=13 ORBITFLOW_AGENT_ID=7/);
+  assert.doesNotMatch(tools, /DATABASE_URL=|ORBITFLOW_RUN_ID=|ORBITFLOW_AGENT_ID=/);
+  assert.doesNotMatch(tools, /"agentId"|"runId"|"ticketId"|"workspace"/);
+  assert.match(tools, /^\/app\/bin\/orbit-openclaw-tool\.mjs/m);
   assert.doesNotMatch(tools, /projectId from the run spec or an existing ticket/);
 });
 

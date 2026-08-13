@@ -41,7 +41,7 @@ RUN npm ci --prefix coding-adapter --omit=dev
 COPY --from=openclaw-runtime /app /opt/openclaw
 
 RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
-RUN chmod 755 /app/bin/orbit-agent-tools.mjs /app/bin/orbit-coding-tool.mjs
+RUN chmod 755 /app/bin/orbit-agent-tools.mjs /app/bin/orbit-coding-tool.mjs /app/bin/orbit-openclaw-tool.mjs
 RUN install -d -o node -g node -m 700 /var/lib/orbitflow
 
 ENV PATH=/app/coding-adapter/node_modules/.bin:$PATH
@@ -54,6 +54,7 @@ FROM engine AS openclaw-gateway
 COPY --chown=node:node docker/openclaw/openclaw.json /opt/orbitflow/openclaw.json
 COPY --chown=node:node docker/openclaw/exec-approvals.json /opt/orbitflow/exec-approvals.json
 COPY --chown=node:node docker/openclaw/apply-config.mjs /opt/orbitflow/apply-config.mjs
+COPY --chown=node:node docker/openclaw/write-tool-env.mjs /opt/orbitflow/write-tool-env.mjs
 COPY --chown=root:root docker/openclaw/entrypoint.sh /usr/local/bin/orbitflow-openclaw-gateway
 
 RUN chmod 755 /usr/local/bin/orbitflow-openclaw-gateway

@@ -56,7 +56,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       OPENCLAW_DISABLE_BONJOUR: "1"
-      ORBITFLOW_PLATFORM_DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      ORBITFLOW_AGENT_WORKSPACE_ROOT: /var/lib/orbitflow/runtime/workspaces
       ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
     volumes:
       - engine-data:/var/lib/orbitflow

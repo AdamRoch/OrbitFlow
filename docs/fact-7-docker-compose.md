@@ -75,8 +75,14 @@ and `amd64` manifests, and the OpenCode package declares Linux `arm64` and
 
 Compose names and deliberately reuses `postgres-data`, `app-data`,
 `openclaw-state`, and `engine-data`. OpenClaw and the engine share
-`engine-data` so the gateway's two explicitly allowlisted OrbitFlow CLIs use
-the same owned run workspaces; no general shell executable is allowlisted. The migration runner stores checksums in
+`engine-data` so the gateway's one explicitly allowlisted, context-bound
+OrbitFlow wrapper uses the same owned agent and run workspaces. The wrapper
+injects the active dispatch's agent, run, ticket, database, and workspace
+attribution outside model-controlled arguments. Gateway startup writes the
+bounded CLI environment to an ephemeral, agent-unreachable runtime file, and
+the wrapper requires the database dispatch lease and canonical wake context to
+still match before invoking a project CLI. No general shell executable or
+underlying project CLI is allowlisted. The migration runner stores checksums in
 `schema_migrations`, so a rerun is a no-op. Stop the stack while retaining
 state with `docker compose down`; remove only this stack's state with:
 

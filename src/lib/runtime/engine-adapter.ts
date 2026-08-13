@@ -25,6 +25,25 @@ interface WorkerQuestionEvent {
   event: JsonObject;
 }
 
+interface DispatchToolContext extends JsonObject {
+  version: 1;
+  agentId: string;
+  runId: string;
+  ticketId: string | null;
+  nodeId: string;
+  invocationId: string;
+  dispatchId: string;
+  dispatchGeneration: string;
+  dispatchSessionId: string;
+}
+
+interface CanonicalWakeInput extends WakeAgentInput {
+  agentModel: string;
+  dispatchGeneration: string;
+  dispatchSessionId: string;
+  toolContext: DispatchToolContext;
+}
+
 function workerQuestionEvent(output: RuntimeOutput): WorkerQuestionEvent | null {
   const questions = output.events.filter((event) => event.type === "question");
   if (questions.length === 0) return null;
@@ -141,32 +160,10 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
   }
 
   async startSession(request: RuntimeDispatchRequest): Promise<RuntimeStartResult> {
-    const sessionId = deterministicSessionId(request.idempotencyKey);
-
     try {
-      const upstream = request.input.upstream as Record<string, unknown> | undefined;
-      const handoffBrief = upstream?.handoffBrief as string | undefined | null;
-
-      const agent = await this.pool.query<{ system_prompt: string }>(
-        "SELECT system_prompt FROM agents WHERE id = $1",
-        [request.agentId],
-      );
-      const nodeSystemPrompt = agent.rows[0]?.system_prompt
-        ?? `Execute node ${request.nodeId} in the Software Factory pipeline.`;
-
-      const wakeInput: WakeAgentInput = {
-        runId: request.runId,
-        agentId: request.agentId,
-        invocationId: request.idempotencyKey,
-        nodeId: request.nodeId,
-        nodeSystemPrompt,
-        ticketIds: request.ticketId ? [request.ticketId] : undefined,
-        upstreamHandoffBrief: handoffBrief ?? null,
-        workspaceTools: this.workspaceTools(request.agentId, request.nodeId, request.ticketId, request.runId),
-      };
-
+      const wakeInput = await this.canonicalWakeInput(request);
       const result = await this.openclaw.wakeAgent(wakeInput);
-      const message = durableRuntimeMessage(request, result.output, sessionId);
+      const message = durableRuntimeMessage(request, result.output, wakeInput.dispatchSessionId);
 
       await insertMessage(this.pool, {
         runId: request.runId,
@@ -179,7 +176,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
         tokenUsage: null,
       });
 
-      return { kind: "started", sessionId };
+      return { kind: "started", sessionId: wakeInput.dispatchSessionId };
     } catch (error) {
       if (error instanceof RuntimeAdapterError) {
         if (error.code === "openclaw_invocation_indeterminate") {
@@ -198,18 +195,11 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
     request: RuntimeDispatchRequest,
   ): Promise<RuntimeReconciliationResult> {
     try {
-      const result = await this.openclaw.wakeAgent({
-        runId: request.runId,
-        agentId: request.agentId,
-        invocationId: request.idempotencyKey,
-        nodeId: request.nodeId,
-        nodeSystemPrompt: request.model,
-        ticketIds: request.ticketId ? [request.ticketId] : undefined,
-      });
+      const wakeInput = await this.canonicalWakeInput(request);
+      const result = await this.openclaw.wakeAgent(wakeInput);
 
       if (result.replayed) {
-        const sessionId = deterministicSessionId(request.idempotencyKey);
-        const message = durableRuntimeMessage(request, result.output, sessionId);
+        const message = durableRuntimeMessage(request, result.output, wakeInput.dispatchSessionId);
 
         await insertMessage(this.pool, {
           runId: request.runId,
@@ -222,7 +212,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
           tokenUsage: null,
         });
 
-        return { kind: "started", sessionId };
+        return { kind: "started", sessionId: wakeInput.dispatchSessionId };
       }
 
       return { kind: "pending", reason: "unexpected new invocation during reconciliation" };
@@ -232,7 +222,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
           return { kind: "absent" };
         }
         if (error.code === "openclaw_invocation_conflict") {
-          return { kind: "absent" };
+          return { kind: "confirmed_failure", reason: bounded(error.message) };
         }
         if (error.code === "openclaw_malformed_output") {
           return { kind: "confirmed_failure", reason: bounded(error.message) };
@@ -242,6 +232,146 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
       return { kind: "pending", reason: "unknown reconciliation error" };
     }
   }
+
+  private async canonicalWakeInput(request: RuntimeDispatchRequest): Promise<CanonicalWakeInput> {
+    const existing = await this.pool.query<{ wake_input: unknown; runtime_generation: string }>(
+      `SELECT wake_input, runtime_generation::text
+       FROM openclaw_dispatch_inputs WHERE dispatch_id = $1`,
+      [request.dispatchId],
+    );
+    if (existing.rows[0]) {
+      return parseCanonicalWakeInput(existing.rows[0], request);
+    }
+
+    const upstream = request.input.upstream as Record<string, unknown> | undefined;
+    const handoffBrief = typeof upstream?.handoffBrief === "string"
+      ? upstream.handoffBrief
+      : null;
+    const agent = await this.pool.query<{ system_prompt: string }>(
+      "SELECT system_prompt FROM agents WHERE id = $1",
+      [request.agentId],
+    );
+    const nodeSystemPrompt = agent.rows[0]?.system_prompt
+      ?? `Execute node ${request.nodeId} in the Software Factory pipeline.`;
+    const dispatchSessionId = deterministicSessionId(request.idempotencyKey);
+    const toolContext: DispatchToolContext = {
+      version: 1,
+      agentId: request.agentId,
+      runId: request.runId,
+      ticketId: request.ticketId,
+      nodeId: request.nodeId,
+      invocationId: request.idempotencyKey,
+      dispatchId: request.dispatchId,
+      dispatchGeneration: request.generation,
+      dispatchSessionId,
+    };
+    const candidate: CanonicalWakeInput = {
+      runId: request.runId,
+      agentId: request.agentId,
+      invocationId: request.idempotencyKey,
+      nodeId: request.nodeId,
+      nodeSystemPrompt,
+      agentModel: request.model,
+      dispatchGeneration: request.generation,
+      dispatchSessionId,
+      ticketIds: request.ticketId ? [request.ticketId] : undefined,
+      upstreamHandoffBrief: handoffBrief,
+      workspaceTools: this.workspaceTools(request.agentId, request.nodeId, request.ticketId, request.runId),
+      toolContext,
+    };
+    const inserted = await this.pool.query<{ wake_input: unknown; runtime_generation: string }>(
+      `INSERT INTO openclaw_dispatch_inputs (dispatch_id, runtime_generation, wake_input)
+       SELECT $1, $2, $3::jsonb
+       FROM workflow_dispatches
+       WHERE id = $1 AND run_id = $4 AND agent_id = $5 AND runtime_generation = $2
+       ON CONFLICT (dispatch_id) DO NOTHING
+       RETURNING wake_input, runtime_generation::text`,
+      [
+        request.dispatchId,
+        request.generation,
+        JSON.stringify(candidate),
+        request.runId,
+        request.agentId,
+      ],
+    );
+    if (inserted.rows[0]) return parseCanonicalWakeInput(inserted.rows[0], request);
+    const raced = await this.pool.query<{ wake_input: unknown; runtime_generation: string }>(
+      `SELECT wake_input, runtime_generation::text
+       FROM openclaw_dispatch_inputs WHERE dispatch_id = $1`,
+      [request.dispatchId],
+    );
+    if (!raced.rows[0]) {
+      throw new RuntimeAdapterError(
+        "openclaw_invocation_conflict",
+        "Dispatch changed before its canonical OpenClaw wake input was persisted",
+      );
+    }
+    return parseCanonicalWakeInput(raced.rows[0], request);
+  }
+}
+
+function parseCanonicalWakeInput(
+  row: { wake_input: unknown; runtime_generation: string },
+  request: RuntimeDispatchRequest,
+): CanonicalWakeInput {
+  const value = row.wake_input;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RuntimeAdapterError("runtime_persistence_failed", "Canonical OpenClaw wake input is invalid");
+  }
+  const candidate = value as Record<string, unknown>;
+  const sessionId = deterministicSessionId(request.idempotencyKey);
+  const ticketIds = request.ticketId ? [request.ticketId] : undefined;
+  const expected = {
+    runId: request.runId,
+    agentId: request.agentId,
+    invocationId: request.idempotencyKey,
+    nodeId: request.nodeId,
+    agentModel: request.model,
+    dispatchGeneration: request.generation,
+    dispatchSessionId: sessionId,
+  };
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    if (candidate[field] !== expectedValue) {
+      throw new RuntimeAdapterError(
+        "openclaw_invocation_conflict",
+        `Canonical OpenClaw wake input does not match dispatch ${field}`,
+      );
+    }
+  }
+  if (row.runtime_generation !== request.generation) {
+    throw new RuntimeAdapterError(
+      "openclaw_invocation_conflict",
+      "Canonical OpenClaw wake input does not match dispatch generation",
+    );
+  }
+  if (typeof candidate.nodeSystemPrompt !== "string" || candidate.nodeSystemPrompt.trim() === "") {
+    throw new RuntimeAdapterError("runtime_persistence_failed", "Canonical OpenClaw system prompt is invalid");
+  }
+  if (candidate.upstreamHandoffBrief !== null && typeof candidate.upstreamHandoffBrief !== "string") {
+    throw new RuntimeAdapterError("runtime_persistence_failed", "Canonical OpenClaw handoff is invalid");
+  }
+  if (candidate.workspaceTools !== null && typeof candidate.workspaceTools !== "string") {
+    throw new RuntimeAdapterError("runtime_persistence_failed", "Canonical OpenClaw tools are invalid");
+  }
+  if (JSON.stringify(candidate.ticketIds) !== JSON.stringify(ticketIds)) {
+    throw new RuntimeAdapterError("openclaw_invocation_conflict", "Canonical OpenClaw tickets changed");
+  }
+  const context = candidate.toolContext as Record<string, unknown> | undefined;
+  if (
+    !context ||
+    context.version !== 1 ||
+    context.agentId !== request.agentId ||
+    context.runId !== request.runId ||
+    context.ticketId !== request.ticketId ||
+    context.nodeId !== request.nodeId ||
+    context.invocationId !== request.idempotencyKey ||
+    context.dispatchId !== request.dispatchId ||
+    context.dispatchGeneration !== request.generation ||
+    context.dispatchSessionId !== sessionId
+  ) {
+    throw new RuntimeAdapterError("openclaw_invocation_conflict", "Canonical OpenClaw tool context changed");
+  }
+  return candidate as unknown as CanonicalWakeInput;
 }
 
 function deterministicSessionId(idempotencyKey: string): string {

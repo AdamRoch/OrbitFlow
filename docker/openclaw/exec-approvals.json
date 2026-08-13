@@ -15,13 +15,8 @@
       "allowlist": [
         {
           "id": "5d360489-a868-49c9-9185-f1a87d48d74d",
-          "pattern": "/app/bin/orbit-agent-tools.mjs",
-          "argPattern": "^(list_projects|create_ticket|update_ticket|post_message|list_tickets) \\{.*\\}$"
-        },
-        {
-          "id": "766aab45-a95b-49c7-b43b-98f08ba5909a",
-          "pattern": "/app/bin/orbit-coding-tool.mjs",
-          "argPattern": "^(start_run_workspace|delegate_coding_task) \\{.*\\}$"
+          "pattern": "/app/bin/orbit-openclaw-tool.mjs",
+          "argPattern": "^(list_projects|create_ticket|update_ticket|post_message|list_tickets|start_run_workspace|delegate_coding_task) \\{.*\\}$"
         }
       ]
     }
