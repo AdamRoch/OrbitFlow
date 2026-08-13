@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 
-import { chmod, lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { createExecutionIdentityStore } from "../coding-adapter/src/executionIdentityStore.js";
 import { createOpenCodeAdapter } from "../coding-adapter/src/openCodeAdapter.js";
 import { createPublicErrorResponse, CliFailureError } from "../coding-adapter/src/errors.js";
 
 const SOCKET = requiredEnv("ORBITFLOW_CODING_EXECUTOR_SOCKET");
 const WORKSPACE_ROOT = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
-const IDENTITY_ROOT = path.join(WORKSPACE_ROOT, ".orbitflow", "executor-identities");
 const MAX_REQUEST_BYTES = 64 * 1024;
 const operations = new Map();
 const pendingCancellations = new Set();
+const executionIdentityStore = createExecutionIdentityStore({ workspaceRoot: WORKSPACE_ROOT });
 
 await mkdir(path.dirname(SOCKET), { recursive: true, mode: 0o700 });
 const server = http.createServer((request, response) => {
@@ -149,10 +150,11 @@ async function executionAuthority(request) {
   if (request.workspace !== expectedWorkspace || await realpath(request.workspace) !== expectedWorkspace) {
     throw new CliFailureError("coding executor workspace is invalid");
   }
-  const identity = JSON.parse(await readFile(path.join(IDENTITY_ROOT, `run-${request.runId}.json`), "utf8"));
+  const identity = await executionIdentityStore.require(request.runId, expectedWorkspace);
   const stat = await lstat(expectedWorkspace);
   if (
-    identity.version !== 1 ||
+    identity.version !== 2 ||
+    identity.state !== "active" ||
     identity.runId !== request.runId ||
     identity.workspace !== expectedWorkspace ||
     identity.workspaceDevice !== String(stat.dev) ||

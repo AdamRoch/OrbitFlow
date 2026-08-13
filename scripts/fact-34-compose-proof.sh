@@ -138,7 +138,12 @@ compose exec -T coding-executor node -e '
   const fs=require("node:fs");
   const path=require("node:path");
   const root="/var/lib/orbitflow/run-workspaces";
-  const identity=JSON.parse(fs.readFileSync(path.join(root,".orbitflow","executor-identities",`run-${process.argv[1]}.json`),"utf8"));
+  const workspace=path.join(root,`run-${process.argv[1]}`);
+  const stat=fs.lstatSync(workspace);
+  const identity=JSON.parse(fs.readFileSync(path.join(root,".orbitflow","executor-identities",`uid-${stat.uid}.json`),"utf8"));
+  const keys=["gid","runId","state","uid","version","workspace","workspaceDevice","workspaceInode"];
+  if(JSON.stringify(Object.keys(identity).sort())!==JSON.stringify(keys))process.exit(1);
+  if(identity.version!==2||identity.state!=="active"||identity.runId!==process.argv[1]||identity.workspace!==workspace||identity.uid!==stat.uid||identity.gid!==stat.gid||identity.workspaceDevice!==String(stat.dev)||identity.workspaceInode!==String(stat.ino))process.exit(1);
   const target=path.join(root,`run-${process.argv[2]}`);
   fs.mkdirSync(target,{mode:0o700});
   const otherUid=identity.uid===59999?20000:identity.uid+1;
