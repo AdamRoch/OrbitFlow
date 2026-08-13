@@ -223,7 +223,15 @@ async function retainArtifacts(currentSnapshot) {
   }
   await writeFile(
     path.join(evidenceDirectory, "structured", "proof-result.json"),
-    `${JSON.stringify(currentSnapshot, null, 2)}\n`,
+    `${JSON.stringify(currentSnapshot, (key, value) => {
+      if ((key === "invocationKey" || key === "invocation_key") && typeof value === "string") {
+        return `sha256:${value.slice(0, 12)}`;
+      }
+      if (key === "model" && typeof value === "string" && value.startsWith("orbitflow-invocation:")) {
+        return `orbitflow-invocation:${value.slice("orbitflow-invocation:".length, 32)}`;
+      }
+      return value;
+    }, 2)}\n`,
   );
 }
 
