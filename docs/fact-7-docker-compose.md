@@ -52,10 +52,11 @@ The engine image installs Git and the pinned OpenClaw 2026.4.15 CLI used by the
 production runtime adapter. The gateway token is mounted read-only from the
 gateway state volume. Engine runtime state and run workspaces use their own
 durable volume. The engine and tool broker receive no provider credential.
-Production OpenCode execution and its scoped child environment are owned by
-`coding-executor`, which receives `OPENROUTER_API_KEY` but no database
-credential. OpenClaw separately receives that evaluator key for gateway model
-calls and has no access to the coding-executor socket or run workspaces.
+OpenClaw receives `OPENROUTER_API_KEY` for gateway model calls. Production
+OpenCode execution and its scoped child environment are separately owned by
+`coding-executor`, which also receives the provider key. Neither service has a
+database credential. OpenClaw has no access to the coding-executor socket or
+run workspaces.
 
 The opt-in `coding-adapter` Compose profile remains an ephemeral one-shot
 boundary, not part of `docker compose up`; invoke it with the already-created
@@ -84,10 +85,12 @@ reloads the engine context, requires the PostgreSQL dispatch lease and
 canonical wake context to match, and performs only the named platform or coding
 operation. Coding work crosses a second root-owned socket to
 `coding-executor`, which has the provider key but no database credential and
-only the provider network. Each delegated process uses a persisted run-specific
-UID and a mode-`0700` run directory, preventing access to sibling workspaces and
-broker sockets. No general shell executable or underlying project CLI is
-allowlisted. The migration runner stores checksums in
+only the provider network. OpenClaw also joins the provider network for model
+calls, while the engine and tool broker remain on the database-bearing control
+network with no provider credential. Each delegated process uses a persisted
+run-specific UID and a mode-`0700` run directory, preventing access to sibling
+workspaces and broker sockets. No general shell executable or underlying
+project CLI is allowlisted. The migration runner stores checksums in
 `schema_migrations`, so a rerun is a no-op. Stop the stack while retaining
 state with `docker compose down`; remove only this stack's state with:
 

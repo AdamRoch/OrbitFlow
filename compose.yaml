@@ -168,8 +168,9 @@ services:
         condition: service_healthy
     networks: [control]
 
-  # This standalone proof boundary is deliberately opt-in. Production coding
-  # credentials belong to coding-executor, never engine or tool-broker.
+  # This standalone proof boundary is deliberately opt-in. Production provider
+  # credentials are scoped to openclaw and coding-executor; engine and
+  # tool-broker receive none.
   coding-adapter:
     profiles: ["coding-adapter"]
     build:

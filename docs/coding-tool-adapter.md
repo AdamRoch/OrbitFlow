@@ -71,12 +71,13 @@ run workspaces or either privileged socket.
 
 The production services require:
 
-- `DATABASE_URL` only in the trusted tool broker, pointing to the migrated
-  OrbitFactory PostgreSQL database.
+- `DATABASE_URL` in the trusted engine and tool broker, pointing to the
+  migrated OrbitFactory PostgreSQL database.
 - `ORBITFLOW_WORKSPACE_ROOT`, an absolute path to the one compose-mounted
   workspace volume shared by the broker and coding executor.
-- `OPENROUTER_API_KEY` only in the coding executor, where it is handed to
-  OpenCode after the execution identity is established.
+- `OPENROUTER_API_KEY` in the coding executor, where it is handed to OpenCode
+  after the execution identity is established. OpenClaw separately receives
+  the provider key for gateway model calls.
 - the dispatch-bound run and agent context persisted by the engine and verified
   by the broker rather than submitted by the model.
 
@@ -173,12 +174,15 @@ OpenClaw tool boundary. With neither gate set, no provider request is made.
 OpenCode itself is not a general operating-system sandbox. The provider key must
 enter the OpenCode process so it can call the selected provider, and model-authored
 code can therefore observe that provider credential. PostgreSQL authority is a
-separate boundary: unrestricted database credentials, active-dispatch checks,
-platform mutations, workspace ownership records, and cost persistence remain in
-the tool broker. Delegated code runs under a run-specific unprivileged UID in a
+separate boundary: the engine and tool broker hold database credentials, while
+active-dispatch checks, platform mutations, workspace ownership records, and
+cost persistence remain in the tool broker. Delegated code runs under a
+run-specific unprivileged UID in a
 container that mounts only run workspaces and the executor socket, cannot open
 that root-owned socket, and joins only the provider network where the PostgreSQL
-service is neither resolvable nor reachable. The executor validates the persisted
+service is neither resolvable nor reachable. OpenClaw and the coding executor
+join the provider network; the engine and tool broker remain on the control
+network. The executor validates the persisted
 run/UID/workspace device and inode before dropping identity. The broker remains
 the durable workspace authority: it validates the root-side record, Git marker,
 and filesystem identities before and after remote execution and performs any

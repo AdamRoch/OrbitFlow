@@ -85,3 +85,43 @@ test("isolates partial permanent reservations to their claimed UIDs", async () =
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
+
+test("refuses to reassign a workspace owned by an opaque claim", async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "orbitflow-opaque-identity-"));
+  try {
+    const workspaceRoot = await realpath(temporaryRoot);
+    const currentUid = process.getuid();
+    const currentGid = process.getgid();
+    const claimedUid = currentUid === 0 ? 20_000 : currentUid;
+    const claimedGid = currentUid === 0 ? claimedUid : currentGid;
+    const runId = "200";
+    const workspace = path.join(workspaceRoot, `run-${runId}`);
+    await mkdir(workspace, { mode: 0o700 });
+    const partialPath = path.join(workspace, "partially-owned.txt");
+    await writeFile(partialPath, "retained\n");
+    if (currentUid === 0) await chown(partialPath, claimedUid, claimedGid);
+    const identityRoot = path.join(workspaceRoot, ".orbitflow", "executor-identities");
+    await mkdir(identityRoot, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(identityRoot, `uid-${claimedUid}.json`), "");
+
+    let ownershipCalls = 0;
+    const options = {
+      workspaceRoot,
+      uidMin: claimedUid,
+      uidCount: 2,
+      gidForUid: () => claimedGid,
+      async applyOwnership() {
+        ownershipCalls += 1;
+      },
+    };
+    for (const store of [createExecutionIdentityStore(options), createExecutionIdentityStore(options)]) {
+      await assert.rejects(
+        () => store.ensure(runId, workspace),
+        (error) => error.code === "workspace_invalid" && /reservation is incomplete/.test(error.message),
+      );
+    }
+    assert.equal(ownershipCalls, 0);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});

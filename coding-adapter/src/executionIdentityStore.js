@@ -64,6 +64,12 @@ export function createExecutionIdentityStore({
       const runId = normalizeRunId(runIdValue);
       const expectedWorkspace = await requireExpectedRunWorkspace(workspaceRoot, runId, workspace);
       const allocations = await readAllocations(identityRoot);
+      const opaqueUids = new Set(
+        allocations.filter((allocation) => !allocation.record).map((allocation) => allocation.uid),
+      );
+      if (await workspaceContainsOwnedPath(expectedWorkspace, opaqueUids)) {
+        throw new WorkspaceError("coding execution identity reservation is incomplete");
+      }
       const matching = allocations.filter((allocation) => allocation.runId === runId);
       if (matching.length > 1) {
         throw new WorkspaceError("coding execution run has conflicting permanent reservations");
@@ -338,6 +344,17 @@ function normalizeRunId(value) {
 
 function identityPath(identityRoot, uid) {
   return path.join(identityRoot, `uid-${uid}.json`);
+}
+
+async function workspaceContainsOwnedPath(target, uids) {
+  if (uids.size === 0) return false;
+  const stat = await lstat(target);
+  if (uids.has(stat.uid)) return true;
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+  for (const entry of await readdir(target)) {
+    if (await workspaceContainsOwnedPath(path.join(target, entry), uids)) return true;
+  }
+  return false;
 }
 
 async function chownTree(target, uid, gid) {
