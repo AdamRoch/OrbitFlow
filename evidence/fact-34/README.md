@@ -7,10 +7,18 @@ attempt was rerun.
 
 ## Funded outcomes
 
-| Attempt | Result | Run tokens | Run cost | Furthest verified beat |
+| Attempt | Result | Run tokens | Recorded cost floor | Furthest verified beat |
 | --- | --- | ---: | ---: | --- |
 | 1 | Failed: strict JSON validation | 43,090 | $0.09507060 | Durable worker question and correlated local Telegram answer |
 | 2 | Failed: strict JSON validation | 116,785 | $0.07148640 | Resumed first-pass implementation completed; tester response was not strict JSON |
+
+Tokens and dollars are reported separately because the retained records have
+different completeness. The token totals above are the exact durable per-run
+totals. Each dollar value is only an incomplete cost floor: OpenClaw retained
+the gateway Kimi token rows with `$0.00000000` because that provider path did
+not supply cost attribution, while the nested coding-adapter call retained its
+nonzero cost. The missing gateway spend cannot be recovered from this evidence,
+so neither dollar value is claimed as the complete provider cost.
 
 Both provider runs created exactly one ticket, emitted the exact documented
 worker question as an ordinary durable message, produced one pending

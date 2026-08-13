@@ -2,10 +2,10 @@
 > orbitfactory@0.1.0 fact31:proof
 > bash scripts/fact-31-compose-proof.sh
 
- Image orbitfactory-fact31-proof-74104-app Building 
- Image orbitfactory-fact31-proof-74104-openclaw Building 
- Image orbitfactory-fact31-proof-74104-engine Building 
- Image orbitfactory-fact31-proof-74104-migrate Building 
+ Image orbitfactory-fact31-proof-74104-app Building
+ Image orbitfactory-fact31-proof-74104-openclaw Building
+ Image orbitfactory-fact31-proof-74104-engine Building
+ Image orbitfactory-fact31-proof-74104-migrate Building
 #1 [internal] load local bake definitions
 #1 reading from stdin 2.24kB done
 #1 DONE 0.0s
@@ -103,30 +103,30 @@
 #19 DONE 0.0s
 
 #20 [app build 6/6] RUN npm run build && npm prune --omit=dev
-#20 0.192 
+#20 0.192
 #20 0.192 > orbitfactory@0.1.0 build
 #20 0.192 > next build
-#20 0.192 
+#20 0.192
 #20 0.477 ▲ Next.js 16.3.0 (Turbopack)
 #20 0.585 ✓ Running next.config.ts took 107ms
 #20 0.590 Attention: Next.js now collects completely anonymous telemetry regarding usage.
 #20 0.590 This information is used to shape Next.js' roadmap and prioritize features.
 #20 0.590 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
 #20 0.590 https://nextjs.org/telemetry
-#20 0.591 
-#20 0.614 
+#20 0.591
+#20 0.614
 #20 0.642   Creating an optimized production build ...
 #20 4.740 ✓ Compiled successfully in 3.6s
 #20 4.742   Running TypeScript ...
 #20 8.338   Finished TypeScript in 3.6s ...
 #20 8.340   Collecting page data using 5 workers ...
 #20 8.680   Generating static pages using 5 workers (0/18) ...
-#20 8.693   Generating static pages using 5 workers (4/18) 
-#20 8.766   Generating static pages using 5 workers (8/18) 
-#20 8.814   Generating static pages using 5 workers (13/18) 
+#20 8.693   Generating static pages using 5 workers (4/18)
+#20 8.766   Generating static pages using 5 workers (8/18)
+#20 8.814   Generating static pages using 5 workers (13/18)
 #20 8.850 ✓ Generating static pages using 5 workers (18/18) in 170ms
 #20 8.852   Finalizing page optimization ...
-#20 8.858 
+#20 8.858
 #20 8.860 Route (app)
 #20 8.860 ┌ ƒ /
 #20 8.860 ├ ○ /_not-found
@@ -160,17 +160,17 @@
 #20 8.860 ├ ƒ /monitoring
 #20 8.860 ├ ○ /new
 #20 8.860 └ ○ /workflows
-#20 8.860 
-#20 8.860 
+#20 8.860
+#20 8.860
 #20 8.860 ○  (Static)   prerendered as static content
 #20 8.860 ƒ  (Dynamic)  server-rendered on demand
-#20 8.860 
-#20 10.29 
+#20 8.860
+#20 10.29
 #20 10.29 up to date, audited 187 packages in 1s
-#20 10.29 
+#20 10.29
 #20 10.29 76 packages are looking for funding
 #20 10.29   run `npm fund` for details
-#20 10.29 
+#20 10.29
 #20 10.29 found 0 vulnerabilities
 #20 DONE 10.3s
 
@@ -260,7 +260,28 @@
 #27 5.193 debconf: delaying package configuration, since apt-utils is not installed
 #27 5.203 Fetched 20.1 MB in 2s (10.3 MB/s)
 #27 5.213 Selecting previously unselected package perl-modules-5.36.
-#27 5.213 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6090 files and directories currently installed.)
+#27 5.213 (Reading database ...
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 6090 files and directories currently installed.)
 #27 5.222 Preparing to unpack .../00-perl-modules-5.36_5.36.0-7+deb12u3_all.deb ...
 #27 5.223 Unpacking perl-modules-5.36 (5.36.0-7+deb12u3) ...
 #27 5.372 Selecting previously unselected package libgdbm6:arm64.
@@ -393,9 +414,9 @@
 #31 DONE 0.0s
 
 #29 [engine engine 2/4] RUN npm ci --prefix coding-adapter --omit=dev
-#29 12.70 
+#29 12.70
 #29 12.70 added 17 packages, and audited 18 packages in 13s
-#29 12.70 
+#29 12.70
 #29 12.70 found 0 vulnerabilities
 #29 12.70 npm notice
 #29 12.70 npm notice New major version of npm available! 10.9.7 -> 12.0.2
@@ -424,114 +445,114 @@
 
 #35 [engine] resolving provenance for metadata file
 #35 DONE 0.0s
- Image orbitfactory-fact31-proof-74104-engine Built 
- Image orbitfactory-fact31-proof-74104-migrate Built 
- Image orbitfactory-fact31-proof-74104-app Built 
- Image orbitfactory-fact31-proof-74104-openclaw Built 
- Network orbitfactory-fact31-proof-74104_default Creating 
- Network orbitfactory-fact31-proof-74104_default Created 
- Volume orbitfactory-fact31-proof-74104_postgres-data Creating 
- Volume orbitfactory-fact31-proof-74104_postgres-data Created 
- Volume orbitfactory-fact31-proof-74104_app-data Creating 
- Volume orbitfactory-fact31-proof-74104_app-data Created 
- Volume orbitfactory-fact31-proof-74104_openclaw-state Creating 
- Volume orbitfactory-fact31-proof-74104_openclaw-state Created 
- Volume orbitfactory-fact31-proof-74104_engine-data Creating 
- Volume orbitfactory-fact31-proof-74104_engine-data Created 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Creating 
- Container orbitfactory-fact31-proof-74104-postgres-1 Creating 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Created 
- Container orbitfactory-fact31-proof-74104-postgres-1 Created 
- Container orbitfactory-fact31-proof-74104-migrate-1 Creating 
- Container orbitfactory-fact31-proof-74104-migrate-1 Created 
- Container orbitfactory-fact31-proof-74104-app-1 Creating 
- Container orbitfactory-fact31-proof-74104-app-1 Created 
- Container orbitfactory-fact31-proof-74104-engine-1 Creating 
- Container orbitfactory-fact31-proof-74104-engine-1 Created 
- Container orbitfactory-fact31-proof-74104-postgres-1 Starting 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Starting 
- Container orbitfactory-fact31-proof-74104-postgres-1 Started 
- Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Started 
- Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
- Container orbitfactory-fact31-proof-74104-migrate-1 Starting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Started 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-app-1 Starting 
- Container orbitfactory-fact31-proof-74104-app-1 Started 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
- Container orbitfactory-fact31-proof-74104-app-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-app-1 Healthy 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
- Container orbitfactory-fact31-proof-74104-engine-1 Starting 
- Container orbitfactory-fact31-proof-74104-engine-1 Started 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
- Container orbitfactory-fact31-proof-74104-engine-1 Waiting 
- Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-app-1 Waiting 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
- Container orbitfactory-fact31-proof-74104-app-1 Healthy 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
- Container orbitfactory-fact31-proof-74104-engine-1 Healthy 
- Container orbitfactory-fact31-proof-74104-engine-1 Restarting 
- Container orbitfactory-fact31-proof-74104-engine-1 Started 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Running 
- Container orbitfactory-fact31-proof-74104-engine-1 Running 
- Container orbitfactory-fact31-proof-74104-postgres-1 Running 
- Container orbitfactory-fact31-proof-74104-app-1 Running 
- Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
- Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
- Container orbitfactory-fact31-proof-74104-migrate-1 Starting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Started 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
- Container orbitfactory-fact31-proof-74104-app-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-app-1 Healthy 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
- Container orbitfactory-fact31-proof-74104-engine-1 Waiting 
- Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-app-1 Waiting 
- Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
- Container orbitfactory-fact31-proof-74104-app-1 Healthy 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-engine-1 Healthy 
- Container orbitfactory-fact31-proof-74104-engine-1 Restarting 
- Container orbitfactory-fact31-proof-74104-engine-1 Started 
- Container orbitfactory-fact31-proof-74104-app-1 Running 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Running 
- Container orbitfactory-fact31-proof-74104-engine-1 Running 
- Container orbitfactory-fact31-proof-74104-postgres-1 Running 
- Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
- Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
- Container orbitfactory-fact31-proof-74104-migrate-1 Starting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Started 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
- Container orbitfactory-fact31-proof-74104-app-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-app-1 Healthy 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
- Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
- Container orbitfactory-fact31-proof-74104-app-1 Waiting 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
- Container orbitfactory-fact31-proof-74104-engine-1 Waiting 
- Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
- Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
- Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
- Container orbitfactory-fact31-proof-74104-app-1 Healthy 
- Container orbitfactory-fact31-proof-74104-engine-1 Healthy 
+ Image orbitfactory-fact31-proof-74104-engine Built
+ Image orbitfactory-fact31-proof-74104-migrate Built
+ Image orbitfactory-fact31-proof-74104-app Built
+ Image orbitfactory-fact31-proof-74104-openclaw Built
+ Network orbitfactory-fact31-proof-74104_default Creating
+ Network orbitfactory-fact31-proof-74104_default Created
+ Volume orbitfactory-fact31-proof-74104_postgres-data Creating
+ Volume orbitfactory-fact31-proof-74104_postgres-data Created
+ Volume orbitfactory-fact31-proof-74104_app-data Creating
+ Volume orbitfactory-fact31-proof-74104_app-data Created
+ Volume orbitfactory-fact31-proof-74104_openclaw-state Creating
+ Volume orbitfactory-fact31-proof-74104_openclaw-state Created
+ Volume orbitfactory-fact31-proof-74104_engine-data Creating
+ Volume orbitfactory-fact31-proof-74104_engine-data Created
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Creating
+ Container orbitfactory-fact31-proof-74104-postgres-1 Creating
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Created
+ Container orbitfactory-fact31-proof-74104-postgres-1 Created
+ Container orbitfactory-fact31-proof-74104-migrate-1 Creating
+ Container orbitfactory-fact31-proof-74104-migrate-1 Created
+ Container orbitfactory-fact31-proof-74104-app-1 Creating
+ Container orbitfactory-fact31-proof-74104-app-1 Created
+ Container orbitfactory-fact31-proof-74104-engine-1 Creating
+ Container orbitfactory-fact31-proof-74104-engine-1 Created
+ Container orbitfactory-fact31-proof-74104-postgres-1 Starting
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Starting
+ Container orbitfactory-fact31-proof-74104-postgres-1 Started
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Started
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy
+ Container orbitfactory-fact31-proof-74104-migrate-1 Starting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Started
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-app-1 Starting
+ Container orbitfactory-fact31-proof-74104-app-1 Started
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy
+ Container orbitfactory-fact31-proof-74104-engine-1 Starting
+ Container orbitfactory-fact31-proof-74104-engine-1 Started
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting
+ Container orbitfactory-fact31-proof-74104-engine-1 Waiting
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy
+ Container orbitfactory-fact31-proof-74104-engine-1 Healthy
+ Container orbitfactory-fact31-proof-74104-engine-1 Restarting
+ Container orbitfactory-fact31-proof-74104-engine-1 Started
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Running
+ Container orbitfactory-fact31-proof-74104-engine-1 Running
+ Container orbitfactory-fact31-proof-74104-postgres-1 Running
+ Container orbitfactory-fact31-proof-74104-app-1 Running
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy
+ Container orbitfactory-fact31-proof-74104-migrate-1 Starting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Started
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting
+ Container orbitfactory-fact31-proof-74104-engine-1 Waiting
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-engine-1 Healthy
+ Container orbitfactory-fact31-proof-74104-engine-1 Restarting
+ Container orbitfactory-fact31-proof-74104-engine-1 Started
+ Container orbitfactory-fact31-proof-74104-app-1 Running
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Running
+ Container orbitfactory-fact31-proof-74104-engine-1 Running
+ Container orbitfactory-fact31-proof-74104-postgres-1 Running
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy
+ Container orbitfactory-fact31-proof-74104-migrate-1 Starting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Started
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting
+ Container orbitfactory-fact31-proof-74104-engine-1 Waiting
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy
+ Container orbitfactory-fact31-proof-74104-engine-1 Healthy
 FACT-31 production engine Compose proof passed for orbitfactory-fact31-proof-74104

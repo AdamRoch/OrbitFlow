@@ -4,6 +4,7 @@ import pg from "pg";
 import { startWorkflowEngine } from "../lib/postgres/workflow-engine.ts";
 import { OpenClawEngineAdapter } from "../lib/runtime/engine-adapter.ts";
 import { OpenClawRuntimeAdapter } from "../lib/runtime/openclaw.ts";
+import { createProductionWorkspaceTools } from "../lib/runtime/workspace-tools.ts";
 
 const { Pool } = pg;
 
@@ -63,7 +64,11 @@ const openclaw = new OpenClawRuntimeAdapter({
   allowedExecEnvironment,
   gatewayEnvironment,
 });
-const runtime = new OpenClawEngineAdapter({ pool, openclaw });
+const runtime = new OpenClawEngineAdapter({
+  pool,
+  openclaw,
+  workspaceTools: createProductionWorkspaceTools(),
+});
 
 let state: "starting" | "operational" | "failed" | "stopping" = "starting";
 let failure = "";

@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
@@ -11,8 +15,149 @@ import {
 } from "../../src/lib/postgres/workflow-engine.ts";
 import { deliverNextTelegramOutbound, ingestTelegramInbound } from "../../src/lib/telegram/adapter.ts";
 import { OpenClawEngineAdapter } from "../../src/lib/runtime/engine-adapter.ts";
+import { createProductionWorkspaceTools } from "../../src/lib/runtime/workspace-tools.ts";
 
 const { Client, Pool } = pg;
+
+const greetingTest = `import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import test from "node:test";
+
+function run(args) {
+  return spawnSync(process.execPath, ["greeter.mjs", ...args], { encoding: "utf8" });
+}
+
+test("greets a trimmed name", () => {
+  const result = run(["--name", "  Ada  "]);
+  assert.deepEqual({ status: result.status, stdout: result.stdout, stderr: result.stderr }, { status: 0, stdout: "Hello, Ada!\\n", stderr: "" });
+});
+
+test("supports shout", () => {
+  const result = run(["--name", "Ada", "--shout"]);
+  assert.deepEqual({ status: result.status, stdout: result.stdout, stderr: result.stderr }, { status: 0, stdout: "HELLO, ADA!\\n", stderr: "" });
+});
+
+test("rejects invalid input", () => {
+  for (const args of [[], ["--name", "   "], ["--unknown"]]) {
+    const result = run(args);
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.ok(result.stderr.trim());
+  }
+});
+`;
+
+const firstPassGreeter = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length !== 2 || args[0] !== "--name" || !args[1].trim()) {
+  process.stderr.write("Usage: greeter.mjs --name <name>\\n");
+  process.exit(2);
+}
+process.stdout.write(\`Hello, \${args[1].trim()}!\\n\`);
+`;
+
+const correctedGreeter = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const shoutIndex = args.indexOf("--shout");
+const shout = shoutIndex !== -1;
+if (shout) args.splice(shoutIndex, 1);
+if (args.length !== 2 || args[0] !== "--name" || !args[1].trim()) {
+  process.stderr.write("Usage: greeter.mjs --name <name> [--shout]\\n");
+  process.exit(2);
+}
+const greeting = \`Hello, \${args[1].trim()}!\`;
+process.stdout.write(\`\${shout ? greeting.toUpperCase() : greeting}\\n\`);
+`;
+
+function runWorkspace(workspace, args) {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  return spawnSync(process.execPath, args, { cwd: workspace, env, encoding: "utf8", timeout: 10_000 });
+}
+
+async function installPass(workspace, source) {
+  await writeFile(path.join(workspace, "greeter.mjs"), source, { mode: 0o755 });
+  await writeFile(path.join(workspace, "greeter.test.mjs"), greetingTest);
+}
+
+async function inspectFirstPass(workspace) {
+  const [source, tests] = await Promise.all([
+    readFile(path.join(workspace, "greeter.mjs"), "utf8"),
+    readFile(path.join(workspace, "greeter.test.mjs"), "utf8"),
+  ]);
+  assert.doesNotMatch(source, /--shout/);
+  assert.match(tests, /supports shout/);
+  const suite = runWorkspace(workspace, ["--test", "greeter.test.mjs"]);
+  assert.notEqual(suite.status, 0, suite.stdout + suite.stderr);
+  const normal = runWorkspace(workspace, ["greeter.mjs", "--name", "  Ada  "]);
+  assert.deepEqual({ status: normal.status, stdout: normal.stdout, stderr: normal.stderr }, { status: 0, stdout: "Hello, Ada!\n", stderr: "" });
+  const shout = runWorkspace(workspace, ["greeter.mjs", "--name", "Ada", "--shout"]);
+  assert.equal(shout.status, 2);
+  assert.ok(shout.stderr.trim());
+}
+
+async function inspectCorrectedPass(workspace) {
+  const [source, tests] = await Promise.all([
+    readFile(path.join(workspace, "greeter.mjs"), "utf8"),
+    readFile(path.join(workspace, "greeter.test.mjs"), "utf8"),
+  ]);
+  assert.match(source, /--shout/);
+  assert.match(tests, /supports shout/);
+  const suite = runWorkspace(workspace, ["--test", "greeter.test.mjs"]);
+  assert.equal(suite.status, 0, suite.stdout + suite.stderr);
+  const normal = runWorkspace(workspace, ["greeter.mjs", "--name", "  Ada  "]);
+  assert.deepEqual({ status: normal.status, stdout: normal.stdout, stderr: normal.stderr }, { status: 0, stdout: "Hello, Ada!\n", stderr: "" });
+  const shout = runWorkspace(workspace, ["greeter.mjs", "--name", "Ada", "--shout"]);
+  assert.deepEqual({ status: shout.status, stdout: shout.stdout, stderr: shout.stderr }, { status: 0, stdout: "HELLO, ADA!\n", stderr: "" });
+  const invalid = runWorkspace(workspace, ["greeter.mjs", "--unknown"]);
+  assert.equal(invalid.status, 2);
+  assert.equal(invalid.stdout, "");
+  assert.ok(invalid.stderr.trim());
+}
+
+test("FACT-34 question outputs reject discarded artifact and event data", async () => {
+  const request = {
+    idempotencyKey: "fact34-malformed-question",
+    generation: "1",
+    runId: "1",
+    dispatchId: "1",
+    nodeId: "implement",
+    agentId: "1",
+    model: "openrouter/moonshotai/kimi-k3",
+    ticketId: "1",
+    ephemeral: false,
+    input: {},
+  };
+  const pool = {
+    async query(sql) {
+      assert.match(sql, /SELECT system_prompt FROM agents/);
+      return { rows: [{ system_prompt: "Ask only one question." }] };
+    },
+  };
+  for (const [output, reason] of [
+    [{ artifact: { ignored: true }, handoff_brief: "question", events: [{ type: "question", question: "Choose one?" }] }, /empty artifact/],
+    [{ artifact: {}, handoff_brief: "question", events: [{ type: "question", question: "Choose one?" }, { type: "progress" }] }, /exactly one question event/],
+  ]) {
+    const adapter = new OpenClawEngineAdapter({ pool, openclaw: { async wakeAgent() { return { output }; } } });
+    const result = await adapter.startSession(request);
+    assert.equal(result.kind, "confirmed_failure");
+    assert.match(result.reason, reason);
+  }
+});
+
+test("FACT-34 production tools expose the ordinary coding surface", () => {
+  const tools = createProductionWorkspaceTools({
+    agentTool: "/app/bin/orbit-agent-tools.mjs",
+    codingTool: "/app/bin/orbit-coding-tool.mjs",
+  })("7", "implement", "11", "13");
+  assert.match(tools, /create_ticket/);
+  assert.match(tools, /list_tickets/);
+  assert.match(tools, /update_ticket/);
+  assert.match(tools, /post_message/);
+  assert.match(tools, /start_run_workspace/);
+  assert.match(tools, /delegate_coding_task/);
+  assert.match(tools, /ORBITFLOW_RUN_ID=13 ORBITFLOW_AGENT_ID=7/);
+});
 
 async function until(description, action, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
@@ -29,6 +174,9 @@ test("FACT-34 real-output question and honest rejection contract", async () => {
   assert.ok(databaseUrl);
   const client = new Client({ connectionString: databaseUrl });
   const pool = new Pool({ connectionString: databaseUrl, max: 10 });
+  const workspace = await mkdtemp(path.join(tmpdir(), "orbitflow-fact34-demo-"));
+  let firstWorker;
+  let restartedWorker;
   await client.connect();
 
   try {
@@ -104,91 +252,104 @@ test("FACT-34 real-output question and honest rejection contract", async () => {
     )).rows[0].id;
 
     const calls = { implement: 0, test: 0, report: 0 };
-    const scriptedProvider = {
-      async wakeAgent(input) {
-        calls[input.nodeId] += 1;
-        if (input.nodeId === "implement" && calls.implement === 1) {
-          return {
-            output: {
-              artifact: {},
-              handoff_brief: "Waiting for the required whitespace decision.",
-              events: [{ type: "question", question: "Should --name preserve surrounding whitespace or trim it?" }],
-            },
-          };
-        }
-        if (input.nodeId === "implement") {
-          const listed = await dispatchPlatformTool(pool, "list_tickets", {
-            agentId: agents.implement,
-            runId: run.id,
-            limit: 10,
-            idempotencyKey: `fact34-implement-list-${calls.implement}`,
-          });
-          const assigned = listed.tickets.find((ticket) => ticket.id === ticketId);
-          assert.ok(assigned);
-          await dispatchPlatformTool(pool, "update_ticket", {
-            agentId: agents.implement,
-            runId: run.id,
-            ticketId,
-            expectedUpdatedAt: assigned.updatedAt,
-            status: "done",
-            idempotencyKey: `fact34-implement-done-${calls.implement}`,
-          });
-          return {
-            output: {
-              artifact: { pass: calls.implement === 2 ? "first" : "corrected" },
-              handoff_brief: calls.implement === 2
-                ? "Implemented the base CLI; --shout remains incomplete for review."
-                : "Corrected --shout and reran the acceptance tests.",
-              events: [],
-            },
-          };
-        }
-        if (input.nodeId === "test" && calls.test === 1) {
-          const listed = await dispatchPlatformTool(pool, "list_tickets", {
-            agentId: agents.test,
-            runId: run.id,
-            limit: 10,
-            idempotencyKey: "fact34-test-list-rejected",
-          });
-          const assigned = listed.tickets.find((ticket) => ticket.id === ticketId);
-          assert.ok(assigned);
-          await dispatchPlatformTool(pool, "update_ticket", {
-            agentId: agents.test,
-            runId: run.id,
-            ticketId,
-            expectedUpdatedAt: assigned.updatedAt,
-            status: "todo",
-            idempotencyKey: "fact34-test-reopen",
-          });
-          return {
-            output: {
-              artifact: { verdict: "rejected" },
-              handoff_brief: "Rejected: the documented --shout acceptance behavior is missing.",
-              events: [],
-            },
-          };
-        }
-        if (input.nodeId === "test") {
-          return {
-            output: {
-              artifact: { verdict: "approved" },
-              handoff_brief: "Approved after independently checking --shout and the full test suite.",
-              events: [],
-            },
-          };
-        }
+    let providerFailure = null;
+    async function scriptedWake(input) {
+      if (input.nodeId === "implement" && calls.implement === 1) {
         return {
           output: {
-            artifact: { status: "reported" },
-            handoff_brief: "Reported the completed corrected result.",
+            artifact: {},
+            handoff_brief: "Waiting for the required whitespace decision.",
+            events: [{ type: "question", question: "Should --name preserve surrounding whitespace or trim it?" }],
+          },
+        };
+      }
+      if (input.nodeId === "implement") {
+        await installPass(workspace, calls.implement === 2 ? firstPassGreeter : correctedGreeter);
+        const listed = await dispatchPlatformTool(pool, "list_tickets", {
+          agentId: agents.implement,
+          runId: run.id,
+          limit: 10,
+          idempotencyKey: `fact34-implement-list-${calls.implement}`,
+        });
+        const assigned = listed.tickets.find((ticket) => ticket.id === ticketId);
+        assert.ok(assigned);
+        await dispatchPlatformTool(pool, "update_ticket", {
+          agentId: agents.implement,
+          runId: run.id,
+          ticketId,
+          expectedUpdatedAt: assigned.updatedAt,
+          status: "done",
+          idempotencyKey: `fact34-implement-done-${calls.implement}`,
+        });
+        return {
+          output: {
+            artifact: { pass: calls.implement === 2 ? "first" : "corrected" },
+            handoff_brief: calls.implement === 2
+              ? "Implemented the base CLI; --shout remains incomplete for review."
+              : "Corrected --shout and reran the acceptance tests.",
             events: [],
           },
         };
+      }
+      if (input.nodeId === "test" && calls.test === 1) {
+        await inspectFirstPass(workspace);
+        const listed = await dispatchPlatformTool(pool, "list_tickets", {
+          agentId: agents.test,
+          runId: run.id,
+          limit: 10,
+          idempotencyKey: "fact34-test-list-rejected",
+        });
+        const assigned = listed.tickets.find((ticket) => ticket.id === ticketId);
+        assert.ok(assigned);
+        await dispatchPlatformTool(pool, "update_ticket", {
+          agentId: agents.test,
+          runId: run.id,
+          ticketId,
+          expectedUpdatedAt: assigned.updatedAt,
+          status: "todo",
+          idempotencyKey: "fact34-test-reopen",
+        });
+        return {
+          output: {
+            artifact: { verdict: "rejected" },
+            handoff_brief: "Rejected: the documented --shout acceptance behavior is missing.",
+            events: [],
+          },
+        };
+      }
+      if (input.nodeId === "test") {
+        await inspectCorrectedPass(workspace);
+        return {
+          output: {
+            artifact: { verdict: "approved" },
+            handoff_brief: "Approved after independently checking --shout and the full test suite.",
+            events: [],
+          },
+        };
+      }
+      return {
+        output: {
+          artifact: { status: "reported" },
+          handoff_brief: "Reported the completed corrected result.",
+          events: [],
+        },
+      };
+    }
+
+    const scriptedProvider = {
+      async wakeAgent(input) {
+        calls[input.nodeId] += 1;
+        try {
+          return await scriptedWake(input);
+        } catch (error) {
+          providerFailure = error;
+          throw error;
+        }
       },
     };
 
     await startWorkflowRun(pool, run.id);
-    const firstWorker = startWorkflowEngine(
+    firstWorker = startWorkflowEngine(
       pool,
       new OpenClawEngineAdapter({ pool, openclaw: scriptedProvider }),
       { consumerId: "fact34-before-restart", dispatcherId: "fact34-before-restart", pollIntervalMs: 20 },
@@ -215,6 +376,7 @@ test("FACT-34 real-output question and honest rejection contract", async () => {
     assert.equal(deliveredText, pending.question_text);
 
     await firstWorker.stop();
+    firstWorker = null;
     const answer = await ingestTelegramInbound(pool, {
       updateId: 34002,
       messageId: 34003,
@@ -225,16 +387,32 @@ test("FACT-34 real-output question and honest rejection contract", async () => {
     assert.equal(answer.kind, "accepted");
     assert.equal(answer.runId, run.id);
 
-    const restartedWorker = startWorkflowEngine(
+    restartedWorker = startWorkflowEngine(
       pool,
       new OpenClawEngineAdapter({ pool, openclaw: scriptedProvider }),
       { consumerId: "fact34-after-restart", dispatcherId: "fact34-after-restart", pollIntervalMs: 20 },
     );
-    await until("completed corrected run", async () => {
-      const current = await getWorkflowRun(pool, run.id);
-      return current?.status === "completed" ? current : null;
+    let workerFailure = null;
+    void restartedWorker.done.catch((error) => {
+      workerFailure = error;
     });
+    try {
+      await until("completed corrected run", async () => {
+        if (providerFailure) throw providerFailure;
+        if (workerFailure) throw workerFailure;
+        const current = await getWorkflowRun(pool, run.id);
+        if (current?.status === "failed") throw new Error(current.failureReason ?? "workflow run failed");
+        return current?.status === "completed" ? current : null;
+      });
+    } catch (error) {
+      const state = await client.query(
+        "SELECT node_id, status::text, failure_reason FROM workflow_dispatches WHERE run_id = $1 ORDER BY id",
+        [run.id],
+      );
+      throw new Error(`${error.message}; calls=${JSON.stringify(calls)} dispatches=${JSON.stringify(state.rows)}`);
+    }
     await restartedWorker.stop();
+    restartedWorker = null;
 
     const questions = await client.query("SELECT * FROM workflow_questions WHERE run_id = $1", [run.id]);
     assert.equal(questions.rowCount, 1);
@@ -279,6 +457,9 @@ test("FACT-34 real-output question and honest rejection contract", async () => {
     assert.equal((await client.query("SELECT status::text FROM tickets WHERE id = $1", [ticketId])).rows[0].status, "done");
     assert.deepEqual(calls, { implement: 3, test: 2, report: 1 });
   } finally {
+    await firstWorker?.stop().catch(() => {});
+    await restartedWorker?.stop().catch(() => {});
+    await rm(workspace, { recursive: true, force: true });
     await pool.end();
     await client.end();
   }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -126,7 +127,23 @@ async function runCommand(command, args, env, output = "ignore") {
   if (exitCode !== 0) throw new Error(`${command} ${args.slice(0, 3).join(" ")} exited ${exitCode}`);
 }
 
+async function refuseOccupiedGatewayPort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        reject(new Error(`Refusing occupied OpenClaw gateway port ${gatewayPort}`));
+        return;
+      }
+      reject(error);
+    });
+    server.listen(gatewayPort, "127.0.0.1", resolve);
+  });
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
 async function startGateway() {
+  await refuseOccupiedGatewayPort();
   const stateDirectory = path.join(runtimeRoot, "state");
   const homeDirectory = path.join(runtimeRoot, "home");
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });

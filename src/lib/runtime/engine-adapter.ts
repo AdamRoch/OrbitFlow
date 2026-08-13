@@ -28,10 +28,16 @@ interface WorkerQuestionEvent {
 function workerQuestionEvent(output: RuntimeOutput): WorkerQuestionEvent | null {
   const questions = output.events.filter((event) => event.type === "question");
   if (questions.length === 0) return null;
-  if (questions.length !== 1) {
+  if (questions.length !== 1 || output.events.length !== 1) {
     throw new RuntimeAdapterError(
       "openclaw_malformed_output",
-      "Agent output may contain at most one question event",
+      "A question output must contain exactly one question event",
+    );
+  }
+  if (Object.keys(output.artifact).length !== 0) {
+    throw new RuntimeAdapterError(
+      "openclaw_malformed_output",
+      "A question output must contain an empty artifact",
     );
   }
   const event = questions[0]!;
@@ -55,6 +61,63 @@ function workerQuestionEvent(output: RuntimeOutput): WorkerQuestionEvent | null 
     );
   }
   return { question, event };
+}
+
+function durableRuntimeMessage(
+  request: RuntimeDispatchRequest,
+  output: RuntimeOutput,
+  sessionId: string,
+): { type: "answer" | "question" | "output"; payload: JsonObject; handoffBrief: string } {
+  const questionContext = request.input.questionContext as Record<string, unknown> | undefined;
+  const isQuestionAnswer = typeof questionContext?.questionId === "string";
+  const workerQuestion = workerQuestionEvent(output);
+  if (isQuestionAnswer && workerQuestion) {
+    throw new RuntimeAdapterError(
+      "openclaw_malformed_output",
+      "An answer output cannot contain a question event",
+    );
+  }
+
+  if (isQuestionAnswer) {
+    return {
+      type: "answer",
+      payload: {
+        questionId: questionContext.questionId,
+        answer: output.handoff_brief,
+        answeringDispatchId: request.dispatchId,
+        dispatchGeneration: request.generation,
+        sessionId,
+      },
+      handoffBrief: output.handoff_brief,
+    };
+  }
+  if (workerQuestion) {
+    return {
+      type: "question",
+      payload: {
+        question: workerQuestion.question,
+        runtimeEvent: workerQuestion.event,
+        dispatchId: request.dispatchId,
+        dispatchGeneration: request.generation,
+        sessionId,
+      },
+      handoffBrief: workerQuestion.question,
+    };
+  }
+  return {
+    type: "output",
+    payload: {
+      dispatchId: request.dispatchId,
+      dispatchGeneration: request.generation,
+      sessionId,
+      output: {
+        artifact: output.artifact,
+        handoff_brief: output.handoff_brief,
+        events: output.events,
+      },
+    },
+    handoffBrief: output.handoff_brief,
+  };
 }
 
 /**
@@ -101,40 +164,16 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
       };
 
       const result = await this.openclaw.wakeAgent(wakeInput);
-
-      const questionContext = request.input.questionContext as Record<string, unknown> | undefined;
-      const isQuestionAnswer = typeof questionContext?.questionId === "string";
-      const workerQuestion = isQuestionAnswer ? null : workerQuestionEvent(result.output);
+      const message = durableRuntimeMessage(request, result.output, sessionId);
 
       await insertMessage(this.pool, {
         runId: request.runId,
         ticketId: request.ticketId,
         sender: `agent:${request.agentId}`,
         recipient: "workflow-engine",
-        type: isQuestionAnswer ? "answer" : workerQuestion ? "question" : "output",
-        payload: (isQuestionAnswer ? {
-          questionId: questionContext.questionId,
-          answer: result.output.handoff_brief,
-          answeringDispatchId: request.dispatchId,
-          dispatchGeneration: request.generation,
-          sessionId,
-        } : workerQuestion ? {
-          question: workerQuestion.question,
-          runtimeEvent: workerQuestion.event,
-          dispatchId: request.dispatchId,
-          dispatchGeneration: request.generation,
-          sessionId,
-        } : {
-          dispatchId: request.dispatchId,
-          dispatchGeneration: request.generation,
-          sessionId,
-          output: {
-            artifact: result.output.artifact,
-            handoff_brief: result.output.handoff_brief,
-            events: result.output.events,
-          },
-        }) as JsonObject,
-        handoffBrief: workerQuestion?.question ?? result.output.handoff_brief,
+        type: message.type,
+        payload: message.payload,
+        handoffBrief: message.handoffBrief,
         tokenUsage: null,
       });
 
@@ -168,39 +207,16 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
 
       if (result.replayed) {
         const sessionId = deterministicSessionId(request.idempotencyKey);
-        const questionContext = request.input.questionContext as Record<string, unknown> | undefined;
-        const isQuestionAnswer = typeof questionContext?.questionId === "string";
-        const workerQuestion = isQuestionAnswer ? null : workerQuestionEvent(result.output);
+        const message = durableRuntimeMessage(request, result.output, sessionId);
 
         await insertMessage(this.pool, {
           runId: request.runId,
           ticketId: request.ticketId,
           sender: `agent:${request.agentId}`,
           recipient: "workflow-engine",
-          type: isQuestionAnswer ? "answer" : workerQuestion ? "question" : "output",
-          payload: (isQuestionAnswer ? {
-            questionId: questionContext.questionId,
-            answer: result.output.handoff_brief,
-            answeringDispatchId: request.dispatchId,
-            dispatchGeneration: request.generation,
-            sessionId,
-          } : workerQuestion ? {
-            question: workerQuestion.question,
-            runtimeEvent: workerQuestion.event,
-            dispatchId: request.dispatchId,
-            dispatchGeneration: request.generation,
-            sessionId,
-          } : {
-            dispatchId: request.dispatchId,
-            dispatchGeneration: request.generation,
-            sessionId,
-            output: {
-              artifact: result.output.artifact,
-              handoff_brief: result.output.handoff_brief,
-              events: result.output.events,
-            },
-          }) as JsonObject,
-          handoffBrief: workerQuestion?.question ?? result.output.handoff_brief,
+          type: message.type,
+          payload: message.payload,
+          handoffBrief: message.handoffBrief,
           tokenUsage: null,
         });
 
