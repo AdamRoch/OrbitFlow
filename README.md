@@ -5,11 +5,9 @@ their execution trail in PostgreSQL, and connecting an OpenClaw agent runtime to
 the workflow engine. It includes an adapted OrbitTrack board as the current UI
 foundation.
 
-This README describes what is in `origin/main`, not the full product ambition.
-In particular, the default Compose `engine` service is currently a PostgreSQL
-readiness endpoint; the durable engine is implemented and exercised through its
-library and proof paths, but is not yet wired up as a long-running Compose
-worker.
+The default Compose stack runs the production PostgreSQL consumer, dispatcher,
+scheduler, and OpenClaw runtime adapter. Its readiness endpoint becomes
+operational only after both durable polling loops have reached PostgreSQL.
 
 ## Architecture
 
@@ -31,16 +29,19 @@ flowchart LR
     ENGINE[Workflow engine\nroutes messages and owns transitions]
     RUNTIME[OpenClaw RuntimeAdapter\nstart and reconcile boundary]
     GATEWAY[OpenClaw gateway and agent sessions]
-    TOOL[orbit-coding-tool\ntrusted tool boundary]
-    CLI[OpenCode CLI\nisolated run workspace]
+    WRAPPER[Allowlisted OpenClaw tool wrapper\nno database credential]
+    BROKER[Tool broker\ndispatch validation and persistence]
+    EXECUTOR[Coding executor\nprovider credential, no database credential]
+    CLI[OpenCode CLI\nrun-specific UID and workspace]
     ENGINE --> RUNTIME --> GATEWAY
-    GATEWAY --> TOOL --> CLI
+    GATEWAY --> WRAPPER --> BROKER --> EXECUTOR --> CLI
   end
 
   UI --> API
   API <--> RECORDS
   ENGINE <--> BUS
   ENGINE <--> RECORDS
+  BROKER <--> RECORDS
 
   TELEGRAM[Telegram] <--> TG[grammY adapter\noptional Compose profile]
   TG <--> BUS
@@ -54,7 +55,9 @@ records. The engine consumes a bus message and commits its routing receipt and
 transition together. The runtime adapter owns the provider boundary; an agent
 output does not select the next workflow node. Telegram inbound and outbound
 work is represented in the same message trail, with provider-specific durable
-receipts. The optional coding tool is an agent tool, not a second orchestrator.
+receipts. The coding tool is an agent tool, not a second orchestrator. Its
+broker holds database authority while the coding executor is isolated from the
+database network.
 
 ## Start from a clean clone
 
@@ -71,10 +74,10 @@ docker compose up --build
 ```
 
 The one Compose command starts PostgreSQL, a one-shot migrator, the board/API,
-the OpenClaw gateway, and the engine readiness service. The app is published
-only on localhost at `http://127.0.0.1:${ORBITFACTORY_APP_PORT}`. The Telegram
-adapter is opt-in. After filling in the required variables below, its canonical
-demo command is:
+the production engine, the OpenClaw gateway, the tool broker, and the coding
+executor. The app is published only on localhost at
+`http://127.0.0.1:${ORBITFACTORY_APP_PORT}`. The Telegram adapter is opt-in.
+After filling in the required variables below, its canonical demo command is:
 
 ```sh
 docker compose --profile telegram up --build
@@ -87,25 +90,15 @@ runbook](docs/fact-7-docker-compose.md).
 
 | Variable | Class | Used by | Notes |
 | --- | --- | --- | --- |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Required | Compose PostgreSQL, migrator, app, engine | Set all three in `.env`; `POSTGRES_PASSWORD` must be a local secret. |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Required | Compose PostgreSQL, migrator, app, engine, tool broker | Set all three in `.env`; `POSTGRES_PASSWORD` must be a local secret. |
 | `ORBITFACTORY_APP_PORT`, `ORBITFACTORY_ENGINE_HOST_PORT` | Required | Compose host port bindings | Select localhost ports for the app and readiness endpoint. |
 | `ORBITFACTORY_DB_PATH` | Required | Adapted board/API | Path for the inherited SQLite board foundation; it is not the PostgreSQL workflow authority. |
-| `OPENROUTER_API_KEY` | Provider credential, required by default Compose | OpenClaw gateway; opt-in coding adapter | The only evaluator provider credential in the shipped Compose topology. |
+| `OPENROUTER_API_KEY` | Provider credential, required by default Compose | OpenClaw gateway, coding executor; opt-in coding adapter | The only evaluator provider credential in the shipped Compose topology. It is not passed to the engine or tool broker. |
 | `TELEGRAM_BOT_TOKEN` | Optional provider credential | `telegram` profile | Required only when enabling the grammY long-poll adapter. |
 | `ORBITFACTORY_CODING_ADAPTER_BINARY` | Optional / proof override | `coding-adapter` profile | Defaults to `opencode`; the proof selects its committed fake binary with this setting. |
-| `ORBITFLOW_WORKSPACE_ROOT`, `ORBITFLOW_RUN_ID`, `ORBITFLOW_AGENT_ID` | Runtime-supplied | `orbit-coding-tool` | Trusted execution context for a coding delegation, not values to put in the normal `.env`. |
-| `ORBITFLOW_OPENCODE_MODEL`, `ORBITFLOW_CODING_TIMEOUT_MS` | Optional runtime tuning | `orbit-coding-tool` | Configuration of the pinned coding CLI boundary. |
+| `ORBITFLOW_WORKSPACE_ROOT`, `ORBITFLOW_RUNTIME_ROOT` | Compose-supplied | Engine, tool broker, coding executor | Internal mounted paths, not values to put in the normal `.env`. Dispatch attribution is persisted by the engine and verified by the broker. |
+| `ORBITFLOW_OPENCODE_MODEL`, `ORBITFLOW_CODING_TIMEOUT_MS` | Optional runtime tuning | Tool broker, coding executor | Configuration of the pinned coding CLI boundary. |
 | `ORBITFLOW_OPENCODE_BINARY`, `ORBITFLOW_ENABLE_REAL_OPENCODE_PROOF`, `ORBITFLOW_ENABLE_REAL_OPENCLAW_CODING_PROOF`, `ORBITFLOW_FACT11_REAL_PROVIDER_PROOF` | Proof-only | Targeted proof harnesses | Not part of normal startup; the real-provider gates require credentials and can spend provider credit. |
-
-## Validation status
-
-Docker Desktop is unavailable on this machine after a storage I/O failure.
-Accordingly, this documentation change does **not** claim a fresh clean-clone
-Compose run or Docker-backed proof. The command and service/profile names above
-were checked against `compose.yaml`, `.env.example`, package scripts, and the
-shipped runbooks; `docker compose config --no-interpolate` also parsed the
-configuration without starting the engine. See the proof links below to run the
-Docker-backed gates once Docker is healthy.
 
 ## Why this runtime and stack
 
@@ -117,11 +110,12 @@ durable invocation, validate its structured output, and keep an ambiguous
 provider start from being replayed blindly. The workflow engine stays in charge
 of state transitions and durable dispatches.
 
-OpenCode is deliberately lower in the stack. The `orbit-coding-tool` entry
-point gives an agent a narrow coding operation against a run-owned workspace;
-the adapter records attributed usage and isolates the provider credential. It
-does not decide which agent runs next, own workflow state, or replace the
-engine. The v1 CLI selection and its constraints are recorded in
+OpenCode is deliberately lower in the stack. OpenClaw receives only a narrow,
+allowlisted wrapper. The tool broker verifies the active dispatch and owns
+workspace and cost persistence, then sends coding work to a database-isolated
+executor. Each delegation runs under a permanently reserved run-specific UID.
+The coding boundary does not decide which agent runs next, own workflow state,
+or replace the engine. The v1 CLI selection and its constraints are recorded in
 [the coding-adapter decision](coding-adapter/DECISION.md).
 
 Goose is not a shipped runtime or tool in this repository. No code or retained
@@ -141,10 +135,10 @@ TypeScript keeps the Next.js UI/API, workflow graph validation, engine seams,
 and adapter contracts in one typed codebase. Next.js supplies the retained
 board and editor surfaces. PostgreSQL is used where atomic workflow transitions,
 durable messages, receipts, leases, and cost records matter. Compose makes the
-local PostgreSQL, app, gateway, and profile boundaries repeatable without
-requiring host-installed database or gateway state. The inherited board still
-uses a small SQLite foundation, so it should not be mistaken for the workflow
-engine's PostgreSQL authority.
+local PostgreSQL, app, engine, gateway, broker, executor, and profile boundaries
+repeatable without requiring host-installed database or gateway state. The
+inherited board still uses a small SQLite foundation, so it should not be
+mistaken for the workflow engine's PostgreSQL authority.
 
 ## Extend safely
 
@@ -203,6 +197,8 @@ single-process boundary.
 - `npm test` runs the app, Phase 0, and coding-adapter suites without a provider call.
 - `bash scripts/fact-7-compose-proof.sh` is the disposable clean-Compose gate.
 - `npm run fact9:proof`, `npm run fact10:proof`, and `npm run fact11:proof` cover the bus, engine, and runtime adapter.
+- `npm run fact31:proof` covers the production Compose worker and restart path without a provider call.
+- `npm run fact34:proof` covers the deterministic Software Factory question, rejection, correction, approval, and local Telegram boundary.
 - `npm run fact15:proof`, `npm run fact21:proof`, `npm run fact23:proof`, and `npm run fact25:proof` cover Telegram, templates, guardrails, and scheduling.
 - [PostgreSQL schema](docs/postgres-schema.md), [message bus](docs/message-bus.md), [workflow engine](docs/workflow-engine.md), and [OpenClaw adapter](docs/openclaw-runtime-adapter.md) are the authoritative detailed contracts.
 

@@ -1451,19 +1451,48 @@ async function routeQuestionMessage(transaction: PoolClient, message: MessageRow
     ? message.payload.question.trim()
     : message.handoffBrief?.trim();
   if (!text) throw new WorkflowGraphError("question must contain non-blank payload.question or handoffBrief");
+  const namedDispatchId = message.payload.dispatchId === undefined
+    ? null
+    : positiveId(message.payload.dispatchId as DatabaseId, "question payload.dispatchId");
   const dispatchResult = await transaction.query(
     `SELECT dispatch.*, run.graph_snapshot
      FROM workflow_dispatches AS dispatch
      JOIN workflow_runs AS run ON run.id = dispatch.run_id
      WHERE dispatch.run_id = $1 AND dispatch.ticket_id IS NOT DISTINCT FROM $2
-       AND dispatch.agent_id = $3 AND dispatch.status = 'active'
+       AND dispatch.agent_id = $3
+       AND ($4::bigint IS NULL OR dispatch.id = $4)
+       AND dispatch.status IN ('dispatching', 'reconciling', 'active', 'completed')
        AND dispatch.answering_question_id IS NULL
      ORDER BY dispatch.id DESC LIMIT 1
      FOR UPDATE OF dispatch, run`,
-    [message.runId, message.ticketId, match[1]],
+    [message.runId, message.ticketId, match[1], namedDispatchId],
   );
   const dispatch = dispatchResult.rows[0];
-  if (!dispatch) throw new WorkflowGraphError("question does not match an active worker dispatch");
+  if (!dispatch) throw new WorkflowGraphError("question does not match an in-flight worker dispatch");
+  if (message.payload.dispatchGeneration !== undefined) {
+    const generation = positiveId(
+      message.payload.dispatchGeneration as DatabaseId,
+      "question payload.dispatchGeneration",
+    );
+    if (generation !== dispatch.runtime_generation) {
+      throw new WorkflowGraphError("question names a different dispatch generation");
+    }
+  }
+  if (message.payload.sessionId !== undefined && dispatch.runtime_session_id !== null) {
+    const sessionId = nonBlank(message.payload.sessionId, "question payload.sessionId");
+    if (sessionId !== dispatch.runtime_session_id) {
+      throw new WorkflowGraphError("question names a different runtime session");
+    }
+  }
+  const prior = await transaction.query(
+    `SELECT id FROM workflow_questions
+     WHERE originating_dispatch_id = $1 AND boundary = 'worker'`,
+    [dispatch.id],
+  );
+  if (prior.rows[0]) return;
+  if (dispatch.status === "completed") {
+    throw new WorkflowGraphError("question does not match an in-flight worker dispatch");
+  }
   const graph = parseWorkflowGraph(dispatch.graph_snapshot);
   const node = graph.nodes.find((candidate) => candidate.id === dispatch.node_id)!;
   const questionId = await openWorkflowQuestion(transaction, {
@@ -1476,7 +1505,7 @@ async function routeQuestionMessage(transaction: PoolClient, message: MessageRow
      SET status = 'completed', output_message_id = $2,
          lease_owner = NULL, lease_expires_at = NULL,
          reconciliation_reason = NULL, updated_at = clock_timestamp()
-     WHERE id = $1 AND status = 'active'`,
+     WHERE id = $1 AND status IN ('dispatching', 'reconciling', 'active')`,
     [dispatch.id, message.id],
   );
   await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);

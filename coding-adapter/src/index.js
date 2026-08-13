@@ -8,6 +8,7 @@ export {
   removeIsolatedGitWorkspace,
 } from "./workspace.js";
 export { createRunWorkspaceService } from "./runWorkspaceService.js";
+export { createExecutionIdentityStore } from "./executionIdentityStore.js";
 export { createCostEventStore } from "./costEvents.js";
 export { createCodingTool } from "./codingTool.js";
 export * as errors from "./errors.js";

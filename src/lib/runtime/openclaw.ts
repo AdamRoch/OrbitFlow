@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
@@ -146,6 +146,10 @@ export interface WakeAgentInput {
   upstreamHandoffBrief?: string | null;
   timeoutMs?: number;
   workspaceTools?: string | null;
+  agentModel?: string;
+  dispatchGeneration?: string | number | bigint;
+  dispatchSessionId?: string;
+  toolContext?: JsonObject | null;
 }
 
 export interface WakeAgentResult {
@@ -174,6 +178,7 @@ export interface RuntimeAdapterOptions {
   terminationGraceMs?: number;
   gatewayEnvironment?: Readonly<Record<string, string | undefined>>;
   allowedExecEnvironment?: readonly string[];
+  retryMalformedOutput?: boolean;
 }
 
 interface CommandResult {
@@ -642,8 +647,15 @@ function runtimeInvocation(
       stableJson({
         nodeId: input.nodeId,
         nodeSystemPrompt: input.nodeSystemPrompt,
+        agentModel: input.agentModel ?? null,
+        dispatchGeneration: input.dispatchGeneration === undefined
+          ? null
+          : String(input.dispatchGeneration),
+        dispatchSessionId: input.dispatchSessionId ?? null,
         ticketIds: [...(input.ticketIds ?? [])].map(String).sort(),
         upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
+        workspaceTools: input.workspaceTools ?? null,
+        toolContext: input.toolContext ?? null,
       }),
     )
     .digest("hex");
@@ -792,6 +804,7 @@ export class OpenClawRuntimeAdapter {
   private readonly terminationGraceMs: number;
   private readonly gatewayEnvironment: Readonly<Record<string, string | undefined>>;
   private readonly allowedExecEnvironment: readonly string[];
+  private readonly retryMalformedOutput: boolean;
   private readonly activeCommands = new Map<string, Set<RunningCommand>>();
   private readonly externallyTerminatedCommands = new WeakSet<ChildProcess>();
   private versionProof: Promise<void> | null = null;
@@ -811,6 +824,7 @@ export class OpenClawRuntimeAdapter {
     );
     this.gatewayEnvironment = options.gatewayEnvironment ?? {};
     this.allowedExecEnvironment = options.allowedExecEnvironment ?? [];
+    this.retryMalformedOutput = options.retryMalformedOutput ?? true;
     const rejectedEnvironment = Object.keys(this.gatewayEnvironment).filter(
       (name) => !OPENCLAW_GATEWAY_ENVIRONMENT.has(name),
     );
@@ -836,6 +850,15 @@ export class OpenClawRuntimeAdapter {
     const invocationId = nonBlank(input.invocationId, "invocationId");
     const nodeId = nonBlank(input.nodeId, "nodeId");
     const nodeSystemPrompt = nonBlank(input.nodeSystemPrompt, "nodeSystemPrompt");
+    const agentModel = input.agentModel === undefined
+      ? undefined
+      : nonBlank(input.agentModel, "agentModel");
+    const dispatchGeneration = input.dispatchGeneration === undefined
+      ? undefined
+      : positiveId(input.dispatchGeneration, "dispatchGeneration");
+    const dispatchSessionId = input.dispatchSessionId === undefined
+      ? undefined
+      : nonBlank(input.dispatchSessionId, "dispatchSessionId");
     const wakeTimeoutMs = timeout(input.timeoutMs, this.wakeTimeoutMs);
     const normalizedInput: WakeAgentInput = {
       ...input,
@@ -844,10 +867,16 @@ export class OpenClawRuntimeAdapter {
       invocationId,
       nodeId,
       nodeSystemPrompt,
+      agentModel,
+      dispatchGeneration,
+      dispatchSessionId,
     };
     const context = await this.loadContext(runId, agentId, input.ticketIds);
+    const runtimeAgent = agentModel === undefined
+      ? context.agent
+      : { ...context.agent, model: agentModel };
     const invocation = runtimeInvocation(normalizedInput, runId, agentId, invocationId);
-    const ref = openClawRef(context.agent);
+    const ref = openClawRef(runtimeAgent);
     const session = runtimeSession(ref, normalizedInput, invocationId);
 
     return await this.withInvocationLock(invocation.invocationKey, async (client) => {
@@ -855,7 +884,7 @@ export class OpenClawRuntimeAdapter {
         ...invocation,
         runId,
         agentId,
-        model: context.agent.model,
+        model: runtimeAgent.model,
       });
       if (!reserved) {
         return await this.replayInvocation(client, {
@@ -881,9 +910,10 @@ export class OpenClawRuntimeAdapter {
             const synchronized = await this.withConfigurationLock(async () => {
               await this.ensureVersion(deadlineMs);
               return await this.syncAgentRow(
-                context.agent,
+                runtimeAgent,
                 client,
                 input.workspaceTools ?? null,
+                input.toolContext ?? null,
                 deadlineMs,
               );
             });
@@ -891,7 +921,7 @@ export class OpenClawRuntimeAdapter {
               invocationId,
               nodeId,
               nodeSystemPrompt,
-              agent: context.agent,
+              agent: runtimeAgent,
               run: context.run,
               tickets: context.tickets,
               upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
@@ -944,7 +974,7 @@ export class OpenClawRuntimeAdapter {
                 }
                 const completion: RuntimeCompletion = {
                   ...parsed.completion,
-                  model: parsed.completion.model ?? context.agent.model,
+                  model: parsed.completion.model ?? runtimeAgent.model,
                 };
                 return await this.persistSuccessfulInvocation(client, {
                   ...invocation,
@@ -957,7 +987,11 @@ export class OpenClawRuntimeAdapter {
                   completion,
                 });
               } catch (error) {
-                if (error instanceof MalformedOutputError && attempts === 1) continue;
+                if (
+                  error instanceof MalformedOutputError &&
+                  attempts === 1 &&
+                  this.retryMalformedOutput
+                ) continue;
                 throw error;
               }
             }
@@ -1051,11 +1085,12 @@ export class OpenClawRuntimeAdapter {
     agent: AgentRow,
     database: Queryable = this.pool,
     workspaceTools: string | null = null,
+    toolContext: JsonObject | null = null,
     deadlineMs?: number,
   ): Promise<SynchronizedAgent> {
     const ref = openClawRef(agent);
     const workspace = path.join(this.runtimeRoot, "workspaces", ref);
-    await this.writeWorkspace(workspace, agent, workspaceTools);
+    await this.writeWorkspace(workspace, agent, workspaceTools, toolContext);
 
     const listed = await this.requireJsonCommand(["agents", "list", "--json"], deadlineMs);
     const entries = Array.isArray(listed)
@@ -1256,7 +1291,12 @@ export class OpenClawRuntimeAdapter {
     ].join("\n");
   }
 
-  private async writeWorkspace(workspace: string, agent: AgentRow, workspaceTools: string | null = null): Promise<void> {
+  private async writeWorkspace(
+    workspace: string,
+    agent: AgentRow,
+    workspaceTools: string | null = null,
+    toolContext: JsonObject | null = null,
+  ): Promise<void> {
     await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
     await mkdir(workspace, { recursive: true, mode: 0o700 });
     const toolsContent = workspaceTools?.trim()
@@ -1288,6 +1328,20 @@ export class OpenClawRuntimeAdapter {
         await rename(temporary, target);
       }),
     );
+    const contextTarget = path.join(workspace, ".orbitflow-tool-context.json");
+    if (toolContext === null) {
+      await unlink(contextTarget).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      return;
+    }
+    const contextTemporary = path.join(workspace, `.orbitflow-tool-context.${process.pid}.tmp`);
+    await writeFile(
+      contextTemporary,
+      `${JSON.stringify({ ...toolContext, workspace })}\n`,
+      { mode: 0o600 },
+    );
+    await rename(contextTemporary, contextTarget);
   }
 
   private async verifySessionIdentity(

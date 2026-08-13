@@ -1,0 +1,335 @@
+
+> orbitfactory@0.1.0 fact34:proof
+> npm run fact34:postgres-proof && npm run fact34:compose-proof
+
+
+> orbitfactory@0.1.0 fact34:postgres-proof
+> bash scripts/fact-34-postgres-proof.sh
+
+TAP version 13
+# Subtest: FACT-34 real-output question and honest rejection contract
+ok 1 - FACT-34 real-output question and honest rejection contract
+  ---
+  duration_ms: 678.799333
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 869.500875
+
+> orbitfactory@0.1.0 fact34:compose-proof
+> bash scripts/fact-34-compose-proof.sh
+
+ Image orbitfactory-fact34-proof-87357-migrate Building
+ Image orbitfactory-fact34-proof-87357-app Building
+ Image orbitfactory-fact34-proof-87357-openclaw Building
+ Image orbitfactory-fact34-proof-87357-engine Building
+#1 [internal] load local bake definitions
+#1 reading from stdin 2.24kB done
+#1 DONE 0.0s
+
+#2 [openclaw internal] load build definition from Dockerfile
+#2 transferring dockerfile: 384B done
+#2 DONE 0.0s
+
+#3 [app internal] load build definition from Dockerfile
+#3 transferring dockerfile: 1.43kB done
+#3 DONE 0.0s
+
+#4 [engine internal] load metadata for docker.io/library/node:22.22.2-bookworm-slim
+#4 DONE 0.0s
+
+#5 [app internal] load .dockerignore
+#5 transferring context: 155B done
+#5 DONE 0.0s
+
+#6 [app build 1/6] FROM docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e
+#6 resolve docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e done
+#6 DONE 0.0s
+
+#7 [app internal] load build context
+#7 transferring context: 324.53kB 0.2s done
+#7 DONE 0.2s
+
+#8 [app build 4/6] RUN npm ci
+#8 CACHED
+
+#9 [app build 2/6] WORKDIR /app
+#9 CACHED
+
+#10 [app build 6/6] RUN npm run build && npm prune --omit=dev
+#10 CACHED
+
+#11 [app app 3/7] COPY --from=build --chown=node:node /app ./
+#11 CACHED
+
+#12 [app app 5/7] COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitflow-coding-adapter-entrypoint
+#12 CACHED
+
+#13 [app build 5/6] COPY . ./
+#13 CACHED
+
+#14 [app app 6/7] COPY --chown=root:root docker/engine-entrypoint.sh /usr/local/bin/orbitflow-engine-entrypoint
+#14 CACHED
+
+#15 [app build 3/6] COPY package.json package-lock.json ./
+#15 CACHED
+
+#16 [app app 4/7] COPY --chown=root:root docker/app-entrypoint.sh /usr/local/bin/orbitflow-app-entrypoint
+#16 CACHED
+
+#17 [app app 7/7] RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint
+#17 CACHED
+
+#18 [migrate] exporting to image
+#18 exporting layers done
+#18 exporting manifest sha256:c55d1a660ce1ba8ce2eda124310c73a7d5166994c41540475cbda8b86953ad82 done
+#18 exporting config sha256:d41961997b637f3d51c8e4f474d4b18b8df6421937b62fecd1fd449b993fd8fb done
+#18 exporting attestation manifest sha256:4518059bdc082e70d5469f7626cb5e3fc74c836faf732a270d77ea819f3b3dec
+#18 exporting attestation manifest sha256:4518059bdc082e70d5469f7626cb5e3fc74c836faf732a270d77ea819f3b3dec 0.0s done
+#18 exporting manifest list sha256:8868b19e90d925c7235b5be3aeffee45991e41fcb4b162c152667e0de9c343e9 done
+#18 naming to docker.io/library/orbitfactory-fact34-proof-87357-migrate:latest done
+#18 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-migrate:latest
+#18 ...
+
+#5 [openclaw internal] load .dockerignore
+#5 transferring context: 155B done
+#5 DONE 0.0s
+
+#6 [engine build 1/6] FROM docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e
+#6 resolve docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e done
+#6 DONE 0.0s
+
+#7 [engine internal] load build context
+#7 transferring context: 324.53kB 0.2s done
+#7 DONE 0.2s
+
+#12 [engine app 5/7] COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitflow-coding-adapter-entrypoint
+#12 CACHED
+
+#14 [engine app 6/7] COPY --chown=root:root docker/engine-entrypoint.sh /usr/local/bin/orbitflow-engine-entrypoint
+#14 CACHED
+
+#16 [engine app 4/7] COPY --chown=root:root docker/app-entrypoint.sh /usr/local/bin/orbitflow-app-entrypoint
+#16 CACHED
+
+#10 [engine build 6/6] RUN npm run build && npm prune --omit=dev
+#10 CACHED
+
+#9 [engine build 2/6] WORKDIR /app
+#9 CACHED
+
+#8 [engine build 4/6] RUN npm ci
+#8 CACHED
+
+#11 [engine app 3/7] COPY --from=build --chown=node:node /app ./
+#11 CACHED
+
+#15 [engine build 3/6] COPY package.json package-lock.json ./
+#15 CACHED
+
+#13 [engine build 5/6] COPY . ./
+#13 CACHED
+
+#17 [engine app 7/7] RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint
+#17 CACHED
+
+#19 [openclaw internal] load metadata for ghcr.io/openclaw/openclaw:2026.4.15
+#19 DONE 0.5s
+
+#20 [engine openclaw-runtime 1/1] FROM ghcr.io/openclaw/openclaw:2026.4.15@sha256:9d5f1dfbd5deedc37706c78f745b958ffbe9b4f20840cfb4d49c617a50326902
+#20 resolve ghcr.io/openclaw/openclaw:2026.4.15@sha256:9d5f1dfbd5deedc37706c78f745b958ffbe9b4f20840cfb4d49c617a50326902 0.0s done
+#20 DONE 0.0s
+
+#21 [engine engine 3/4] COPY --from=openclaw-runtime /app /opt/openclaw
+#21 CACHED
+
+#22 [engine engine 1/4] RUN apt-get update     && apt-get install --no-install-recommends --yes git     && rm -rf /var/lib/apt/lists/*
+#22 CACHED
+
+#23 [engine engine 2/4] RUN npm ci --prefix coding-adapter --omit=dev
+#23 CACHED
+
+#24 [engine engine 4/4] RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
+#24 CACHED
+
+#25 [openclaw internal] load build context
+#25 transferring context: 161B done
+#25 DONE 0.0s
+
+#26 [openclaw 3/4] COPY --chown=root:root docker/openclaw/entrypoint.sh /usr/local/bin/orbitflow-openclaw-gateway
+#26 CACHED
+
+#27 [openclaw 2/4] COPY --chown=node:node docker/openclaw/openclaw.json /opt/orbitflow/openclaw.json
+#27 CACHED
+
+#28 [openclaw 4/4] RUN chmod 755 /usr/local/bin/orbitflow-openclaw-gateway
+#28 CACHED
+
+#29 [openclaw] exporting to image
+#29 exporting layers done
+#29 exporting manifest sha256:36a08156897c83cb350663350c455f87fa83b4eb8dbccb9bc238b2c1eae79b0a done
+#29 exporting config sha256:7ddf6053d4336d344d47b64f7f391389c13a279e75d92a2948ce4e6b70e70fd2 done
+#29 exporting attestation manifest sha256:f6e9704cb8d93fab71c9903521925221f40662af0a627258341c3e60e72fe693 0.0s done
+#29 exporting manifest list sha256:4db80838cb1ab4b80f008c01172b9ac703a425851b3ee126eb9a25cc2e933935 done
+#29 naming to docker.io/library/orbitfactory-fact34-proof-87357-openclaw:latest done
+#29 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-openclaw:latest 0.0s done
+#29 DONE 0.2s
+
+#30 [engine] exporting to image
+#30 exporting layers done
+#30 exporting manifest sha256:5bd53b4c26245e4a6e93f9aa7be9a46ee9a149f74a57fb7f13bf5b065b07370b done
+#30 exporting config sha256:2340b7eb64afd5c5d7dea642177577e2f524f71e3870c86ef20e70408cc8fc18 done
+#30 exporting attestation manifest sha256:5c0169047e07a3e46d6311b482b4735e22f2f1cab56e8c091ce6fc7c67d3420d 0.0s done
+#30 exporting manifest list sha256:5d793a9ba692c739597219ea1dbbf159f8a45c4e41214f0785c4af0e65bbc1f6 done
+#30 naming to docker.io/library/orbitfactory-fact34-proof-87357-engine:latest done
+#30 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-engine:latest
+#30 ...
+
+#31 [openclaw] resolving provenance for metadata file
+#31 DONE 0.0s
+
+#32 [app] exporting to image
+#32 exporting layers done
+#32 exporting manifest sha256:95a515495d786c46e6102dff3035a89876a7e518344d38220a799252cd786740 done
+#32 exporting config sha256:b541a11c813b8c6db676387e1747a594aa9c30d8c6f1a1aeaca7b02d05809d4b done
+#32 exporting attestation manifest sha256:bc873fa4914b3f50480ff860b1e5a1db2fb701a10ab16e1524dd2462f3897546 0.0s done
+#32 exporting manifest list sha256:16c2d72e54ae11dc32c0c794a0d0b47e289c5ebe0dc7b8f135ad524c484687d1 done
+#32 naming to docker.io/library/orbitfactory-fact34-proof-87357-app:latest done
+#32 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-app:latest
+#32 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-app:latest 6.0s done
+#32 DONE 6.1s
+
+#18 [migrate] exporting to image
+#18 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-migrate:latest 6.0s done
+#18 DONE 6.1s
+
+#33 [app] resolving provenance for metadata file
+#33 DONE 0.0s
+
+#34 [migrate] resolving provenance for metadata file
+#34 DONE 0.0s
+
+#30 [engine] exporting to image
+#30 unpacking to docker.io/library/orbitfactory-fact34-proof-87357-engine:latest 16.8s done
+#30 DONE 16.9s
+
+#35 [engine] resolving provenance for metadata file
+#35 DONE 0.0s
+ Image orbitfactory-fact34-proof-87357-openclaw Built
+ Image orbitfactory-fact34-proof-87357-engine Built
+ Image orbitfactory-fact34-proof-87357-migrate Built
+ Image orbitfactory-fact34-proof-87357-app Built
+ Network orbitfactory-fact34-proof-87357_default Creating
+ Network orbitfactory-fact34-proof-87357_default Created
+ Volume orbitfactory-fact34-proof-87357_postgres-data Creating
+ Volume orbitfactory-fact34-proof-87357_postgres-data Created
+ Volume orbitfactory-fact34-proof-87357_app-data Creating
+ Volume orbitfactory-fact34-proof-87357_app-data Created
+ Volume orbitfactory-fact34-proof-87357_openclaw-state Creating
+ Volume orbitfactory-fact34-proof-87357_openclaw-state Created
+ Volume orbitfactory-fact34-proof-87357_engine-data Creating
+ Volume orbitfactory-fact34-proof-87357_engine-data Created
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Creating
+ Container orbitfactory-fact34-proof-87357-postgres-1 Creating
+ Container orbitfactory-fact34-proof-87357-postgres-1 Created
+ Container orbitfactory-fact34-proof-87357-migrate-1 Creating
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Created
+ Container orbitfactory-fact34-proof-87357-migrate-1 Created
+ Container orbitfactory-fact34-proof-87357-app-1 Creating
+ Container orbitfactory-fact34-proof-87357-app-1 Created
+ Container orbitfactory-fact34-proof-87357-engine-1 Creating
+ Container orbitfactory-fact34-proof-87357-engine-1 Created
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Starting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Starting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Started
+ Container orbitfactory-fact34-proof-87357-postgres-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Started
+ Container orbitfactory-fact34-proof-87357-postgres-1 Healthy
+ Container orbitfactory-fact34-proof-87357-migrate-1 Starting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Started
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-app-1 Starting
+ Container orbitfactory-fact34-proof-87357-app-1 Started
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-app-1 Healthy
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Healthy
+ Container orbitfactory-fact34-proof-87357-engine-1 Starting
+ Container orbitfactory-fact34-proof-87357-engine-1 Started
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Waiting
+ Container orbitfactory-fact34-proof-87357-engine-1 Waiting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Healthy
+ Container orbitfactory-fact34-proof-87357-postgres-1 Healthy
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Healthy
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-engine-1 Healthy
+ Container orbitfactory-fact34-proof-87357-engine-1 Restarting
+ Container orbitfactory-fact34-proof-87357-engine-1 Started
+ Container orbitfactory-fact34-proof-87357-app-1 Running
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Running
+ Container orbitfactory-fact34-proof-87357-engine-1 Running
+ Container orbitfactory-fact34-proof-87357-postgres-1 Running
+ Container orbitfactory-fact34-proof-87357-postgres-1 Waiting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Healthy
+ Container orbitfactory-fact34-proof-87357-migrate-1 Starting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Started
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Healthy
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Healthy
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-engine-1 Waiting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-app-1 Healthy
+ Container orbitfactory-fact34-proof-87357-postgres-1 Healthy
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Healthy
+ Container orbitfactory-fact34-proof-87357-engine-1 Healthy
+ Container orbitfactory-fact34-proof-87357-engine-1 Restarting
+ Container orbitfactory-fact34-proof-87357-engine-1 Started
+ Container orbitfactory-fact34-proof-87357-app-1 Running
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Running
+ Container orbitfactory-fact34-proof-87357-engine-1 Running
+ Container orbitfactory-fact34-proof-87357-postgres-1 Running
+ Container orbitfactory-fact34-proof-87357-postgres-1 Waiting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Healthy
+ Container orbitfactory-fact34-proof-87357-migrate-1 Starting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Started
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Waiting
+ Container orbitfactory-fact34-proof-87357-app-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Healthy
+ Container orbitfactory-fact34-proof-87357-app-1 Healthy
+ Container orbitfactory-fact34-proof-87357-app-1 Waiting
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Waiting
+ Container orbitfactory-fact34-proof-87357-engine-1 Waiting
+ Container orbitfactory-fact34-proof-87357-postgres-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Waiting
+ Container orbitfactory-fact34-proof-87357-migrate-1 Exited
+ Container orbitfactory-fact34-proof-87357-postgres-1 Healthy
+ Container orbitfactory-fact34-proof-87357-app-1 Healthy
+ Container orbitfactory-fact34-proof-87357-openclaw-1 Healthy
+ Container orbitfactory-fact34-proof-87357-engine-1 Healthy
+FACT-34 production adapter Compose proof passed for orbitfactory-fact34-proof-87357

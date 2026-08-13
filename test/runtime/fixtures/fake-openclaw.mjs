@@ -170,6 +170,20 @@ if (arguments_[0] === "agent") {
     requestedTimeoutSeconds: option("--timeout"),
   });
 
+  if (typeof action.waitForReleaseFile === "string") {
+    if (!/^[a-z0-9-]+$/.test(action.waitForReleaseFile)) process.exit(21);
+    const releasePath = path.join(stateDirectory, action.waitForReleaseFile);
+    for (;;) {
+      try {
+        await readFile(releasePath, "utf8");
+        break;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      await delay(25);
+    }
+  }
+
   if (action.mode === "timeout") {
     const grandchild = spawn(
       process.execPath,

@@ -159,6 +159,12 @@ const expectedColumns = {
     "created_at",
     "updated_at",
   ],
+  openclaw_dispatch_inputs: [
+    "dispatch_id",
+    "runtime_generation",
+    "wake_input",
+    "created_at",
+  ],
   workflow_fanout_groups: [
     "id",
     "run_id",
@@ -312,6 +318,8 @@ const requiredConstraints = [
   "channel_intakes_spec_object",
   "channel_intakes_state_complete",
   "channel_completion_events_state_complete",
+  "openclaw_dispatch_inputs_generation_positive",
+  "openclaw_dispatch_inputs_wake_input_object",
   "schedules_exactly_one_target",
   "schedule_ticks_key_not_blank",
   "schedule_ticks_schedule_key_unique",
@@ -731,6 +739,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         agent_wake_events_dispatch_id_fkey:
           "REFERENCES workflow_dispatches(id) ON DELETE RESTRICT",
         agent_wake_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
+        openclaw_dispatch_inputs_dispatch_id_fkey:
+          "REFERENCES workflow_dispatches(id) ON DELETE RESTRICT",
         cost_events_agent_id_fkey: "REFERENCES agents(id) ON DELETE RESTRICT",
         cost_events_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         dependencies_blocked_ticket_fk:

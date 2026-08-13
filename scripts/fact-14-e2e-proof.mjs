@@ -35,19 +35,22 @@ const codingTool = path.join(bin, "orbit-coding-tool.mjs");
 const codingModel = process.env.ORBITFLOW_OPENCODE_MODEL || process.env.ORBITFLOW_FACT14_MODEL || "openrouter/deepseek/deepseek-v4-flash";
 
 // The proof must run against the shipped template prompt from
-// db/migrations/0015-factory-implementer-prompt.sql — never a proof-only
-// override. Keep this constant in sync with that migration.
+// db/migrations/0022-factory-demo-contract.sql — never a proof-only override.
+// Keep this constant in sync with that migration.
 const shippedImplementerPrompt = [
   "You are a Software Factory implementer. Follow this exact workflow for every ticket:",
   "",
   "1. Read the ticket. Use list_tickets to see your assigned work.",
-  "2. Call start_run_workspace to prepare the coding workspace.",
-  "3. Call delegate_coding_task with a clear task description. The task must describe exactly what files to create or modify. Wait for the tool to finish before continuing.",
-  "4. NEVER pretend a tool ran. If you write files yourself instead of calling the coding tool, the work is invalid.",
-  "5. After the coding tool finishes, call update_ticket to mark the ticket done.",
-  "6. Produce the fixed JSON output contract with your handoff brief summarizing what was done.",
+  "2. If the ticket explicitly requires a human decision and the upstream handoff does not answer it, do not start or change the coding workspace. Return the fixed output contract with artifact {}, a concise handoff, and exactly one event shaped {\"type\":\"question\",\"question\":\"the required question\"}.",
+  "3. On the resumed turn, treat the upstream handoff as the answer to that question.",
+  "4. Call start_run_workspace to prepare the coding workspace.",
+  "5. Call delegate_coding_task with a clear task description. The task must describe exactly what files to create or modify. Wait for the tool to finish before continuing.",
+  "6. NEVER pretend a tool ran. If you write files yourself instead of calling the coding tool, the work is invalid.",
+  "7. When tester feedback routes the ticket back to you, correct the reported acceptance miss in the existing run workspace.",
+  "8. After the coding tool finishes, call update_ticket to mark the ticket done.",
+  "9. Produce the fixed JSON output contract with your handoff brief summarizing what was done.",
   "",
-  "Key rule: you must call delegate_coding_task for every implementation ticket. Do not output the file content yourself.",
+  "Key rule: you must call delegate_coding_task for every implementation or correction turn. Do not output file content yourself.",
 ].join("\n");
 
 function workspaceToolsFor(agentName, nodeId, projectId, agentId, runId) {
@@ -271,14 +274,14 @@ test("FACT-14 Software Factory end-to-end", { timeout: 1_200_000 }, async (_t) =
     }
     console.error(`Orch/Plan/Tester model: ${proofModel}  Implementer model: ${codingModel}`);
 
-    // Strict gate: the implementer must run the shipped 0015 template prompt.
+    // Strict gate: the implementer must run the shipped template prompt.
     const implPrompt = await pool.query(
       `SELECT system_prompt FROM agents WHERE name = 'Factory Implementer'`,
     );
     assert.equal(
       implPrompt.rows[0]?.system_prompt,
       shippedImplementerPrompt,
-      "Factory Implementer must run the shipped 0015 template prompt",
+      "Factory Implementer must run the shipped template prompt",
     );
 
     const runtimeRoot = path.join(tmpdir(), `orbitflow-fact14-${randomUUID()}`);

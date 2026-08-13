@@ -30,6 +30,8 @@ dependencies.
 | `migrate` | One-shot ordered FACT-6 migration runner | exits successfully |
 | `app` | Current OrbitTrack-derived board UI plus control-plane API | `GET /api/health`; proof also requires PostgreSQL-backed `GET /api/agents` |
 | `openclaw` | Dedicated FACT-1 gateway container | `GET /readyz` on its internal port |
+| `tool-broker` | Privileged dispatch validation and PostgreSQL mutation broker | root-owned Unix socket exists |
+| `coding-executor` | Database-isolated OpenCode execution plane | root-owned Unix socket exists |
 | `engine` | FACT-31 production consumer, dispatcher, scheduler, and runtime adapter | `GET /readyz` after successful consumer and dispatcher polls |
 
 The engine reports `workflowEngine: operational` only after the real FACT-9
@@ -46,13 +48,15 @@ in its named state volume; it is neither an evaluator-provided credential nor
 baked into an image. The gateway has no host port and accepts only the
 Compose-internal network. Do not publish port `18789`.
 
-The engine image installs Git, the FACT-3 selection `opencode-ai@1.18.4`, and
-the pinned OpenClaw 2026.4.15 CLI used by the production runtime adapter. The
-gateway token is mounted read-only from the gateway state volume. Engine
-runtime state and run workspaces use their own durable volume. The provider key
-is present because the shipped Factory Implementer can invoke the existing
-scoped coding adapter; its child-environment allowlist and strict output
-validation remain in force.
+The engine image installs Git and the pinned OpenClaw 2026.4.15 CLI used by the
+production runtime adapter. The gateway token is mounted read-only from the
+gateway state volume. Engine runtime state and run workspaces use their own
+durable volume. The engine and tool broker receive no provider credential.
+OpenClaw receives `OPENROUTER_API_KEY` for gateway model calls. Production
+OpenCode execution and its scoped child environment are separately owned by
+`coding-executor`, which also receives the provider key. Neither service has a
+database credential. OpenClaw has no access to the coding-executor socket or
+run workspaces.
 
 The opt-in `coding-adapter` Compose profile remains an ephemeral one-shot
 boundary, not part of `docker compose up`; invoke it with the already-created
@@ -65,16 +69,28 @@ docker compose --profile coding-adapter run --rm coding-adapter 'create hello.tx
 
 That wrapper passes the key only into FACT-3's existing adapter, whose child
 process receives the key, tool path, and temporary isolated state paths only.
-The production engine uses the same scoped adapter contract for durable run
-workspaces. The gateway separately uses the evaluator key for its FACT-1
-runtime configuration. The gateway image has verified upstream Linux `arm64`
-and `amd64` manifests, and the OpenCode package declares Linux `arm64` and
-`x64` support.
+The opt-in profile uses the same scoped adapter contract as the production
+`coding-executor`, but is not on the production engine path. The gateway image
+has verified upstream Linux `arm64` and `amd64` manifests, and the OpenCode
+package declares Linux `arm64` and `x64` support.
 
 ## State, restart, teardown
 
 Compose names and deliberately reuses `postgres-data`, `app-data`,
-`openclaw-state`, and `engine-data`. The migration runner stores checksums in
+`openclaw-state`, `engine-data`, and `run-workspaces`. OpenClaw and the engine
+share `engine-data` only for runtime and agent workspace state. The gateway's
+one explicitly allowlisted wrapper has no database credential and sends the
+active dispatch context to `tool-broker` over a root-owned socket. The broker
+reloads the engine context, requires the PostgreSQL dispatch lease and
+canonical wake context to match, and performs only the named platform or coding
+operation. Coding work crosses a second root-owned socket to
+`coding-executor`, which has the provider key but no database credential and
+only the provider network. OpenClaw also joins the provider network for model
+calls, while the engine and tool broker remain on the database-bearing control
+network with no provider credential. Each delegated process uses a persisted
+run-specific UID and a mode-`0700` run directory, preventing access to sibling
+workspaces and broker sockets. No general shell executable or underlying
+project CLI is allowlisted. The migration runner stores checksums in
 `schema_migrations`, so a rerun is a no-op. Stop the stack while retaining
 state with `docker compose down`; remove only this stack's state with:
 

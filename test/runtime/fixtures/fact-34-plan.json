@@ -1,0 +1,81 @@
+[
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-tool-proof-release",
+    "output": {
+      "artifact": {},
+      "handoff_brief": "Waiting for the required whitespace decision.",
+      "events": [
+        {
+          "type": "question",
+          "question": "Should --name preserve surrounding whitespace or trim it?"
+        }
+      ]
+    },
+    "usage": {
+      "input": 13,
+      "output": 9,
+      "total": 22,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "output": {
+      "artifact": { "answerApplied": "trim" },
+      "handoff_brief": "Applied the correlated answer on the resumed ticket thread.",
+      "events": []
+    },
+    "usage": {
+      "input": 17,
+      "output": 8,
+      "total": 25,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-tamper-release",
+    "output": {
+      "artifact": { "proof": "tamper" },
+      "handoff_brief": "Tamper proof released.",
+      "events": []
+    },
+    "usage": {
+      "input": 1,
+      "output": 1,
+      "total": 2,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-quarantine-release",
+    "output": {
+      "artifact": { "proof": "quarantine" },
+      "handoff_brief": "Quarantine proof released.",
+      "events": []
+    },
+    "usage": {
+      "input": 1,
+      "output": 1,
+      "total": 2,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-cancel-release",
+    "output": {
+      "artifact": { "proof": "cancel" },
+      "handoff_brief": "Cancellation proof released.",
+      "events": []
+    },
+    "usage": {
+      "input": 1,
+      "output": 1,
+      "total": 2,
+      "cost": { "total": "0" }
+    }
+  }
+]

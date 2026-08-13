@@ -1,0 +1,597 @@
+{
+  "attempt": 2,
+  "model": "openrouter/moonshotai/kimi-k3",
+  "run": {
+    "id": "1",
+    "status": "failed",
+    "failure_reason": "Agent final output is not strict JSON",
+    "total_tokens": "116785",
+    "total_cost": "0.07148640"
+  },
+  "messages": [
+    {
+      "id": "1",
+      "sequence_number": "1",
+      "ticket_id": null,
+      "sender": "telegram:chat:-1003403",
+      "recipient": "agent:1",
+      "type": "channel_inbound",
+      "payload": {
+        "chat": {
+          "id": "-1003403",
+          "type": "supergroup",
+          "title": "FACT-34 local boundary"
+        },
+        "from": {
+          "id": "34022",
+          "firstName": "Adam"
+        },
+        "text": "Build the documented dependency-free Node.js greeting CLI with greeter.mjs and greeter.test.mjs. Require --name, support --shout, reject invalid input with exit 2, use only Node built-ins, and pass node --test greeter.test.mjs. Before implementation, the worker must ask whether surrounding name whitespace should be preserved or trimmed. The first pass must deliberately omit --shout so the tester honestly rejects it. The correction must add --shout and then pass every criterion. Create exactly one implementation ticket.",
+        "provider": "telegram",
+        "updateId": "34002",
+        "messageId": "34012"
+      },
+      "handoff_brief": "Build the documented dependency-free Node.js greeting CLI with greeter.mjs and greeter.test.mjs. Require --name, support --shout, reject invalid input with exit 2, use only Node built-ins, and pass node --test greeter.test.mjs. Before implementation, the worker must ask whether surrounding name whitespace should be preserved or trimmed. The first pass must deliberately omit --shout so the tester honestly rejects it. The correction must add --shout and then pass every criterion. Create exactly one implementation ticket."
+    },
+    {
+      "id": "10",
+      "sequence_number": "10",
+      "ticket_id": "1",
+      "sender": "telegram:chat:-1003403",
+      "recipient": "workflow-engine",
+      "type": "answer",
+      "payload": {
+        "answer": "Trim surrounding whitespace.",
+        "provider": "telegram",
+        "updateId": "34202",
+        "questionId": "1",
+        "replyToMessageId": "34102"
+      },
+      "handoff_brief": "Trim surrounding whitespace."
+    },
+    {
+      "id": "11",
+      "sequence_number": "11",
+      "ticket_id": "1",
+      "sender": "agent:3",
+      "recipient": "system:ticket-stream",
+      "type": "system",
+      "payload": {
+        "runId": "1",
+        "action": "update_ticket",
+        "agentId": "3",
+        "ticketId": "1",
+        "idempotencyKey": "impl-done-fp1"
+      },
+      "handoff_brief": null
+    },
+    {
+      "id": "12",
+      "sequence_number": "12",
+      "ticket_id": "1",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "type": "system",
+      "payload": {
+        "kind": "openclaw_invocation_result",
+        "state": "completed",
+        "usage": {
+          "input": 7218,
+          "total": 78575,
+          "output": 1885,
+          "cacheRead": 69472,
+          "cacheWrite": 0,
+          "computedCost": "0"
+        },
+        "output": {
+          "events": [],
+          "artifact": {},
+          "handoff_brief": "First implementation pass complete for DMO-1. Created greeter.mjs and greeter.test.mjs in the run workspace using only Node.js built-ins. Per the upstream answer, surrounding name whitespace is trimmed. Implemented: --name Ada prints \"Hello, Ada!\\n\"; missing/empty --name and unknown options write a stderr message and exit 2; node --test greeter.test.mjs passes (5/5). DELIBERATE MISS: --shout is NOT supported in this pass — it is rejected as an unknown option (exit 2), so the tester should honestly reject this pass. Correction pass will add --shout (HELLO, ADA!) after rejection. Ticket marked done."
+        },
+        "version": 1,
+        "attempts": 1,
+        "completion": {
+          "model": "moonshotai/kimi-k3",
+          "status": "stop",
+          "exitCode": 0,
+          "provider": "openrouter",
+          "sessionId": "orbitflow-681b753e58704359c0700e04948cb21d"
+        },
+        "costEventId": "-535316032202336218",
+        "invocationKey": "sha256:876dd31855fd",
+        "requestFingerprint": "12f7c6c449270758b3b29cdaff8b5e4d81ba1f302987b768e6cc42dbae78560f"
+      },
+      "handoff_brief": "First implementation pass complete for DMO-1. Created greeter.mjs and greeter.test.mjs in the run workspace using only Node.js built-ins. Per the upstream answer, surrounding name whitespace is trimmed. Implemented: --name Ada prints \"Hello, Ada!\\n\"; missing/empty --name and unknown options write a stderr message and exit 2; node --test greeter.test.mjs passes (5/5). DELIBERATE MISS: --shout is NOT supported in this pass — it is rejected as an unknown option (exit 2), so the tester should honestly reject this pass. Correction pass will add --shout (HELLO, ADA!) after rejection. Ticket marked done."
+    },
+    {
+      "id": "13",
+      "sequence_number": "13",
+      "ticket_id": "1",
+      "sender": "agent:3",
+      "recipient": "workflow-engine",
+      "type": "output",
+      "payload": {
+        "output": {
+          "events": [],
+          "artifact": {},
+          "handoff_brief": "First implementation pass complete for DMO-1. Created greeter.mjs and greeter.test.mjs in the run workspace using only Node.js built-ins. Per the upstream answer, surrounding name whitespace is trimmed. Implemented: --name Ada prints \"Hello, Ada!\\n\"; missing/empty --name and unknown options write a stderr message and exit 2; node --test greeter.test.mjs passes (5/5). DELIBERATE MISS: --shout is NOT supported in this pass — it is rejected as an unknown option (exit 2), so the tester should honestly reject this pass. Correction pass will add --shout (HELLO, ADA!) after rejection. Ticket marked done."
+        },
+        "sessionId": "orbitflow-session-1e09a0543a8e0f04",
+        "dispatchId": "4",
+        "dispatchGeneration": "1"
+      },
+      "handoff_brief": "First implementation pass complete for DMO-1. Created greeter.mjs and greeter.test.mjs in the run workspace using only Node.js built-ins. Per the upstream answer, surrounding name whitespace is trimmed. Implemented: --name Ada prints \"Hello, Ada!\\n\"; missing/empty --name and unknown options write a stderr message and exit 2; node --test greeter.test.mjs passes (5/5). DELIBERATE MISS: --shout is NOT supported in this pass — it is rejected as an unknown option (exit 2), so the tester should honestly reject this pass. Correction pass will add --shout (HELLO, ADA!) after rejection. Ticket marked done."
+    },
+    {
+      "id": "14",
+      "sequence_number": "14",
+      "ticket_id": "1",
+      "sender": "agent:4",
+      "recipient": "system:ticket-stream",
+      "type": "system",
+      "payload": {
+        "runId": "1",
+        "action": "update_ticket",
+        "agentId": "4",
+        "ticketId": "1",
+        "idempotencyKey": "test-reopen-t1a"
+      },
+      "handoff_brief": null
+    },
+    {
+      "id": "15",
+      "sequence_number": "15",
+      "ticket_id": "1",
+      "sender": "runtime:openclaw",
+      "recipient": "workflow-engine",
+      "type": "system",
+      "payload": {
+        "code": "openclaw_malformed_output",
+        "kind": "openclaw_invocation_error",
+        "state": "failed",
+        "agentId": "4",
+        "details": {},
+        "message": "Agent final output is not strict JSON",
+        "version": 1,
+        "attempts": 1,
+        "failedAt": "2026-08-13T17:26:20.483Z",
+        "costEventId": "-8824971927511165663",
+        "openclawRef": "orbitflow-4",
+        "invocationKey": "sha256:fa7899361c18",
+        "requestFingerprint": "5b43473652b9933e704d4aa4baf801ca98f5d3e97f8faf0a3edc822e060eb0d7"
+      },
+      "handoff_brief": null
+    },
+    {
+      "id": "16",
+      "sequence_number": "16",
+      "ticket_id": null,
+      "sender": "system:workflow-engine",
+      "recipient": "system:operators",
+      "type": "system",
+      "payload": {
+        "code": "runtime_dispatch_failed",
+        "message": "Agent final output is not strict JSON"
+      },
+      "handoff_brief": null
+    },
+    {
+      "id": "2",
+      "sequence_number": "2",
+      "ticket_id": null,
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "type": "system",
+      "payload": {
+        "kind": "openclaw_invocation_result",
+        "state": "completed",
+        "usage": {
+          "input": 5100,
+          "total": 5468,
+          "output": 368,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "computedCost": "0"
+        },
+        "output": {
+          "events": [],
+          "artifact": {
+            "intake": {
+              "spec": {
+                "objective": "Build the documented dependency-free Node.js greeting CLI consisting of greeter.mjs and greeter.test.mjs, delivered via exactly one implementation ticket, with a deliberate two-pass workflow: first pass omits --shout so the tester honestly rejects it, then a correction adds --shout and passes every criterion. Before implementation, the worker must ask whether surrounding name whitespace should be preserved or trimmed.",
+                "constraints": [
+                  "dependency-free: only Node.js built-ins may be used",
+                  "exactly one implementation ticket must be created",
+                  "first pass must deliberately omit --shout; correction must add it"
+                ],
+                "acceptanceCriteria": [
+                  "greeter.mjs and greeter.test.mjs exist and use only Node built-in modules (no external dependencies)",
+                  "The CLI requires --name and rejects missing or invalid input with exit code 2",
+                  "The CLI supports --shout to produce shouted output",
+                  "node --test greeter.test.mjs passes after the correction",
+                  "The first implementation pass deliberately omits --shout so the tester rejects it, and the correction adds --shout and passes every criterion",
+                  "Exactly one implementation ticket is created",
+                  "The worker asks whether surrounding name whitespace should be preserved or trimmed before implementation"
+                ]
+              },
+              "status": "ready"
+            }
+          },
+          "handoff_brief": "Intake complete. Spec: dependency-free Node.js greeting CLI (greeter.mjs + greeter.test.mjs). Requires --name, supports --shout, invalid input exits 2, only Node built-ins, node --test greeter.test.mjs must pass. Workflow requires exactly one implementation ticket; before implementing, worker must ask whether surrounding name whitespace is preserved or trimmed; first pass deliberately omits --shout so tester rejects it; correction adds --shout and passes all criteria."
+        },
+        "version": 1,
+        "attempts": 1,
+        "completion": {
+          "model": "moonshotai/kimi-k3",
+          "status": "stop",
+          "exitCode": 0,
+          "provider": "openrouter",
+          "sessionId": "orbitflow-7c6b3b2e7b7cfd1fe9feb7b6becb0809"
+        },
+        "costEventId": "-2660187270836707581",
+        "invocationKey": "sha256:a4eae23a823c",
+        "requestFingerprint": "a240003669c9a7d72b9cfde951d86a511af32f09d43de604376b62484ca84cad"
+      },
+      "handoff_brief": "Intake complete. Spec: dependency-free Node.js greeting CLI (greeter.mjs + greeter.test.mjs). Requires --name, supports --shout, invalid input exits 2, only Node built-ins, node --test greeter.test.mjs must pass. Workflow requires exactly one implementation ticket; before implementing, worker must ask whether surrounding name whitespace is preserved or trimmed; first pass deliberately omits --shout so tester rejects it; correction adds --shout and passes all criteria."
+    },
+    {
+      "id": "3",
+      "sequence_number": "3",
+      "ticket_id": null,
+      "sender": "agent:1",
+      "recipient": "workflow-engine",
+      "type": "output",
+      "payload": {
+        "output": {
+          "events": [],
+          "artifact": {
+            "intake": {
+              "spec": {
+                "objective": "Build the documented dependency-free Node.js greeting CLI consisting of greeter.mjs and greeter.test.mjs, delivered via exactly one implementation ticket, with a deliberate two-pass workflow: first pass omits --shout so the tester honestly rejects it, then a correction adds --shout and passes every criterion. Before implementation, the worker must ask whether surrounding name whitespace should be preserved or trimmed.",
+                "constraints": [
+                  "dependency-free: only Node.js built-ins may be used",
+                  "exactly one implementation ticket must be created",
+                  "first pass must deliberately omit --shout; correction must add it"
+                ],
+                "acceptanceCriteria": [
+                  "greeter.mjs and greeter.test.mjs exist and use only Node built-in modules (no external dependencies)",
+                  "The CLI requires --name and rejects missing or invalid input with exit code 2",
+                  "The CLI supports --shout to produce shouted output",
+                  "node --test greeter.test.mjs passes after the correction",
+                  "The first implementation pass deliberately omits --shout so the tester rejects it, and the correction adds --shout and passes every criterion",
+                  "Exactly one implementation ticket is created",
+                  "The worker asks whether surrounding name whitespace should be preserved or trimmed before implementation"
+                ]
+              },
+              "status": "ready"
+            }
+          },
+          "handoff_brief": "Intake complete. Spec: dependency-free Node.js greeting CLI (greeter.mjs + greeter.test.mjs). Requires --name, supports --shout, invalid input exits 2, only Node built-ins, node --test greeter.test.mjs must pass. Workflow requires exactly one implementation ticket; before implementing, worker must ask whether surrounding name whitespace is preserved or trimmed; first pass deliberately omits --shout so tester rejects it; correction adds --shout and passes all criteria."
+        },
+        "sessionId": "orbitflow-session-1095e179520f19e7",
+        "dispatchId": "1",
+        "dispatchGeneration": "1"
+      },
+      "handoff_brief": "Intake complete. Spec: dependency-free Node.js greeting CLI (greeter.mjs + greeter.test.mjs). Requires --name, supports --shout, invalid input exits 2, only Node built-ins, node --test greeter.test.mjs must pass. Workflow requires exactly one implementation ticket; before implementing, worker must ask whether surrounding name whitespace is preserved or trimmed; first pass deliberately omits --shout so tester rejects it; correction adds --shout and passes all criteria."
+    },
+    {
+      "id": "4",
+      "sequence_number": "4",
+      "ticket_id": "1",
+      "sender": "agent:2",
+      "recipient": "system:ticket-stream",
+      "type": "system",
+      "payload": {
+        "runId": "1",
+        "action": "create_ticket",
+        "agentId": "2",
+        "ticketId": "1",
+        "idempotencyKey": "fact34-planner-create-2"
+      },
+      "handoff_brief": null
+    },
+    {
+      "id": "5",
+      "sequence_number": "5",
+      "ticket_id": null,
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "type": "system",
+      "payload": {
+        "kind": "openclaw_invocation_result",
+        "state": "completed",
+        "usage": {
+          "input": 9662,
+          "total": 12215,
+          "output": 505,
+          "cacheRead": 2048,
+          "cacheWrite": 0,
+          "computedCost": "0"
+        },
+        "output": {
+          "events": [
+            {
+              "type": "ticket_created",
+              "ticketId": "1",
+              "identifier": "DMO-1",
+              "idempotencyKey": "fact34-planner-create-2"
+            }
+          ],
+          "artifact": {
+            "title": "Build a dependency-free greeting CLI",
+            "status": "todo",
+            "priority": 3,
+            "ticketId": "1",
+            "identifier": "DMO-1"
+          },
+          "handoff_brief": "Created exactly one implementation ticket DMO-1: Build a dependency-free greeting CLI. The worker must first ask whether surrounding name whitespace should be preserved or trimmed. First pass: implement default greeting and invalid-input handling (exit 2), deliberately omit --shout, and state that miss in the handoff so the tester honestly rejects it. Correction pass: add --shout support so node greeter.mjs --name Ada --shout prints HELLO, ADA! and node --test greeter.test.mjs passes. Only Node.js built-ins allowed."
+        },
+        "version": 1,
+        "attempts": 1,
+        "completion": {
+          "model": "moonshotai/kimi-k3",
+          "status": "stop",
+          "exitCode": 0,
+          "provider": "openrouter",
+          "sessionId": "orbitflow-69f9f3d454e22c901eb88c54bb4f8514"
+        },
+        "costEventId": "-7072560586183537596",
+        "invocationKey": "sha256:6226c8618fe5",
+        "requestFingerprint": "ece7a9379a320664405a68f3a95b6075db3ba90066ddf452fd568dab8aec90a0"
+      },
+      "handoff_brief": "Created exactly one implementation ticket DMO-1: Build a dependency-free greeting CLI. The worker must first ask whether surrounding name whitespace should be preserved or trimmed. First pass: implement default greeting and invalid-input handling (exit 2), deliberately omit --shout, and state that miss in the handoff so the tester honestly rejects it. Correction pass: add --shout support so node greeter.mjs --name Ada --shout prints HELLO, ADA! and node --test greeter.test.mjs passes. Only Node.js built-ins allowed."
+    },
+    {
+      "id": "6",
+      "sequence_number": "6",
+      "ticket_id": null,
+      "sender": "agent:2",
+      "recipient": "workflow-engine",
+      "type": "output",
+      "payload": {
+        "output": {
+          "events": [
+            {
+              "type": "ticket_created",
+              "ticketId": "1",
+              "identifier": "DMO-1",
+              "idempotencyKey": "fact34-planner-create-2"
+            }
+          ],
+          "artifact": {
+            "title": "Build a dependency-free greeting CLI",
+            "status": "todo",
+            "priority": 3,
+            "ticketId": "1",
+            "identifier": "DMO-1"
+          },
+          "handoff_brief": "Created exactly one implementation ticket DMO-1: Build a dependency-free greeting CLI. The worker must first ask whether surrounding name whitespace should be preserved or trimmed. First pass: implement default greeting and invalid-input handling (exit 2), deliberately omit --shout, and state that miss in the handoff so the tester honestly rejects it. Correction pass: add --shout support so node greeter.mjs --name Ada --shout prints HELLO, ADA! and node --test greeter.test.mjs passes. Only Node.js built-ins allowed."
+        },
+        "sessionId": "orbitflow-session-b079a7db1a7399dc",
+        "dispatchId": "2",
+        "dispatchGeneration": "1"
+      },
+      "handoff_brief": "Created exactly one implementation ticket DMO-1: Build a dependency-free greeting CLI. The worker must first ask whether surrounding name whitespace should be preserved or trimmed. First pass: implement default greeting and invalid-input handling (exit 2), deliberately omit --shout, and state that miss in the handoff so the tester honestly rejects it. Correction pass: add --shout support so node greeter.mjs --name Ada --shout prints HELLO, ADA! and node --test greeter.test.mjs passes. Only Node.js built-ins allowed."
+    },
+    {
+      "id": "7",
+      "sequence_number": "7",
+      "ticket_id": "1",
+      "sender": "runtime:openclaw",
+      "recipient": "runtime:openclaw-replay",
+      "type": "system",
+      "payload": {
+        "kind": "openclaw_invocation_result",
+        "state": "completed",
+        "usage": {
+          "input": 3367,
+          "total": 6316,
+          "output": 69,
+          "cacheRead": 2880,
+          "cacheWrite": 0,
+          "computedCost": "0"
+        },
+        "output": {
+          "events": [
+            {
+              "type": "question",
+              "question": "Should --name preserve surrounding whitespace or trim it?"
+            }
+          ],
+          "artifact": {},
+          "handoff_brief": "Ticket DMO-1 requires a human decision before implementation: whether --name should preserve surrounding whitespace or trim it. Awaiting answer before starting the coding workspace."
+        },
+        "version": 1,
+        "attempts": 1,
+        "completion": {
+          "model": "moonshotai/kimi-k3",
+          "status": "stop",
+          "exitCode": 0,
+          "provider": "openrouter",
+          "sessionId": "orbitflow-681b753e58704359c0700e04948cb21d"
+        },
+        "costEventId": "-4407626695909323248",
+        "invocationKey": "sha256:3d2b09209834",
+        "requestFingerprint": "954c472d9007d9af76843d03f1076eea6f225af56a21677e17b927b9f626ac4b"
+      },
+      "handoff_brief": "Ticket DMO-1 requires a human decision before implementation: whether --name should preserve surrounding whitespace or trim it. Awaiting answer before starting the coding workspace."
+    },
+    {
+      "id": "8",
+      "sequence_number": "8",
+      "ticket_id": "1",
+      "sender": "agent:3",
+      "recipient": "workflow-engine",
+      "type": "question",
+      "payload": {
+        "question": "Should --name preserve surrounding whitespace or trim it?",
+        "sessionId": "orbitflow-session-4829947da91b645d",
+        "dispatchId": "3",
+        "runtimeEvent": {
+          "type": "question",
+          "question": "Should --name preserve surrounding whitespace or trim it?"
+        },
+        "dispatchGeneration": "1"
+      },
+      "handoff_brief": "Should --name preserve surrounding whitespace or trim it?"
+    },
+    {
+      "id": "9",
+      "sequence_number": "9",
+      "ticket_id": "1",
+      "sender": "system:workflow-engine",
+      "recipient": "telegram:chat:-1003403",
+      "type": "channel_outbound",
+      "payload": {
+        "text": "Should --name preserve surrounding whitespace or trim it?",
+        "chatId": "-1003403",
+        "provider": "telegram",
+        "questionId": "1"
+      },
+      "handoff_brief": "Should --name preserve surrounding whitespace or trim it?"
+    }
+  ],
+  "tickets": [
+    {
+      "id": "1",
+      "identifier": "DMO-1",
+      "title": "Build a dependency-free greeting CLI",
+      "status": "todo",
+      "assignee_agent_id": "4"
+    }
+  ],
+  "questions": [
+    {
+      "id": "1",
+      "ticket_id": "1",
+      "originating_dispatch_id": "3",
+      "question_message_id": "8",
+      "answer_message_id": "10",
+      "outbound_message_id": "9",
+      "kind": "question",
+      "boundary": "worker",
+      "route": "human-via-channel",
+      "question_text": "Should --name preserve surrounding whitespace or trim it?",
+      "status": "answered"
+    }
+  ],
+  "dispatches": [
+    {
+      "id": "1",
+      "node_id": "orchestrator",
+      "agent_id": "1",
+      "ticket_id": null,
+      "source_message_id": "1",
+      "status": "completed",
+      "output_message_id": "3"
+    },
+    {
+      "id": "2",
+      "node_id": "planner",
+      "agent_id": "2",
+      "ticket_id": null,
+      "source_message_id": "3",
+      "status": "completed",
+      "output_message_id": "6"
+    },
+    {
+      "id": "3",
+      "node_id": "implement",
+      "agent_id": "3",
+      "ticket_id": "1",
+      "source_message_id": "6",
+      "status": "completed",
+      "output_message_id": "8"
+    },
+    {
+      "id": "4",
+      "node_id": "implement",
+      "agent_id": "3",
+      "ticket_id": "1",
+      "source_message_id": "10",
+      "status": "completed",
+      "output_message_id": "13"
+    },
+    {
+      "id": "5",
+      "node_id": "test",
+      "agent_id": "4",
+      "ticket_id": "1",
+      "source_message_id": "13",
+      "status": "failed",
+      "output_message_id": null
+    }
+  ],
+  "costEvents": [
+    {
+      "id": "-2660187270836707581",
+      "agent_id": "1",
+      "model": "moonshotai/kimi-k3",
+      "tokens_in": "5100",
+      "tokens_out": "368",
+      "computed_cost": "0.00000000"
+    },
+    {
+      "id": "-4407626695909323248",
+      "agent_id": "3",
+      "model": "moonshotai/kimi-k3",
+      "tokens_in": "3367",
+      "tokens_out": "69",
+      "computed_cost": "0.00000000"
+    },
+    {
+      "id": "-535316032202336218",
+      "agent_id": "3",
+      "model": "moonshotai/kimi-k3",
+      "tokens_in": "7218",
+      "tokens_out": "1885",
+      "computed_cost": "0.00000000"
+    },
+    {
+      "id": "-7072560586183537596",
+      "agent_id": "2",
+      "model": "moonshotai/kimi-k3",
+      "tokens_in": "9662",
+      "tokens_out": "505",
+      "computed_cost": "0.00000000"
+    },
+    {
+      "id": "-8824971927511165663",
+      "agent_id": "4",
+      "model": "orbitflow-invocation:fa7899361c18",
+      "tokens_in": "0",
+      "tokens_out": "0",
+      "computed_cost": "0.00000000"
+    },
+    {
+      "id": "1",
+      "agent_id": "3",
+      "model": "openrouter/moonshotai/kimi-k3",
+      "tokens_in": "12995",
+      "tokens_out": "1216",
+      "computed_cost": "0.07148640"
+    }
+  ],
+  "invocationReceipts": [
+    {
+      "invocation_key": "sha256:a4eae23a823c",
+      "attempts": 1
+    },
+    {
+      "invocation_key": "sha256:6226c8618fe5",
+      "attempts": 1
+    },
+    {
+      "invocation_key": "sha256:3d2b09209834",
+      "attempts": 1
+    },
+    {
+      "invocation_key": "sha256:876dd31855fd",
+      "attempts": 1
+    }
+  ],
+  "limitation": {
+    "name": "AssertionError",
+    "message": "Agent final output is not strict JSON\n+ actual - expected\n\n+ 'failed'\n- 'completed'\n"
+  }
+}

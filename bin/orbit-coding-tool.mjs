@@ -16,7 +16,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 
 let pool;
 try {
-  const request = await readRequest(process.stdin);
+  const request = await readRequest(process.stdin, process.argv.slice(2));
   const databaseUrl = requiredEnv("DATABASE_URL");
   const workspaceRoot = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
   pool = new Pool({ connectionString: databaseUrl, application_name: "orbit-coding-tool" });
@@ -68,7 +68,25 @@ try {
   }
 }
 
-async function readRequest(stream) {
+async function readRequest(stream, arguments_) {
+  if (arguments_.length !== 0) {
+    if (arguments_.length !== 2 || !["start_run_workspace", "delegate_coding_task"].includes(arguments_[0])) {
+      throw new InvalidRequestError("usage: orbit-coding-tool <start_run_workspace|delegate_coding_task> <json-input>");
+    }
+    if (Buffer.byteLength(arguments_[1]) > MAX_REQUEST_BYTES) {
+      throw new InvalidRequestError("coding-tool request is too large");
+    }
+    let input;
+    try {
+      input = JSON.parse(arguments_[1]);
+    } catch {
+      throw new InvalidRequestError("coding-tool json-input must be valid JSON");
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new InvalidRequestError("coding-tool json-input must be one JSON object");
+    }
+    return { ...input, command: arguments_[0] };
+  }
   let contents = "";
   for await (const chunk of stream) {
     contents += chunk;

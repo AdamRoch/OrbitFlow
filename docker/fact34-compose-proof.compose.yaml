@@ -1,0 +1,36 @@
+services:
+  proof-provider:
+    build:
+      context: .
+      target: app
+    command: ["node", "scripts/fact-34-openclaw-proof-provider.mjs"]
+    environment:
+      PORT: "18080"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18080/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [provider]
+
+  openclaw:
+    environment:
+      ORBITFLOW_OPENCLAW_BASE_URL: http://proof-provider:18080/v1
+    depends_on:
+      proof-provider:
+        condition: service_healthy
+
+  coding-executor:
+    environment:
+      ORBITFLOW_OPENCODE_BINARY: /app/scripts/fact-34-isolation-opencode.mjs
+
+  tool-broker:
+    environment:
+      ORBITFLOW_OPENCODE_MODEL: proof/isolation-model
+
+  engine:
+    environment:
+      ORBITFLOW_OPENCLAW_MODULE: /app/test/runtime/fixtures/fake-openclaw.mjs
+      ORBITFLOW_ENGINE_POLL_INTERVAL_MS: "25"
+    volumes:
+      - ./test/runtime/fixtures/fact-34-plan.json:/var/lib/orbitflow/runtime/state/fake-plan.json:ro

@@ -10,6 +10,13 @@ A worker `question` completes its current dispatch turn and pauses only its
 changes that same row back to running and creates exactly one continuation for
 the originating node. Fan-out siblings use different thread rows and continue.
 
+On the production OpenClaw path, a worker raises that question through the
+fixed runtime output envelope. The output must have an empty `artifact`, exactly
+one `events` entry, and no fields on that event other than `type: "question"`
+and a non-blank `question` of at most 12,000 characters. An answer turn cannot
+raise another question. Invalid shapes fail closed as malformed runtime output
+instead of discarding an artifact or another event.
+
 The node snapshot selects one accepted route:
 
 * `agent` creates a normal durable dispatch to the configured agent only when a

@@ -4,6 +4,7 @@ import pg from "pg";
 import { startWorkflowEngine } from "../lib/postgres/workflow-engine.ts";
 import { OpenClawEngineAdapter } from "../lib/runtime/engine-adapter.ts";
 import { OpenClawRuntimeAdapter } from "../lib/runtime/openclaw.ts";
+import { createProductionWorkspaceTools } from "../lib/runtime/workspace-tools.ts";
 
 const { Pool } = pg;
 
@@ -34,21 +35,6 @@ const pool = new Pool({
   max: positiveIntegerEnvironment("ORBITFLOW_ENGINE_DB_POOL_SIZE", 12),
 });
 
-// The child allowlist remains explicit. The OpenClaw CLI gets gateway
-// connection data; only its intentionally invoked coding tool gets the
-// provider key and attributed run/workspace variables.
-process.env.ORBITFLOW_PLATFORM_DATABASE_URL = databaseUrl;
-process.env.ORBITFLOW_WORKSPACE_ROOT ??= "/var/lib/orbitflow/run-workspaces";
-const allowedExecEnvironment = [
-  "DATABASE_URL",
-  "OPENROUTER_API_KEY",
-  "ORBITFLOW_AGENT_ID",
-  "ORBITFLOW_OPENCODE_BINARY",
-  "ORBITFLOW_OPENCODE_MODEL",
-  "ORBITFLOW_PLATFORM_DATABASE_URL",
-  "ORBITFLOW_RUN_ID",
-  "ORBITFLOW_WORKSPACE_ROOT",
-];
 const gatewayEnvironment = {
   OPENCLAW_GATEWAY_URL: requiredEnvironment("OPENCLAW_GATEWAY_URL"),
   OPENCLAW_GATEWAY_TOKEN: requiredEnvironment("OPENCLAW_GATEWAY_TOKEN"),
@@ -60,10 +46,13 @@ const openclaw = new OpenClawRuntimeAdapter({
   openClawCommand,
   openClawCommandArguments: openClawArguments,
   wakeTimeoutMs: positiveIntegerEnvironment("ORBITFLOW_OPENCLAW_WAKE_TIMEOUT_MS", 300_000),
-  allowedExecEnvironment,
   gatewayEnvironment,
 });
-const runtime = new OpenClawEngineAdapter({ pool, openclaw });
+const runtime = new OpenClawEngineAdapter({
+  pool,
+  openclaw,
+  workspaceTools: createProductionWorkspaceTools(),
+});
 
 let state: "starting" | "operational" | "failed" | "stopping" = "starting";
 let failure = "";

@@ -35,7 +35,14 @@
     }
   },
   "tools": {
-    "profile": "minimal"
+    "profile": "minimal",
+    "allow": ["exec"],
+    "exec": {
+      "host": "gateway",
+      "security": "allowlist",
+      "ask": "off",
+      "strictInlineEval": true
+    }
   },
   "channels": {
     "telegram": {

@@ -13,6 +13,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
+    networks: [control]
 
   migrate:
     build:
@@ -24,6 +25,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks: [control]
 
   app:
     build:
@@ -47,22 +49,80 @@ services:
       timeout: 3s
       retries: 30
       start_period: 10s
+    networks: [control]
+
+  coding-executor:
+    build:
+      context: .
+      target: coding-executor
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
+      ORBITFLOW_CODING_EXECUTOR_SOCKET: /run/orbitflow-executor/executor.sock
+      ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
+    volumes:
+      - run-workspaces:/var/lib/orbitflow/run-workspaces
+      - coding-executor-ipc:/run/orbitflow-executor
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/orbitflow-executor/executor.sock"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks: [provider]
+
+  tool-broker:
+    build:
+      context: .
+      target: tool-broker
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      ORBITFLOW_AGENT_WORKSPACE_ROOT: /var/lib/orbitflow/runtime/workspaces
+      ORBITFLOW_CODING_EXECUTOR_SOCKET: /run/orbitflow-executor/executor.sock
+      ORBITFLOW_TOOL_BROKER_SOCKET: /run/orbitflow-broker/tool.sock
+      ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
+    volumes:
+      - engine-data:/var/lib/orbitflow/runtime
+      - run-workspaces:/var/lib/orbitflow/run-workspaces
+      - tool-broker-ipc:/run/orbitflow-broker
+      - coding-executor-ipc:/run/orbitflow-executor
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      coding-executor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/orbitflow-broker/tool.sock"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks: [control]
 
   openclaw:
     build:
       context: .
-      dockerfile: docker/openclaw/Dockerfile
+      target: openclaw-gateway
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       OPENCLAW_DISABLE_BONJOUR: "1"
+      ORBITFLOW_AGENT_WORKSPACE_ROOT: /var/lib/orbitflow/runtime/workspaces
+      ORBITFLOW_TOOL_BROKER_SOCKET: /run/orbitflow-broker/tool.sock
     volumes:
+      - engine-data:/var/lib/orbitflow/runtime
       - openclaw-state:/home/node/.openclaw
+      - tool-broker-ipc:/run/orbitflow-broker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      tool-broker:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18789/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 2s
       timeout: 3s
       retries: 30
       start_period: 15s
+    networks: [control, provider]
 
   engine:
     build:
@@ -71,11 +131,11 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
       OPENCLAW_GATEWAY_URL: ws://openclaw:18789
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       ORBITFLOW_RUNTIME_ROOT: /var/lib/orbitflow/runtime
       ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
     volumes:
-      - engine-data:/var/lib/orbitflow
+      - engine-data:/var/lib/orbitflow/runtime
+      - run-workspaces:/var/lib/orbitflow/run-workspaces
       - openclaw-state:/run/openclaw-state:ro
     ports:
       - "127.0.0.1:${ORBITFACTORY_ENGINE_HOST_PORT:?set ORBITFACTORY_ENGINE_HOST_PORT in .env}:3001"
@@ -92,6 +152,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
+    networks: [control]
 
   telegram:
     profiles: ["telegram"]
@@ -105,9 +166,11 @@ services:
     depends_on:
       engine:
         condition: service_healthy
+    networks: [control]
 
-  # This is deliberately opt-in: a provider key belongs only to an ephemeral
-  # coding delegation, never to the long-lived engine readiness process.
+  # This standalone proof boundary is deliberately opt-in. Production provider
+  # credentials are scoped to openclaw and coding-executor; engine and
+  # tool-broker receive none.
   coding-adapter:
     profiles: ["coding-adapter"]
     build:
@@ -123,9 +186,17 @@ services:
     depends_on:
       engine:
         condition: service_healthy
+    networks: [control, provider]
+
+networks:
+  control: {}
+  provider: {}
 
 volumes:
   app-data:
   engine-data:
+  run-workspaces:
   openclaw-state:
   postgres-data:
+  tool-broker-ipc:
+  coding-executor-ipc:

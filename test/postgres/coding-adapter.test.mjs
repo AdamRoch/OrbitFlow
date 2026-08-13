@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import {
   access,
+  chmod,
   cp,
   lstat,
   mkdtemp,
+  mkdir,
   readdir,
   readFile,
   realpath,
@@ -23,6 +25,7 @@ import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import {
   createCodingTool,
   createCostEventStore,
+  createExecutionIdentityStore,
   createRunWorkspaceService,
 } from "../../coding-adapter/src/index.js";
 import { inspectProcessGroup } from "../../coding-adapter/src/processGroup.js";
@@ -59,7 +62,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     const cleanMigration = await migratePostgres({ databaseUrl, log: () => {} });
     assert.deepEqual(cleanMigration.applied, await committedMigrationFiles());
     const root = await realpath(configuredRoot);
-    const fixtures = await seedFixtures(pool, 16);
+    const fixtures = await seedFixtures(pool, 20);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
     const costEventStore = createCostEventStore({ pool });
     const adapterOptions = {
@@ -416,6 +419,137 @@ test("FACT-12 production coding-tool contract", async (t) => {
         [runId],
       );
       assert.equal(persisted.rows[0].count, 0);
+    });
+
+    await t.test("permanently reserves identities across cleanup and allocation uncertainty", async (identityTest) => {
+      if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+        identityTest.skip("POSIX identities are required");
+        return;
+      }
+      const liveRun = fixtures.runIds[16];
+      const blockedRun = fixtures.runIds[17];
+      const failedRun = fixtures.runIds[18];
+      const failedAliasRun = fixtures.runIds[19];
+      const currentUid = process.getuid();
+      const currentGid = process.getgid();
+      const allocatedUid = currentUid === 0 ? 20_000 : currentUid;
+      const allocatedGid = currentUid === 0 ? 20_000 : currentGid;
+      let reportDeletionJoin;
+      const deletionJoining = new Promise((resolve) => {
+        reportDeletionJoin = resolve;
+      });
+      const identityStore = createExecutionIdentityStore({
+        workspaceRoot: configuredRoot,
+        uidMin: allocatedUid,
+        uidCount: 1,
+        gidForUid: () => allocatedGid,
+        ...(currentUid === 0
+          ? {}
+          : { applyOwnership: async (workspace) => chmod(workspace, 0o700) }),
+      });
+      const lifecycleService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: configuredRoot,
+        async beforeDelegationJoin({ activeCount }) {
+          assert.equal(activeCount, 1);
+          reportDeletionJoin();
+        },
+      });
+
+      const liveWorkspace = await lifecycleService.startRunWorkspace(liveRun);
+      const liveIdentity = await identityStore.ensure(liveRun, liveWorkspace);
+      const identityPath = path.join(identityStore.identityRoot, `uid-${liveIdentity.uid}.json`);
+      assert.equal(JSON.parse(await readFile(identityPath, "utf8")).state, "active");
+      const blockedWorkspace = await lifecycleService.startRunWorkspace(blockedRun);
+      await assert.rejects(
+        () => identityStore.ensure(blockedRun, blockedWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+
+      let releaseDelegation;
+      let reportAdmitted;
+      const admitted = new Promise((resolve) => {
+        reportAdmitted = resolve;
+      });
+      const holdDelegation = new Promise((resolve) => {
+        releaseDelegation = resolve;
+      });
+      const delegation = lifecycleService.authorityForRun(liveRun).withDelegation(
+        async ({ signal }) => {
+          reportAdmitted(signal);
+          await holdDelegation;
+        },
+      );
+      const deletionSignal = await admitted;
+      await pool.query("DELETE FROM workflow_runs WHERE id = $1", [liveRun]);
+      const deletion = lifecycleService.deleteRunWorkspace(liveRun);
+      await deletionJoining;
+      assert.equal(deletionSignal.aborted, true);
+      await assert.rejects(
+        () => identityStore.ensure(blockedRun, blockedWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+      releaseDelegation();
+      await delegation;
+      assert.equal(await deletion, true);
+      await access(identityPath);
+
+      const restartedStore = createExecutionIdentityStore({
+        workspaceRoot: configuredRoot,
+        uidMin: allocatedUid,
+        uidCount: 1,
+        gidForUid: () => allocatedGid,
+        ...(currentUid === 0
+          ? {}
+          : { applyOwnership: async (workspace) => chmod(workspace, 0o700) }),
+      });
+      await assert.rejects(
+        () => restartedStore.ensure(blockedRun, blockedWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+
+      const failureRoot = path.join(root, "identity-allocation-failure");
+      await mkdir(failureRoot, { mode: 0o700 });
+      const failureService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: failureRoot,
+      });
+      const failedWorkspace = await failureService.startRunWorkspace(failedRun);
+      const failedStore = createExecutionIdentityStore({
+        workspaceRoot: failureRoot,
+        uidMin: allocatedUid,
+        uidCount: 1,
+        gidForUid: () => allocatedGid,
+        async applyOwnership() {
+          throw new Error("injected ownership failure");
+        },
+      });
+      await assert.rejects(
+        () => failedStore.ensure(failedRun, failedWorkspace),
+        /injected ownership failure/,
+      );
+      const failedReservation = path.join(failedStore.identityRoot, `uid-${allocatedUid}.json`);
+      assert.equal(JSON.parse(await readFile(failedReservation, "utf8")).state, "reserved");
+      const failedAliasWorkspace = await failureService.startRunWorkspace(failedAliasRun);
+      const restartedFailedStore = createExecutionIdentityStore({
+        workspaceRoot: failureRoot,
+        uidMin: allocatedUid,
+        uidCount: 1,
+        gidForUid: () => allocatedGid,
+        ...(currentUid === 0
+          ? {}
+          : { applyOwnership: async (workspace) => chmod(workspace, 0o700) }),
+      });
+      await assert.rejects(
+        () => restartedFailedStore.ensure(failedRun, failedWorkspace),
+        (error) =>
+          error.code === "workspace_invalid" && /reservation is incomplete/.test(error.message),
+      );
+      await assert.rejects(
+        () => restartedFailedStore.ensure(failedAliasRun, failedAliasWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+      await access(failedReservation);
     });
 
     await t.test("retains renamed and substituted paths during run-deletion cleanup", async () => {
