@@ -53,7 +53,6 @@ const executionIdentityStore = createExecutionIdentityStore({
 const workspaceService = createRunWorkspaceService({
   pool,
   workspaceRoot: WORKSPACE_ROOT,
-  afterWorkspaceRemoved: executionIdentityStore.retire,
 });
 const costEventStore = createCostEventStore({ pool });
 

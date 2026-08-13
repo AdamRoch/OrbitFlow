@@ -1,17 +1,20 @@
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   chown,
   lchown,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   realpath,
-  unlink,
-  writeFile,
+  rename,
 } from "node:fs/promises";
 import path from "node:path";
 import { WorkspaceError } from "./errors.js";
+
+const RECORD_VERSION = 2;
 
 export function createExecutionIdentityStore({
   workspaceRoot,
@@ -57,186 +60,179 @@ export function createExecutionIdentityStore({
     return serialize(async () => {
       await initialize();
       const runId = normalizeRunId(runIdValue);
-      const existing = await readIdentity(runId);
-      if (existing) return validateIdentity(existing, runId, workspace);
-
-      const used = new Set();
-      for (const entry of await readdir(identityRoot)) {
-        if (!/^run-[1-9][0-9]*\.json$/.test(entry)) continue;
-        const identity = parseIdentity(await readFile(path.join(identityRoot, entry), "utf8"));
-        validateAllocatedIdentity(identity);
-        if (entry !== `run-${identity.runId}.json` || used.has(identity.uid)) {
-          throw new WorkspaceError("coding execution identity allocation state is invalid");
+      const expectedWorkspace = await requireExpectedRunWorkspace(workspaceRoot, runId, workspace);
+      const allocations = await readAllocations(identityRoot);
+      const matching = allocations.filter((allocation) => allocation.record.runId === runId);
+      if (matching.length > 1) {
+        throw new WorkspaceError("coding execution run has conflicting permanent reservations");
+      }
+      if (matching[0]) {
+        if (matching[0].record.state !== "active") {
+          throw new WorkspaceError("coding execution identity reservation is incomplete");
         }
-        used.add(identity.uid);
+        return validateActiveIdentity(matching[0].record, runId, expectedWorkspace, {
+          uidMin,
+          uidCount,
+          gidForUid,
+        });
       }
 
+      const used = new Set(allocations.map((allocation) => allocation.record.uid));
       const start = Number(BigInt(runId) % BigInt(uidCount));
-      let uid = null;
       for (let offset = 0; offset < uidCount; offset += 1) {
-        const candidate = uidMin + ((start + offset) % uidCount);
-        if (!used.has(candidate)) {
-          uid = candidate;
-          break;
+        const uid = uidMin + ((start + offset) % uidCount);
+        if (used.has(uid)) continue;
+        const gid = gidForUid(uid);
+        if (!Number.isSafeInteger(gid) || gid < 1) {
+          throw new WorkspaceError("coding execution GID is invalid");
         }
-      }
-      if (uid === null) throw new WorkspaceError("coding execution identity pool is exhausted");
-      const gid = gidForUid(uid);
-      if (!Number.isSafeInteger(gid) || gid < 1) {
-        throw new WorkspaceError("coding execution GID is invalid");
-      }
+        const reservation = {
+          version: RECORD_VERSION,
+          state: "reserved",
+          runId,
+          workspace: expectedWorkspace,
+          uid,
+          gid,
+        };
+        const reservationPath = identityPath(identityRoot, uid);
+        try {
+          await writeDurableExclusive(reservationPath, reservation, identityRoot);
+        } catch (error) {
+          if (error?.code === "EEXIST") {
+            const competing = parseIdentity(await readFile(reservationPath, "utf8"));
+            validatePermanentRecord(competing);
+            if (competing.uid !== uid) {
+              throw new WorkspaceError("coding execution identity allocation state is invalid");
+            }
+            if (competing.runId === runId) {
+              throw new WorkspaceError("coding execution identity reservation already exists");
+            }
+            used.add(uid);
+            continue;
+          }
+          throw error;
+        }
 
-      const canonicalWorkspace = await requireExpectedWorkspace(runId, workspace);
-      await applyOwnership(canonicalWorkspace, uid, gid);
-      await chmod(canonicalWorkspace, 0o700);
-      const stat = await lstat(canonicalWorkspace);
-      const identity = {
-        version: 1,
-        runId,
-        workspace: canonicalWorkspace,
-        workspaceDevice: String(stat.dev),
-        workspaceInode: String(stat.ino),
-        uid,
-        gid,
-      };
-      if (stat.uid !== uid || stat.gid !== gid) {
-        throw new WorkspaceError("coding execution identity ownership was not applied");
+        await applyOwnership(expectedWorkspace, uid, gid);
+        await chmod(expectedWorkspace, 0o700);
+        const stat = await lstat(expectedWorkspace);
+        if (
+          !stat.isDirectory() ||
+          stat.isSymbolicLink() ||
+          stat.uid !== uid ||
+          stat.gid !== gid
+        ) {
+          throw new WorkspaceError("coding execution identity ownership was not applied");
+        }
+        const active = {
+          ...reservation,
+          state: "active",
+          workspaceDevice: String(stat.dev),
+          workspaceInode: String(stat.ino),
+        };
+        await replaceDurably(reservationPath, active, identityRoot);
+        return active;
       }
-      await writeFile(identityPath(runId), `${JSON.stringify(identity)}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      });
-      return identity;
+      throw new WorkspaceError("coding execution identity pool is exhausted");
     });
   }
 
   async function requireIdentity(runIdValue, workspace) {
     await initialize();
     const runId = normalizeRunId(runIdValue);
-    const identity = await readIdentity(runId);
-    if (!identity) throw new WorkspaceError("run workspace must be started before coding delegation");
-    return validateIdentity(identity, runId, workspace);
-  }
-
-  function retire(cleanup) {
-    return serialize(async () => {
-      await initialize();
-      validateCleanupProof(cleanup);
-      const identity = await readIdentity(cleanup.runId);
-      if (!identity) {
-        throw new WorkspaceError("coding execution identity is missing; retirement refused");
-      }
-      validateAllocatedIdentity(identity);
-      if (
-        identity.runId !== cleanup.runId ||
-        identity.workspace !== cleanup.workspace ||
-        identity.workspaceDevice !== cleanup.workspaceDevice ||
-        identity.workspaceInode !== cleanup.workspaceInode ||
-        identity.uid !== cleanup.uid ||
-        identity.gid !== cleanup.gid
-      ) {
-        throw new WorkspaceError("coding execution identity changed; retirement refused");
-      }
-      await unlink(identityPath(cleanup.runId));
+    const expectedWorkspace = await requireExpectedRunWorkspace(workspaceRoot, runId, workspace);
+    const matching = (await readAllocations(identityRoot))
+      .filter((allocation) => allocation.record.runId === runId);
+    if (matching.length !== 1 || matching[0].record.state !== "active") {
+      throw new WorkspaceError("run workspace has no active coding execution identity");
+    }
+    return validateActiveIdentity(matching[0].record, runId, expectedWorkspace, {
+      uidMin,
+      uidCount,
+      gidForUid,
     });
   }
 
-  async function validateIdentity(identity, runId, workspace) {
-    validateAllocatedIdentity(identity);
-    const canonicalWorkspace = await requireExpectedWorkspace(runId, workspace);
-    const stat = await lstat(canonicalWorkspace);
+  return Object.freeze({ ensure, require: requireIdentity, identityRoot });
+}
+
+async function readAllocations(identityRoot) {
+  const allocations = [];
+  const used = new Set();
+  for (const entry of await readdir(identityRoot)) {
+    const uidMatch = entry.match(/^uid-([1-9][0-9]*)\.json$/);
+    const legacyMatch = entry.match(/^run-([1-9][0-9]*)\.json$/);
+    if (!uidMatch && !legacyMatch) {
+      if (entry.endsWith(".json")) {
+        throw new WorkspaceError("coding execution identity allocation state is invalid");
+      }
+      continue;
+    }
+    const record = parseIdentity(await readFile(path.join(identityRoot, entry), "utf8"));
+    validatePermanentRecord(record);
     if (
-      identity.runId !== runId ||
-      identity.workspace !== canonicalWorkspace ||
-      identity.workspaceDevice !== String(stat.dev) ||
-      identity.workspaceInode !== String(stat.ino) ||
-      identity.uid < uidMin ||
-      identity.uid >= uidMin + uidCount ||
-      identity.gid !== gidForUid(identity.uid) ||
-      stat.uid !== identity.uid ||
-      stat.gid !== identity.gid
+      (uidMatch && Number(uidMatch[1]) !== record.uid) ||
+      (legacyMatch && legacyMatch[1] !== record.runId) ||
+      used.has(record.uid)
     ) {
-      throw new WorkspaceError("coding execution identity is invalid");
+      throw new WorkspaceError("coding execution identity allocation state is invalid");
     }
-    return identity;
+    used.add(record.uid);
+    allocations.push({ entry, record });
   }
-
-  async function requireExpectedWorkspace(runId, workspace) {
-    const expected = path.join(workspaceRoot, `run-${runId}`);
-    if (workspace !== expected || await realpath(workspace) !== expected) {
-      throw new WorkspaceError("coding execution workspace is invalid");
-    }
-    const stat = await lstat(expected);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new WorkspaceError("coding execution workspace is invalid");
-    }
-    return expected;
-  }
-
-  async function readIdentity(runId) {
-    try {
-      return parseIdentity(await readFile(identityPath(runId), "utf8"));
-    } catch (error) {
-      if (error?.code === "ENOENT") return null;
-      throw error;
-    }
-  }
-
-  function identityPath(runId) {
-    return path.join(identityRoot, `run-${runId}.json`);
-  }
-
-  return Object.freeze({ ensure, require: requireIdentity, retire, identityRoot });
+  return allocations;
 }
 
-function validateCleanupProof(value) {
-  const expected = [
-    "gid",
-    "runId",
-    "uid",
-    "workspace",
-    "workspaceDevice",
-    "workspaceId",
-    "workspaceInode",
-  ];
+async function validateActiveIdentity(record, runId, workspace, range) {
+  validatePermanentRecord(record);
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).sort().some((key, index) => key !== expected[index]) ||
-    Object.keys(value).length !== expected.length ||
-    !/^[1-9][0-9]*$/.test(value.runId ?? "") ||
-    typeof value.workspaceId !== "string" ||
-    value.workspaceId === "" ||
-    typeof value.workspace !== "string" ||
-    !path.isAbsolute(value.workspace) ||
-    !/^\d+$/.test(value.workspaceDevice ?? "") ||
-    !/^\d+$/.test(value.workspaceInode ?? "") ||
-    !Number.isSafeInteger(value.uid) ||
-    value.uid < 1 ||
-    !Number.isSafeInteger(value.gid) ||
-    value.gid < 1
+    record.state !== "active" ||
+    record.runId !== runId ||
+    record.workspace !== workspace ||
+    record.uid < range.uidMin ||
+    record.uid >= range.uidMin + range.uidCount ||
+    record.gid !== range.gidForUid(record.uid)
   ) {
-    throw new WorkspaceError("workspace cleanup proof is invalid; identity retained");
+    throw new WorkspaceError("coding execution identity is invalid");
   }
+  const canonicalWorkspace = await realpath(workspace);
+  const stat = await lstat(canonicalWorkspace);
+  if (
+    canonicalWorkspace !== workspace ||
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    record.workspaceDevice !== String(stat.dev) ||
+    record.workspaceInode !== String(stat.ino) ||
+    stat.uid !== record.uid ||
+    stat.gid !== record.gid
+  ) {
+    throw new WorkspaceError("coding execution identity is invalid");
+  }
+  return record;
 }
 
-function validateAllocatedIdentity(value) {
-  if (
-    !value ||
-    value.version !== 1 ||
-    !/^[1-9][0-9]*$/.test(value.runId ?? "") ||
-    typeof value.workspace !== "string" ||
-    !path.isAbsolute(value.workspace) ||
-    !/^\d+$/.test(value.workspaceDevice ?? "") ||
-    !/^\d+$/.test(value.workspaceInode ?? "") ||
-    !Number.isSafeInteger(value.uid) ||
-    value.uid < 1 ||
-    !Number.isSafeInteger(value.gid) ||
-    value.gid < 1
-  ) {
+function validatePermanentRecord(value) {
+  const common =
+    value &&
+    /^[1-9][0-9]*$/.test(value.runId ?? "") &&
+    typeof value.workspace === "string" &&
+    path.isAbsolute(value.workspace) &&
+    Number.isSafeInteger(value.uid) &&
+    value.uid > 0 &&
+    Number.isSafeInteger(value.gid) &&
+    value.gid > 0;
+  const activeIdentity =
+    /^\d+$/.test(value?.workspaceDevice ?? "") &&
+    /^\d+$/.test(value?.workspaceInode ?? "");
+  const valid = common && (
+    (value.version === RECORD_VERSION && value.state === "reserved") ||
+    (value.version === RECORD_VERSION && value.state === "active" && activeIdentity) ||
+    (value.version === 1 && value.state === undefined && activeIdentity)
+  );
+  if (!valid) {
     throw new WorkspaceError("coding execution identity record is invalid");
   }
+  if (value.version === 1) value.state = "active";
 }
 
 function parseIdentity(value) {
@@ -249,12 +245,60 @@ function parseIdentity(value) {
   }
 }
 
+async function writeDurableExclusive(target, value, directory) {
+  let handle;
+  let failure;
+  try {
+    handle = await open(target, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify(value)}\n`);
+    await handle.sync();
+  } catch (error) {
+    failure = error;
+  } finally {
+    await handle?.close();
+    if (handle) await syncDirectory(directory);
+  }
+  if (failure) throw failure;
+}
+
+async function replaceDurably(target, value, directory) {
+  const temporary = path.join(directory, `.activation-${value.uid}-${randomUUID()}.tmp`);
+  await writeDurableExclusive(temporary, value, directory);
+  await rename(temporary, target);
+  await syncDirectory(directory);
+}
+
+async function syncDirectory(directory) {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function requireExpectedRunWorkspace(workspaceRoot, runId, workspace) {
+  const expected = path.join(workspaceRoot, `run-${runId}`);
+  if (workspace !== expected || await realpath(workspace) !== expected) {
+    throw new WorkspaceError("coding execution workspace is invalid");
+  }
+  const stat = await lstat(expected);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new WorkspaceError("coding execution workspace is invalid");
+  }
+  return expected;
+}
+
 function normalizeRunId(value) {
   const text = typeof value === "bigint" ? value.toString() : String(value ?? "");
   if (!/^[1-9][0-9]*$/.test(text)) {
     throw new WorkspaceError("execution identity runId must be a positive integer");
   }
   return text;
+}
+
+function identityPath(identityRoot, uid) {
+  return path.join(identityRoot, `uid-${uid}.json`);
 }
 
 async function chownTree(target, uid, gid) {

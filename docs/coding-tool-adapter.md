@@ -111,11 +111,14 @@ wrapper disconnect, run-deletion notification, or expired dispatch lease asks
 the executor to abort that operation. The executor joins the OpenCode process
 tree before acknowledging cancellation, and the broker waits for both the
 operation result and that acknowledgement before releasing workspace admission
-or persisting usage. The broker serializes allocation and retirement of its
-bounded per-run execution identities. Joined cleanup retires an identity only
-after the identity-matched workspace and root ownership record are positively
-removed. Live, quarantined, deleting, failed, or otherwise uncertain cleanup
-retains the identity, so its UID cannot be assigned to another run.
+or persisting usage. Before changing workspace ownership, the broker durably
+and atomically reserves one UID from the configured 40,000-identity range.
+Reservations are permanent: active, failed, partial, uncertain, deleted,
+quarantined, and historical workspace identities are never retired or reused.
+This prevents numeric UID aliasing across cleanup and restart ambiguity. The
+range therefore supports at most 40,000 workspace identities over a deployment
+lifetime. Exhaustion fails closed and requires an operator migration to a fresh,
+non-overlapping identity range.
 
 OpenCode receives an explicit environment allowlist: the selected key, tool
 `PATH`, isolated home/state paths, and fixed safety switches. The adapter parses
