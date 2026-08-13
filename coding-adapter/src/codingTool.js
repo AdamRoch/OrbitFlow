@@ -2,7 +2,7 @@ import {
   createOpenCodeAdapter,
   OPEN_CODE_DEFAULT_MODEL,
 } from "./openCodeAdapter.js";
-import { InvalidRequestError } from "./errors.js";
+import { CliFailureError, InvalidRequestError } from "./errors.js";
 
 export function createCodingTool({
   runId,
@@ -33,7 +33,7 @@ export function createCodingTool({
     workspaceAuthority,
   });
 
-  async function delegate_coding_task(task, workspace) {
+  async function delegate_coding_task(task, workspace, { signal: callerSignal } = {}) {
     if (typeof task !== "string" || task.trim() === "") {
       throw new InvalidRequestError("task must be a non-empty string");
     }
@@ -41,9 +41,14 @@ export function createCodingTool({
       throw new InvalidRequestError("workspace must be a non-empty string");
     }
 
-    return workspaceAuthority.withDelegation(async ({ signal }) => {
+    return workspaceAuthority.withDelegation(async ({ signal: workspaceSignal }) => {
+      const signal = callerSignal
+        ? AbortSignal.any([callerSignal, workspaceSignal])
+        : workspaceSignal;
+      throwIfAborted(signal);
       await costEventStore.verifyAttribution({ runId, agentId });
       const result = await adapter.delegate_coding_task(task, workspace, { signal });
+      throwIfAborted(signal);
       await costEventStore.recordDelegation({
         runId,
         agentId,
@@ -55,4 +60,10 @@ export function createCodingTool({
   }
 
   return { delegate_coding_task };
+}
+
+function throwIfAborted(signal) {
+  if (!signal.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new CliFailureError("coding delegation was cancelled");
 }

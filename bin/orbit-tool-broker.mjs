@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   chown,
@@ -16,7 +17,11 @@ import http from "node:http";
 import path from "node:path";
 import pg from "pg";
 import { createCodingTool, createCostEventStore, createRunWorkspaceService } from "../coding-adapter/src/index.js";
-import { createPublicErrorResponse } from "../coding-adapter/src/errors.js";
+import {
+  CliFailureError,
+  createPublicErrorResponse,
+  WorkspaceError,
+} from "../coding-adapter/src/errors.js";
 import {
   immutableDispatchContext,
   loadOpenClawToolContext,
@@ -40,6 +45,7 @@ const EXECUTION_IDENTITY_ROOT = path.join(WORKSPACE_ROOT, ".orbitflow", "executo
 const EXECUTION_UID_MIN = 20_000;
 const EXECUTION_UID_COUNT = 40_000;
 const MAX_REQUEST_BYTES = 64 * 1024;
+const DISPATCH_MONITOR_INTERVAL_MS = 100;
 const pool = new Pool({ connectionString: DATABASE_URL, application_name: "orbit-tool-broker" });
 const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: WORKSPACE_ROOT });
 const costEventStore = createCostEventStore({ pool });
@@ -55,7 +61,7 @@ await chmod(WORKSPACE_ROOT, 0o711);
 
 const server = http.createServer((request, response) => {
   void handleRequest(request, response).catch((error) => {
-    writeJson(response, 400, failure(error));
+    if (!response.destroyed) writeJson(response, 400, failure(error));
   });
 });
 server.listen(SOCKET, async () => {
@@ -85,45 +91,139 @@ async function handleRequest(request, response) {
   }
   const context = immutableDispatchContext(loaded.context);
   await requireActiveDispatch(context);
-
-  let result;
-  if (PLATFORM_COMMANDS.has(body.command)) {
-    result = invokePlatformCommand(body.command, body.input, context, loaded.context);
-  } else if (body.command === "start_run_workspace") {
-    requireExactKeys(body.input, []);
-    const workspace = await workspaceService.startRunWorkspace(context.runId);
-    await ensureExecutionIdentity(context.runId, workspace);
-    result = { ok: true, result: { workspace } };
-  } else {
-    requireExactKeys(body.input, ["task"]);
-    const workspace = path.join(WORKSPACE_ROOT, `run-${context.runId}`);
-    const identity = await requireExecutionIdentity(context.runId, workspace);
-    const model = process.env.ORBITFLOW_OPENCODE_MODEL || "openrouter/anthropic/claude-haiku-4.5";
-    const tool = createCodingTool({
-      runId: context.runId,
-      agentId: context.agentId,
-      workspaceService,
-      costEventStore,
-      adapterOptions: { model },
-      adapterFactory: () => ({
-        delegate_coding_task: (task, requestedWorkspace, { signal } = {}) =>
-          executorRequest({
-            task,
-            workspace: requestedWorkspace,
-            runId: context.runId,
-            executionUid: identity.uid,
-            executionGid: identity.gid,
-            model,
-          }, signal),
-      }),
-    });
-    try {
-      result = { ok: true, result: await tool.delegate_coding_task(body.input.task, workspace) };
-    } catch (error) {
-      result = { ok: false, error: createPublicErrorResponse(error) };
+  const clientController = new AbortController();
+  const cancelForDisconnect = () => {
+    if (!response.writableEnded) {
+      clientController.abort(new CliFailureError("coding delegation client disconnected"));
     }
+  };
+  request.once("aborted", cancelForDisconnect);
+  response.once("close", cancelForDisconnect);
+
+  try {
+    let result;
+    if (PLATFORM_COMMANDS.has(body.command)) {
+      result = invokePlatformCommand(body.command, body.input, context, loaded.context);
+    } else if (body.command === "start_run_workspace") {
+      requireExactKeys(body.input, []);
+      const workspace = await workspaceService.startRunWorkspace(context.runId);
+      await ensureExecutionIdentity(context.runId, workspace);
+      result = { ok: true, result: { workspace } };
+    } else {
+      requireExactKeys(body.input, ["task"]);
+      const workspace = path.join(WORKSPACE_ROOT, `run-${context.runId}`);
+      const identity = await requireExecutionIdentity(context.runId, workspace);
+      const model = process.env.ORBITFLOW_OPENCODE_MODEL || "openrouter/anthropic/claude-haiku-4.5";
+      const dispatchMonitor = monitorActiveDispatch(context, clientController.signal);
+      const tool = createCodingTool({
+        runId: context.runId,
+        agentId: context.agentId,
+        workspaceService,
+        costEventStore,
+        adapterOptions: { model },
+        adapterFactory: ({ workspaceAuthority }) => remoteExecutorAdapter({
+          context,
+          identity,
+          model,
+          workspaceAuthority,
+        }),
+      });
+      try {
+        result = {
+          ok: true,
+          result: await tool.delegate_coding_task(body.input.task, workspace, {
+            signal: dispatchMonitor.signal,
+          }),
+        };
+      } catch (error) {
+        result = { ok: false, error: createPublicErrorResponse(error) };
+      } finally {
+        await dispatchMonitor.stop();
+      }
+    }
+    if (!response.destroyed) writeJson(response, result.ok === true ? 200 : 400, result);
+  } finally {
+    request.off("aborted", cancelForDisconnect);
+    response.off("close", cancelForDisconnect);
   }
-  writeJson(response, result.ok === true ? 200 : 400, result);
+}
+
+function remoteExecutorAdapter({ context, identity, model, workspaceAuthority }) {
+  return {
+    async delegate_coding_task(task, workspace, { signal } = {}) {
+      const handle = await workspaceAuthority.resolve(workspace);
+      try {
+        const result = await executorRequest({
+          task,
+          workspace,
+          runId: context.runId,
+          executionUid: identity.uid,
+          executionGid: identity.gid,
+          model,
+          workspaceIdentity: immutableWorkspaceIdentity(handle),
+        }, signal);
+        await requireActiveDispatch(context);
+        if (!(await workspaceAuthority.assertCurrent(handle))) {
+          throw new WorkspaceError("workspace ownership changed during remote coding execution");
+        }
+        return result;
+      } catch (error) {
+        if (error?.containWorkspace === true) {
+          await workspaceAuthority.containCredentialExposure(handle);
+        }
+        throw error;
+      }
+    },
+  };
+}
+
+function immutableWorkspaceIdentity(handle) {
+  return {
+    workspaceId: handle.workspaceId,
+    workspaceDevice: handle.record.workspaceDevice,
+    workspaceInode: handle.record.workspaceInode,
+    gitDevice: handle.record.gitDevice,
+    gitInode: handle.record.gitInode,
+    markerDevice: handle.record.markerDevice,
+    markerInode: handle.record.markerInode,
+  };
+}
+
+function monitorActiveDispatch(context, callerSignal) {
+  const controller = new AbortController();
+  let stopped = false;
+  let timer = null;
+  let inFlight = Promise.resolve();
+  const cancelFromCaller = () => controller.abort(
+    callerSignal.reason instanceof Error
+      ? callerSignal.reason
+      : new CliFailureError("coding delegation client disconnected"),
+  );
+  callerSignal.addEventListener("abort", cancelFromCaller, { once: true });
+  if (callerSignal.aborted) cancelFromCaller();
+
+  const poll = () => {
+    if (stopped || controller.signal.aborted) return;
+    inFlight = requireActiveDispatch(context)
+      .catch(() => {
+        controller.abort(new CliFailureError("coding delegation dispatch lease expired"));
+      })
+      .finally(() => {
+        if (!stopped && !controller.signal.aborted) {
+          timer = setTimeout(poll, DISPATCH_MONITOR_INTERVAL_MS);
+        }
+      });
+  };
+  timer = setTimeout(poll, DISPATCH_MONITOR_INTERVAL_MS);
+  return {
+    signal: controller.signal,
+    async stop() {
+      stopped = true;
+      clearTimeout(timer);
+      callerSignal.removeEventListener("abort", cancelFromCaller);
+      await inFlight;
+    },
+  };
 }
 
 function invokePlatformCommand(command, supplied, context, fullContext) {
@@ -271,15 +371,38 @@ async function chownTree(target, uid, gid) {
   else await chown(target, uid, gid);
 }
 
-function executorRequest(payload, signal) {
+async function executorRequest(payload, signal) {
+  if (signal?.aborted) throw cancellationError(signal);
+  const operationId = randomUUID();
+  const delegation = postExecutor("/v1/delegate", { ...payload, operationId });
+  let cancellation = null;
+  const cancel = () => {
+    cancellation ??= postExecutor("/v1/cancel", { operationId });
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  try {
+    const result = await delegation;
+    if (cancellation) await cancellation;
+    if (signal?.aborted) throw cancellationError(signal);
+    return result;
+  } catch (error) {
+    if (cancellation) await cancellation;
+    if (signal?.aborted) throw cancellationError(signal);
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
+function postExecutor(requestPath, payload) {
   const body = JSON.stringify(payload);
   return new Promise((resolve, reject) => {
     const request = http.request({
       socketPath: EXECUTOR_SOCKET,
-      path: "/v1/delegate",
+      path: requestPath,
       method: "POST",
       headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
-      signal,
     }, (response) => {
       let contents = "";
       response.setEncoding("utf8");
@@ -302,6 +425,12 @@ function executorRequest(payload, signal) {
     request.on("error", reject);
     request.end(body);
   });
+}
+
+function cancellationError(signal) {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new CliFailureError("coding delegation was cancelled");
 }
 
 async function readJson(request, limit) {

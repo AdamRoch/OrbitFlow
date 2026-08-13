@@ -32,5 +32,50 @@
       "total": 25,
       "cost": { "total": "0" }
     }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-tamper-release",
+    "output": {
+      "artifact": { "proof": "tamper" },
+      "handoff_brief": "Tamper proof released.",
+      "events": []
+    },
+    "usage": {
+      "input": 1,
+      "output": 1,
+      "total": 2,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-quarantine-release",
+    "output": {
+      "artifact": { "proof": "quarantine" },
+      "handoff_brief": "Quarantine proof released.",
+      "events": []
+    },
+    "usage": {
+      "input": 1,
+      "output": 1,
+      "total": 2,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact34-cancel-release",
+    "output": {
+      "artifact": { "proof": "cancel" },
+      "handoff_brief": "Cancellation proof released.",
+      "events": []
+    },
+    "usage": {
+      "input": 1,
+      "output": 1,
+      "total": 2,
+      "cost": { "total": "0" }
+    }
   }
 ]

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'printf "FACT-34 Compose proof failed at line %s\n" "$LINENO" >&2' ERR
 
 project="orbitfactory-fact34-proof-$$"
 app_port="$((43000 + ($$ % 1000)))"
 engine_port="$((44000 + ($$ % 1000)))"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact34-env.XXXXXX")"
 started=false
+cancel_log=""
 
 cleanup() {
   proof_status=$?
@@ -15,6 +18,7 @@ cleanup() {
     compose down --volumes --remove-orphans >/dev/null 2>&1 || proof_status=1
   fi
   rm -f "$env_file"
+  if [[ -n "$cancel_log" ]]; then rm -f "$cancel_log"; fi
   for resource_type in container network volume; do
     if [[ -n "$(docker "$resource_type" ls -q --filter "label=com.docker.compose.project=$project")" ]]; then
       printf 'FACT-34 Compose proof left a %s for %s\n' "$resource_type" "$project" >&2
@@ -60,6 +64,38 @@ wait_for_snapshot() {
     sleep 0.25
   done
   printf 'Timed out waiting for FACT-34 state: %s\n' "$snapshot" >&2
+  return 1
+}
+
+wait_for_aux() {
+  local run_id="$1"
+  local predicate="$2"
+  local snapshot=""
+  for _ in {1..240}; do
+    snapshot="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs aux-snapshot "$run_id")"
+    if node -e "const value=JSON.parse(process.argv[1]); if (!($predicate)) process.exit(1)" "$snapshot"; then
+      printf '%s' "$snapshot"
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'Timed out waiting for FACT-34 auxiliary run %s: %s\n' "$run_id" "$snapshot" >&2
+  return 1
+}
+
+start_aux_workspace() {
+  local run_id="$1"
+  local agent_id="$2"
+  local agent_workspace="/var/lib/orbitflow/runtime/workspaces/orbitflow-$agent_id"
+  for _ in {1..120}; do
+    if compose exec -T --user node --workdir "$agent_workspace" openclaw \
+      /app/bin/orbit-openclaw-tool.mjs start_run_workspace '{}' >/dev/null 2>&1; then
+      printf '%s' "$agent_workspace"
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'Timed out starting auxiliary workspace for run %s\n' "$run_id" >&2
   return 1
 }
 
@@ -223,5 +259,98 @@ compose restart engine >/dev/null
 compose up --detach --wait --wait-timeout 120 engine >/dev/null
 final="$(wait_for_snapshot 'value.run_status === "completed" && value.answered_questions === 1 && value.invocations === 2 && value.pending_messages === 0')"
 node -e 'const before=JSON.parse(process.argv[1]);const after=JSON.parse(process.argv[2]);if(JSON.stringify(before)!==JSON.stringify(after))process.exit(1)' "$completed" "$final"
+
+tamper_seed="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs seed-aux tamper)"
+tamper_run_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).runId)' "$tamper_seed")"
+tamper_agent_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).agentId)' "$tamper_seed")"
+wait_for_aux "$tamper_run_id" 'value.runStatus === "running" && value.dispatchStatus === "dispatching" && value.leaseActive === true && value.wakeInputs === 1' >/dev/null
+tamper_agent_workspace="$(start_aux_workspace "$tamper_run_id" "$tamper_agent_id")"
+if tamper_result="$(compose exec -T --user node --workdir "$tamper_agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs delegate_coding_task '{"task":"FACT34_TAMPER_MARKER"}' 2>&1)"; then
+  printf 'Durable workspace marker tampering was accepted\n' >&2
+  exit 1
+fi
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.ok!==false||value.error.code!=="workspace_invalid"||!/ownership changed/.test(value.error.message))process.exit(1);
+' "$tamper_result"
+tamper_proof="$(compose exec -T tool-broker node --experimental-strip-types scripts/fact-34-compose-fixture.mjs aux-workspace-proof "$tamper_run_id")"
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.costEvents!==0||value.record?.state!=="active"){
+    console.error(`Unexpected tamper proof state: ${process.argv[1]}`);
+    process.exit(1);
+  }
+' "$tamper_proof"
+compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs release-aux tamper >/dev/null
+wait_for_aux "$tamper_run_id" '["completed", "failed"].includes(value.runStatus) && ["completed", "failed"].includes(value.dispatchStatus)' >/dev/null
+
+quarantine_seed="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs seed-aux quarantine)"
+quarantine_run_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).runId)' "$quarantine_seed")"
+quarantine_agent_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).agentId)' "$quarantine_seed")"
+wait_for_aux "$quarantine_run_id" 'value.runStatus === "running" && value.dispatchStatus === "dispatching" && value.leaseActive === true && value.wakeInputs === 1' >/dev/null
+quarantine_agent_workspace="$(start_aux_workspace "$quarantine_run_id" "$quarantine_agent_id")"
+if quarantine_result="$(compose exec -T --user node --workdir "$quarantine_agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs delegate_coding_task '{"task":"FACT34_CREDENTIAL_EXPOSURE"}' 2>&1)"; then
+  printf 'Credential-contaminated workspace was accepted\n' >&2
+  exit 1
+fi
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.ok!==false||value.error.code!=="credential_exposure")process.exit(1);
+' "$quarantine_result"
+quarantine_proof="$(compose exec -T tool-broker node --experimental-strip-types scripts/fact-34-compose-fixture.mjs aux-workspace-proof "$quarantine_run_id")"
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.costEvents!==0||value.record?.state!=="quarantined"||!value.record.quarantinePath.endsWith(`run-${process.argv[2]}-${value.record.workspaceId}`))process.exit(1);
+' "$quarantine_proof" "$quarantine_run_id"
+compose exec -T coding-executor sh -c \
+  'test ! -e "/var/lib/orbitflow/run-workspaces/run-$1" && test -d "/var/lib/orbitflow/run-workspaces/.orbitflow/quarantine/run-$1-$2"' \
+  -- "$quarantine_run_id" "$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).record.workspaceId)' "$quarantine_proof")"
+compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs release-aux quarantine >/dev/null
+wait_for_aux "$quarantine_run_id" '["completed", "failed"].includes(value.runStatus) && ["completed", "failed"].includes(value.dispatchStatus)' >/dev/null
+
+cancel_seed="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs seed-aux cancel)"
+cancel_run_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).runId)' "$cancel_seed")"
+cancel_agent_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).agentId)' "$cancel_seed")"
+wait_for_aux "$cancel_run_id" 'value.runStatus === "running" && value.dispatchStatus === "dispatching" && value.leaseActive === true && value.wakeInputs === 1' >/dev/null
+cancel_agent_workspace="$(start_aux_workspace "$cancel_run_id" "$cancel_agent_id")"
+cancel_log="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact34-cancel.XXXXXX")"
+(
+  trap - ERR
+  compose exec -T --user node --workdir "$cancel_agent_workspace" openclaw \
+    /app/bin/orbit-openclaw-tool.mjs delegate_coding_task '{"task":"FACT34_CANCEL"}'
+) >"$cancel_log" 2>&1 &
+cancel_client_pid=$!
+for _ in {1..120}; do
+  if compose exec -T coding-executor test -f "/var/lib/orbitflow/run-workspaces/run-$cancel_run_id/cancellation-process.json"; then
+    break
+  fi
+  sleep 0.25
+done
+cancel_process="$(compose exec -T coding-executor node -e '
+  const fs=require("node:fs");
+  const value=JSON.parse(fs.readFileSync(`/var/lib/orbitflow/run-workspaces/run-${process.argv[1]}/cancellation-process.json`,"utf8"));
+  process.stdout.write(String(value.pid));
+' "$cancel_run_id")"
+compose stop engine >/dev/null
+compose exec -T tool-broker node --experimental-strip-types scripts/fact-34-compose-fixture.mjs expire-aux-lease "$cancel_run_id" >/dev/null
+if wait "$cancel_client_pid"; then
+  printf 'Lease-expired coding delegation returned success\n' >&2
+  exit 1
+fi
+cancel_result="$(cat "$cancel_log")"
+rm -f "$cancel_log"
+cancel_log=""
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.ok!==false||value.error.code!=="cli_failure"||!/lease expired/.test(value.error.message))process.exit(1);
+' "$cancel_result"
+compose exec -T coding-executor node -e '
+  try { process.kill(Number(process.argv[1]),0); process.exit(1); }
+  catch (error) { if(error.code!=="ESRCH") throw error; }
+' "$cancel_process"
+cancel_proof="$(compose exec -T tool-broker node --experimental-strip-types scripts/fact-34-compose-fixture.mjs aux-workspace-proof "$cancel_run_id")"
+node -e 'const value=JSON.parse(process.argv[1]);if(value.costEvents!==0||value.record?.state!=="active")process.exit(1)' "$cancel_proof"
 
 printf 'FACT-34 production adapter Compose proof passed for %s\n' "$project"

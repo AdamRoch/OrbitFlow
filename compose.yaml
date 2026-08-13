@@ -131,7 +131,6 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
       OPENCLAW_GATEWAY_URL: ws://openclaw:18789
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       ORBITFLOW_RUNTIME_ROOT: /var/lib/orbitflow/runtime
       ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
     volumes:

@@ -12,6 +12,34 @@ const directoryIndex = arguments_.indexOf("--dir");
 if (runIndex === -1 || directoryIndex === -1) process.exit(2);
 const task = arguments_[runIndex + 1];
 const workspace = path.resolve(arguments_[directoryIndex + 1]);
+if (task === "FACT34_CANCEL") {
+  await writeFile(
+    path.join(workspace, "cancellation-process.json"),
+    `${JSON.stringify({ pid: process.pid })}\n`,
+  );
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1_000);
+  await new Promise(() => {});
+}
+
+if (task === "FACT34_TAMPER_MARKER") {
+  await writeFile(
+    path.join(workspace, ".git", "orbitflow-workspace.json"),
+    `${JSON.stringify({ schemaVersion: 1, runId: "0", workspaceId: "tampered" })}\n`,
+  );
+  emitUsage("fact34-tamper");
+  process.exit(0);
+}
+
+if (task === "FACT34_CREDENTIAL_EXPOSURE") {
+  await writeFile(
+    path.join(workspace, "credential-leak.txt"),
+    `${process.env.OPENROUTER_API_KEY}\n`,
+  );
+  emitUsage("fact34-credential");
+  process.exit(0);
+}
+
 const otherRunMatch = /other-run=([1-9][0-9]*)/.exec(task);
 if (!task.startsWith("FACT34_ISOLATION") || !otherRunMatch) process.exit(3);
 
@@ -62,30 +90,33 @@ execFileSync(
   { cwd: workspace, env: gitEnvironment() },
 );
 
-const sessionID = "fact34-isolation";
-for (const event of [
-  {
-    type: "step_start",
-    timestamp: 1,
-    sessionID,
-    part: { sessionID, messageID: "message", id: "start", type: "step-start" },
-  },
-  {
-    type: "step_finish",
-    timestamp: 2,
-    sessionID,
-    part: {
+emitUsage("fact34-isolation");
+
+function emitUsage(sessionID) {
+  for (const event of [
+    {
+      type: "step_start",
+      timestamp: 1,
       sessionID,
-      messageID: "message",
-      id: "finish",
-      type: "step-finish",
-      reason: "stop",
-      cost: 0.01,
-      tokens: { input: 11, output: 7, reasoning: 0, cache: { read: 3, write: 2 } },
+      part: { sessionID, messageID: "message", id: "start", type: "step-start" },
     },
-  },
-]) {
-  process.stdout.write(`${JSON.stringify(event)}\n`);
+    {
+      type: "step_finish",
+      timestamp: 2,
+      sessionID,
+      part: {
+        sessionID,
+        messageID: "message",
+        id: "finish",
+        type: "step-finish",
+        reason: "stop",
+        cost: 0.01,
+        tokens: { input: 11, output: 7, reasoning: 0, cache: { read: 3, write: 2 } },
+      },
+    },
+  ]) {
+    process.stdout.write(`${JSON.stringify(event)}\n`);
+  }
 }
 
 async function readable(target) {

@@ -69,15 +69,16 @@ run workspaces or either privileged socket.
 
 ## Configuration and containment
 
-The process requires:
+The production services require:
 
-- `DATABASE_URL`, pointing to the migrated OrbitFactory PostgreSQL database.
+- `DATABASE_URL` only in the trusted tool broker, pointing to the migrated
+  OrbitFactory PostgreSQL database.
 - `ORBITFLOW_WORKSPACE_ROOT`, an absolute path to the one compose-mounted
-  workspace volume. The engine and the OpenClaw execution boundary must see the
-  same path.
-- `OPENROUTER_API_KEY`, the only provider credential given to OpenCode.
-- `ORBITFLOW_RUN_ID` and `ORBITFLOW_AGENT_ID` on delegation calls, bound by the
-  engine as trusted calling context rather than submitted by the model.
+  workspace volume shared by the broker and coding executor.
+- `OPENROUTER_API_KEY` only in the coding executor, where it is handed to
+  OpenCode after the execution identity is established.
+- the dispatch-bound run and agent context persisted by the engine and verified
+  by the broker rather than submitted by the model.
 
 Optional settings are `ORBITFLOW_OPENCODE_MODEL` and
 `ORBITFLOW_CODING_TIMEOUT_MS`. `ORBITFLOW_OPENCODE_BINARY` exists for the
@@ -91,8 +92,9 @@ unchanged. The credential-free execution boundary then changes into that path,
 validates the resulting current directory by device and inode, and requests the
 key over IPC only after the identity is established. All credential-bearing
 work and all Git, scan, and diff operations use that current directory through
-relative paths. Replacement or deletion fails closed. Credential contamination
-is retained under `.orbitflow/quarantine` instead of deleting a live workspace.
+relative paths. Replacement or deletion fails closed. The executor reports
+credential contamination to the broker, which revalidates the durable ownership
+handle and retains the workspace under `.orbitflow/quarantine`.
 The workspace service refuses cleanup while the owning `workflow_runs` row
 exists. After the platform deletes that row, `deleteRunWorkspace(runId)` closes
 new delegation admission, cancels and joins every already admitted provider
@@ -104,6 +106,12 @@ separate tool and cleanup processes. A credential-free cleanup boundary enters
 that directory and verifies its device and inode from the established working
 directory before removing contents. The ownership record is removed last.
 Renamed, symlinked, or substituted cleanup targets fail closed and are retained.
+Each broker-to-executor delegation also has a bounded operation identifier. A
+wrapper disconnect, run-deletion notification, or expired dispatch lease asks
+the executor to abort that operation. The executor joins the OpenCode process
+tree before acknowledging cancellation, and the broker waits for both the
+operation result and that acknowledgement before releasing workspace admission
+or persisting usage.
 
 OpenCode receives an explicit environment allowlist: the selected key, tool
 `PATH`, isolated home/state paths, and fixed safety switches. The adapter parses
@@ -164,8 +172,11 @@ the tool broker. Delegated code runs under a run-specific unprivileged UID in a
 container that mounts only run workspaces and the executor socket, cannot open
 that root-owned socket, and joins only the provider network where the PostgreSQL
 service is neither resolvable nor reachable. The executor validates the persisted
-run/UID/workspace device and inode before dropping identity. This boundary limits
-database authority and cross-run filesystem access; it does not claim protection
-against provider-key disclosure or denial of service within the delegated run.
+run/UID/workspace device and inode before dropping identity. The broker remains
+the durable workspace authority: it validates the root-side record, Git marker,
+and filesystem identities before and after remote execution and performs any
+quarantine. This boundary limits database authority and cross-run filesystem
+access; it does not claim protection against provider-key disclosure or denial
+of service within the delegated run.
 Workflow execution, fan-out policy, message routing, Telegram, and the
 implementer review prompt remain outside FACT-12.
