@@ -111,7 +111,11 @@ wrapper disconnect, run-deletion notification, or expired dispatch lease asks
 the executor to abort that operation. The executor joins the OpenCode process
 tree before acknowledging cancellation, and the broker waits for both the
 operation result and that acknowledgement before releasing workspace admission
-or persisting usage.
+or persisting usage. The broker serializes allocation and retirement of its
+bounded per-run execution identities. Joined cleanup retires an identity only
+after the identity-matched workspace and root ownership record are positively
+removed. Live, quarantined, deleting, failed, or otherwise uncertain cleanup
+retains the identity, so its UID cannot be assigned to another run.
 
 OpenCode receives an explicit environment allowlist: the selected key, tool
 `PATH`, isolated home/state paths, and fixed safety switches. The adapter parses

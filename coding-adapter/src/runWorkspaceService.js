@@ -28,6 +28,7 @@ export function createRunWorkspaceService({
   workspaceRoot,
   beforeDelegationJoin,
   beforeCleanupBoundary,
+  afterWorkspaceRemoved,
 } = {}) {
   if (!pool || typeof pool.query !== "function") {
     throw new WorkspaceError("a PostgreSQL pool is required for run workspaces");
@@ -148,6 +149,17 @@ export function createRunWorkspaceService({
       }
       await removeOwnedDirectory(disposalPath, owned.identity);
       await removeOwnedRecord(root, runId, entry);
+      if (typeof afterWorkspaceRemoved === "function") {
+        await afterWorkspaceRemoved(Object.freeze({
+          runId,
+          workspaceId: entry.record.workspaceId,
+          workspace: entry.record.workspace,
+          workspaceDevice: entry.record.workspaceDevice,
+          workspaceInode: entry.record.workspaceInode,
+          uid: owned.identity.uid,
+          gid: owned.identity.gid,
+        }));
+      }
 
       delegationCoordinator.completeDeletion(runId);
       await client.query("COMMIT");
@@ -587,7 +599,12 @@ async function validateCleanupRecord(root, runId, record) {
   }
   return Object.freeze({
     path: target,
-    identity: Object.freeze({ dev: workspaceStat.dev, ino: workspaceStat.ino }),
+    identity: Object.freeze({
+      dev: workspaceStat.dev,
+      ino: workspaceStat.ino,
+      uid: workspaceStat.uid,
+      gid: workspaceStat.gid,
+    }),
   });
 }
 

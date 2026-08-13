@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import {
   access,
+  chmod,
   cp,
   lstat,
   mkdtemp,
@@ -23,8 +24,10 @@ import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import {
   createCodingTool,
   createCostEventStore,
+  createExecutionIdentityStore,
   createRunWorkspaceService,
 } from "../../coding-adapter/src/index.js";
+import { WorkspaceError } from "../../coding-adapter/src/errors.js";
 import { inspectProcessGroup } from "../../coding-adapter/src/processGroup.js";
 
 const { Pool } = pg;
@@ -59,7 +62,7 @@ test("FACT-12 production coding-tool contract", async (t) => {
     const cleanMigration = await migratePostgres({ databaseUrl, log: () => {} });
     assert.deepEqual(cleanMigration.applied, await committedMigrationFiles());
     const root = await realpath(configuredRoot);
-    const fixtures = await seedFixtures(pool, 16);
+    const fixtures = await seedFixtures(pool, 19);
     const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: configuredRoot });
     const costEventStore = createCostEventStore({ pool });
     const adapterOptions = {
@@ -416,6 +419,108 @@ test("FACT-12 production coding-tool contract", async (t) => {
         [runId],
       );
       assert.equal(persisted.rows[0].count, 0);
+    });
+
+    await t.test("reuses execution identity only after positive joined cleanup", async (identityTest) => {
+      if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+        identityTest.skip("POSIX identities are required");
+        return;
+      }
+      const liveRun = fixtures.runIds[16];
+      const reuseRun = fixtures.runIds[17];
+      const uncertainRun = fixtures.runIds[18];
+      const currentUid = process.getuid();
+      const currentGid = process.getgid();
+      const allocatedUid = currentUid === 0 ? 20_000 : currentUid;
+      const allocatedGid = currentUid === 0 ? 20_000 : currentGid;
+      let reportDeletionJoin;
+      const deletionJoining = new Promise((resolve) => {
+        reportDeletionJoin = resolve;
+      });
+      const identityStore = createExecutionIdentityStore({
+        workspaceRoot: configuredRoot,
+        uidMin: allocatedUid,
+        uidCount: 1,
+        gidForUid: () => allocatedGid,
+        ...(currentUid === 0
+          ? {}
+          : { applyOwnership: async (workspace) => chmod(workspace, 0o700) }),
+      });
+      const lifecycleService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: configuredRoot,
+        async beforeDelegationJoin({ activeCount }) {
+          assert.equal(activeCount, 1);
+          reportDeletionJoin();
+        },
+        afterWorkspaceRemoved: identityStore.retire,
+      });
+
+      const liveWorkspace = await lifecycleService.startRunWorkspace(liveRun);
+      const liveIdentity = await identityStore.ensure(liveRun, liveWorkspace);
+      const reuseWorkspace = await lifecycleService.startRunWorkspace(reuseRun);
+      await assert.rejects(
+        () => identityStore.ensure(reuseRun, reuseWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+
+      let releaseDelegation;
+      let reportAdmitted;
+      const admitted = new Promise((resolve) => {
+        reportAdmitted = resolve;
+      });
+      const holdDelegation = new Promise((resolve) => {
+        releaseDelegation = resolve;
+      });
+      const delegation = lifecycleService.authorityForRun(liveRun).withDelegation(
+        async ({ signal }) => {
+          reportAdmitted(signal);
+          await holdDelegation;
+        },
+      );
+      const deletionSignal = await admitted;
+      await pool.query("DELETE FROM workflow_runs WHERE id = $1", [liveRun]);
+      const deletion = lifecycleService.deleteRunWorkspace(liveRun);
+      await deletionJoining;
+      assert.equal(deletionSignal.aborted, true);
+      await assert.rejects(
+        () => identityStore.ensure(reuseRun, reuseWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+      releaseDelegation();
+      await delegation;
+      assert.equal(await deletion, true);
+      await assert.rejects(
+        access(path.join(identityStore.identityRoot, `run-${liveRun}.json`)),
+        { code: "ENOENT" },
+      );
+
+      const reusedIdentity = await identityStore.ensure(reuseRun, reuseWorkspace);
+      assert.equal(reusedIdentity.uid, liveIdentity.uid);
+      const uncertainWorkspace = await lifecycleService.startRunWorkspace(uncertainRun);
+      await assert.rejects(
+        () => identityStore.ensure(uncertainRun, uncertainWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
+
+      const uncertainService = createRunWorkspaceService({
+        pool,
+        workspaceRoot: configuredRoot,
+        async beforeCleanupBoundary() {
+          throw new WorkspaceError("cleanup state is uncertain");
+        },
+        afterWorkspaceRemoved: identityStore.retire,
+      });
+      await pool.query("DELETE FROM workflow_runs WHERE id = $1", [reuseRun]);
+      await assert.rejects(
+        () => uncertainService.deleteRunWorkspace(reuseRun),
+        (error) => error.code === "workspace_invalid" && /cleanup state is uncertain/.test(error.message),
+      );
+      await access(path.join(identityStore.identityRoot, `run-${reuseRun}.json`));
+      await assert.rejects(
+        () => identityStore.ensure(uncertainRun, uncertainWorkspace),
+        (error) => error.code === "workspace_invalid" && /pool is exhausted/.test(error.message),
+      );
     });
 
     await t.test("retains renamed and substituted paths during run-deletion cleanup", async () => {

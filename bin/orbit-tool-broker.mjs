@@ -5,18 +5,17 @@ import { randomUUID } from "node:crypto";
 import {
   chmod,
   chown,
-  lchown,
-  lstat,
   mkdir,
-  readFile,
-  readdir,
-  realpath,
-  writeFile,
 } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import pg from "pg";
-import { createCodingTool, createCostEventStore, createRunWorkspaceService } from "../coding-adapter/src/index.js";
+import {
+  createCodingTool,
+  createCostEventStore,
+  createExecutionIdentityStore,
+  createRunWorkspaceService,
+} from "../coding-adapter/src/index.js";
 import {
   CliFailureError,
   createPublicErrorResponse,
@@ -41,22 +40,27 @@ const EXECUTOR_SOCKET = requiredEnv("ORBITFLOW_CODING_EXECUTOR_SOCKET");
 const AGENT_WORKSPACE_ROOT = requiredEnv("ORBITFLOW_AGENT_WORKSPACE_ROOT");
 const WORKSPACE_ROOT = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
 const DATABASE_URL = requiredEnv("DATABASE_URL");
-const EXECUTION_IDENTITY_ROOT = path.join(WORKSPACE_ROOT, ".orbitflow", "executor-identities");
 const EXECUTION_UID_MIN = 20_000;
 const EXECUTION_UID_COUNT = 40_000;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const DISPATCH_MONITOR_INTERVAL_MS = 100;
 const pool = new Pool({ connectionString: DATABASE_URL, application_name: "orbit-tool-broker" });
-const workspaceService = createRunWorkspaceService({ pool, workspaceRoot: WORKSPACE_ROOT });
+const executionIdentityStore = createExecutionIdentityStore({
+  workspaceRoot: WORKSPACE_ROOT,
+  uidMin: EXECUTION_UID_MIN,
+  uidCount: EXECUTION_UID_COUNT,
+});
+const workspaceService = createRunWorkspaceService({
+  pool,
+  workspaceRoot: WORKSPACE_ROOT,
+  afterWorkspaceRemoved: executionIdentityStore.retire,
+});
 const costEventStore = createCostEventStore({ pool });
-let identityAllocation = Promise.resolve();
 
 await mkdir(path.dirname(SOCKET), { recursive: true, mode: 0o770 });
 await mkdir(WORKSPACE_ROOT, { recursive: true, mode: 0o711 });
 await mkdir(path.join(WORKSPACE_ROOT, ".orbitflow"), { recursive: true, mode: 0o700 });
 await chmod(path.join(WORKSPACE_ROOT, ".orbitflow"), 0o700);
-await mkdir(EXECUTION_IDENTITY_ROOT, { recursive: true, mode: 0o700 });
-await chmod(EXECUTION_IDENTITY_ROOT, 0o700);
 await chmod(WORKSPACE_ROOT, 0o711);
 
 const server = http.createServer((request, response) => {
@@ -107,12 +111,12 @@ async function handleRequest(request, response) {
     } else if (body.command === "start_run_workspace") {
       requireExactKeys(body.input, []);
       const workspace = await workspaceService.startRunWorkspace(context.runId);
-      await ensureExecutionIdentity(context.runId, workspace);
+      await executionIdentityStore.ensure(context.runId, workspace);
       result = { ok: true, result: { workspace } };
     } else {
       requireExactKeys(body.input, ["task"]);
       const workspace = path.join(WORKSPACE_ROOT, `run-${context.runId}`);
-      const identity = await requireExecutionIdentity(context.runId, workspace);
+      const identity = await executionIdentityStore.require(context.runId, workspace);
       const model = process.env.ORBITFLOW_OPENCODE_MODEL || "openrouter/anthropic/claude-haiku-4.5";
       const dispatchMonitor = monitorActiveDispatch(context, clientController.signal);
       const tool = createCodingTool({
@@ -277,98 +281,6 @@ async function requireActiveDispatch(context) {
     ],
   );
   if (result.rowCount !== 1) throw new Error("active dispatch context is no longer authorized");
-}
-
-async function ensureExecutionIdentity(runId, workspace) {
-  const operation = identityAllocation.then(async () => {
-    const existing = await readIdentity(runId);
-    if (existing) return validateIdentity(existing, runId, workspace);
-    const entries = await readdir(EXECUTION_IDENTITY_ROOT);
-    const used = new Set();
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const value = JSON.parse(await readFile(path.join(EXECUTION_IDENTITY_ROOT, entry), "utf8"));
-      if (Number.isSafeInteger(value.uid)) used.add(value.uid);
-    }
-    const start = Number(BigInt(runId) % BigInt(EXECUTION_UID_COUNT));
-    let uid = null;
-    for (let offset = 0; offset < EXECUTION_UID_COUNT; offset += 1) {
-      const candidate = EXECUTION_UID_MIN + ((start + offset) % EXECUTION_UID_COUNT);
-      if (!used.has(candidate)) {
-        uid = candidate;
-        break;
-      }
-    }
-    if (uid === null) throw new Error("coding execution identity pool is exhausted");
-    const canonicalWorkspace = await realpath(workspace);
-    await chownTree(canonicalWorkspace, uid, uid);
-    await chmod(canonicalWorkspace, 0o700);
-    const stat = await lstat(canonicalWorkspace);
-    const identity = {
-      version: 1,
-      runId,
-      workspace: canonicalWorkspace,
-      workspaceDevice: String(stat.dev),
-      workspaceInode: String(stat.ino),
-      uid,
-      gid: uid,
-    };
-    await writeFile(identityPath(runId), `${JSON.stringify(identity)}\n`, { flag: "wx", mode: 0o600 });
-    return identity;
-  });
-  identityAllocation = operation.catch(() => {});
-  return operation;
-}
-
-async function requireExecutionIdentity(runId, workspace) {
-  const identity = await readIdentity(runId);
-  if (!identity) throw new Error("run workspace must be started before coding delegation");
-  return validateIdentity(identity, runId, workspace);
-}
-
-async function validateIdentity(identity, runId, workspace) {
-  const canonicalWorkspace = await realpath(workspace);
-  const stat = await lstat(canonicalWorkspace);
-  if (
-    identity?.version !== 1 ||
-    identity.runId !== runId ||
-    identity.workspace !== canonicalWorkspace ||
-    identity.workspaceDevice !== String(stat.dev) ||
-    identity.workspaceInode !== String(stat.ino) ||
-    !Number.isSafeInteger(identity.uid) ||
-    identity.uid < EXECUTION_UID_MIN ||
-    identity.uid >= EXECUTION_UID_MIN + EXECUTION_UID_COUNT ||
-    identity.gid !== identity.uid ||
-    stat.uid !== identity.uid ||
-    stat.gid !== identity.gid
-  ) {
-    throw new Error("coding execution identity is invalid");
-  }
-  return identity;
-}
-
-async function readIdentity(runId) {
-  try {
-    return JSON.parse(await readFile(identityPath(runId), "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-function identityPath(runId) {
-  return path.join(EXECUTION_IDENTITY_ROOT, `run-${runId}.json`);
-}
-
-async function chownTree(target, uid, gid) {
-  const stat = await lstat(target);
-  if (stat.isDirectory()) {
-    for (const entry of await readdir(target)) {
-      await chownTree(path.join(target, entry), uid, gid);
-    }
-  }
-  if (stat.isSymbolicLink()) await lchown(target, uid, gid);
-  else await chown(target, uid, gid);
 }
 
 async function executorRequest(payload, signal) {
