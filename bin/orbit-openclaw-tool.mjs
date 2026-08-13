@@ -52,9 +52,10 @@ try {
   }
   const context = JSON.parse(await readFile(path.join(workspace, CONTEXT_FILE), "utf8"));
   validateContext(context, workspace);
+  const dispatchContext = immutableDispatchContext(context);
 
   const databaseUrl = toolEnvironment.databaseUrl;
-  await requireActiveDispatch(databaseUrl, context);
+  await requireActiveDispatch(databaseUrl, dispatchContext);
   const workspaceServiceRoot = toolEnvironment.workspaceRoot;
   let executable;
   let input;
@@ -123,19 +124,17 @@ async function requireActiveDispatch(databaseUrl, context) {
          AND dispatch.agent_id = $3
          AND dispatch.ticket_id IS NOT DISTINCT FROM $4
          AND dispatch.runtime_generation = $5
-         AND dispatch.runtime_session_id = $6
-         AND dispatch.node_id = $7
+         AND dispatch.node_id = $6
          AND dispatch.status = 'dispatching'
          AND dispatch.lease_expires_at > clock_timestamp()
          AND input.runtime_generation = dispatch.runtime_generation
-         AND input.wake_input->'toolContext' = $8::jsonb`,
+         AND input.wake_input->'toolContext' = $7::jsonb`,
       [
         context.dispatchId,
         context.runId,
         context.agentId,
         context.ticketId,
         context.dispatchGeneration,
-        context.dispatchSessionId,
         context.nodeId,
         JSON.stringify(context),
       ],
@@ -219,4 +218,18 @@ function validateContext(value, workspace) {
       throw new Error(`active dispatch ${field} is invalid`);
     }
   }
+}
+
+function immutableDispatchContext(value) {
+  return {
+    version: value.version,
+    agentId: value.agentId,
+    runId: value.runId,
+    ticketId: value.ticketId,
+    nodeId: value.nodeId,
+    invocationId: value.invocationId,
+    dispatchId: value.dispatchId,
+    dispatchGeneration: value.dispatchGeneration,
+    dispatchSessionId: value.dispatchSessionId,
+  };
 }

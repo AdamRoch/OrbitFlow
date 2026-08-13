@@ -84,8 +84,8 @@ compose exec -T openclaw node -e '
   if(config.tools.exec.security!=="allowlist"||config.tools.exec.ask!=="off")process.exit(1);
   if(JSON.stringify(patterns)!==JSON.stringify(["/app/bin/orbit-openclaw-tool.mjs"]))process.exit(1);
 '
-pending="$(wait_for_snapshot 'value.run_status === "running" && value.questions === 1 && value.pending_questions === 1 && value.question_messages === 1 && value.outbound_messages === 1 && value.invocations === 1')"
-node -e 'const value=JSON.parse(process.argv[1]);if(value.dispatches!==1||value.completed_dispatches!==1)process.exit(1)' "$pending"
+live_dispatch="$(wait_for_snapshot 'value.run_status === "running" && value.dispatches === 1 && value.dispatching_dispatches === 1 && value.openclaw_inputs === 1')"
+node -e 'const value=JSON.parse(process.argv[1]);if(value.questions!==0||value.invocations!==0)process.exit(1)' "$live_dispatch"
 
 agent_workspace="/var/lib/orbitflow/runtime/workspaces/orbitflow-$agent_id"
 for proof_agent in "orbitflow-$agent_id" "orbitflow-$agent_id-deny-unlisted" "orbitflow-$agent_id-deny-assignment"; do
@@ -96,7 +96,6 @@ for proof_agent in "orbitflow-$agent_id" "orbitflow-$agent_id-deny-unlisted" "or
     exit 1
   fi
 done
-compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs prepare-tool-proof >/dev/null
 agent_proof() {
   local agent_ref="$1"
   local session_id="$2"
@@ -146,12 +145,23 @@ if compose exec -T --user node --workdir "$agent_workspace" openclaw \
   printf 'Cross-agent attribution substitution was accepted\n' >&2
   exit 1
 fi
+compose exec -T --user node engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs \
+  tamper-tool-context "$agent_id" "$other_run_id" >/dev/null
+if compose exec -T --user node --workdir "$agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs list_projects \
+  '{"limit":10,"idempotencyKey":"fact34-tampered-context"}' >/dev/null 2>&1; then
+  printf 'Tampered immutable dispatch context was accepted\n' >&2
+  exit 1
+fi
 tool_proof="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs tool-proof)"
 node -e '
   const value=JSON.parse(process.argv[1]);
   if(JSON.stringify(value.keys)!==JSON.stringify(["fact34-agent-side-allowed"]))process.exit(1);
 ' "$tool_proof"
-compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs cleanup-tool-proof >/dev/null
+compose exec -T --user node engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs release-tool-proof >/dev/null
+
+pending="$(wait_for_snapshot 'value.run_status === "running" && value.questions === 1 && value.pending_questions === 1 && value.question_messages === 1 && value.outbound_messages === 1 && value.invocations === 1')"
+node -e 'const value=JSON.parse(process.argv[1]);if(value.dispatches!==1||value.completed_dispatches!==1)process.exit(1)' "$pending"
 
 delivered="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs deliver)"
 node -e 'const value=JSON.parse(process.argv[1]);if(value.delivered!==true||value.sent.chatId!=="-1003499"||value.sent.telegramMessageId!==34991)process.exit(1)' "$delivered"

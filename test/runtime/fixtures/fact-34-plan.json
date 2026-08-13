@@ -1,6 +1,7 @@
 [
   {
     "mode": "success",
+    "waitForReleaseFile": "fact34-tool-proof-release",
     "output": {
       "artifact": {},
       "handoff_brief": "Waiting for the required whitespace decision.",
