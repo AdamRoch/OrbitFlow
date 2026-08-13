@@ -10,6 +10,7 @@ import {
 import {
   OpenClawRuntimeAdapter,
   RuntimeAdapterError,
+  type RuntimeOutput,
   type WakeAgentInput,
 } from "./openclaw.ts";
 
@@ -17,6 +18,43 @@ export interface OpenClawEngineAdapterOptions {
   pool: Pool;
   openclaw: OpenClawRuntimeAdapter;
   workspaceTools?: (agentId: string, nodeId: string, ticketId: string | null, runId: string) => string | null;
+}
+
+interface WorkerQuestionEvent {
+  question: string;
+  event: JsonObject;
+}
+
+function workerQuestionEvent(output: RuntimeOutput): WorkerQuestionEvent | null {
+  const questions = output.events.filter((event) => event.type === "question");
+  if (questions.length === 0) return null;
+  if (questions.length !== 1) {
+    throw new RuntimeAdapterError(
+      "openclaw_malformed_output",
+      "Agent output may contain at most one question event",
+    );
+  }
+  const event = questions[0]!;
+  if (Object.keys(event).sort().join(",") !== "question,type") {
+    throw new RuntimeAdapterError(
+      "openclaw_malformed_output",
+      "A question event must contain exactly type and question",
+    );
+  }
+  if (typeof event.question !== "string" || event.question.trim() === "") {
+    throw new RuntimeAdapterError(
+      "openclaw_malformed_output",
+      "A question event must contain a non-blank question",
+    );
+  }
+  const question = event.question.trim();
+  if (question.length > 12_000) {
+    throw new RuntimeAdapterError(
+      "openclaw_malformed_output",
+      "A question event exceeds 12000 characters",
+    );
+  }
+  return { question, event };
 }
 
 /**
@@ -66,17 +104,24 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
 
       const questionContext = request.input.questionContext as Record<string, unknown> | undefined;
       const isQuestionAnswer = typeof questionContext?.questionId === "string";
+      const workerQuestion = isQuestionAnswer ? null : workerQuestionEvent(result.output);
 
       await insertMessage(this.pool, {
         runId: request.runId,
         ticketId: request.ticketId,
         sender: `agent:${request.agentId}`,
         recipient: "workflow-engine",
-        type: isQuestionAnswer ? "answer" : "output",
+        type: isQuestionAnswer ? "answer" : workerQuestion ? "question" : "output",
         payload: (isQuestionAnswer ? {
           questionId: questionContext.questionId,
           answer: result.output.handoff_brief,
           answeringDispatchId: request.dispatchId,
+          dispatchGeneration: request.generation,
+          sessionId,
+        } : workerQuestion ? {
+          question: workerQuestion.question,
+          runtimeEvent: workerQuestion.event,
+          dispatchId: request.dispatchId,
           dispatchGeneration: request.generation,
           sessionId,
         } : {
@@ -89,7 +134,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
             events: result.output.events,
           },
         }) as JsonObject,
-        handoffBrief: result.output.handoff_brief,
+        handoffBrief: workerQuestion?.question ?? result.output.handoff_brief,
         tokenUsage: null,
       });
 
@@ -125,17 +170,24 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
         const sessionId = deterministicSessionId(request.idempotencyKey);
         const questionContext = request.input.questionContext as Record<string, unknown> | undefined;
         const isQuestionAnswer = typeof questionContext?.questionId === "string";
+        const workerQuestion = isQuestionAnswer ? null : workerQuestionEvent(result.output);
 
         await insertMessage(this.pool, {
           runId: request.runId,
           ticketId: request.ticketId,
           sender: `agent:${request.agentId}`,
           recipient: "workflow-engine",
-          type: isQuestionAnswer ? "answer" : "output",
+          type: isQuestionAnswer ? "answer" : workerQuestion ? "question" : "output",
           payload: (isQuestionAnswer ? {
             questionId: questionContext.questionId,
             answer: result.output.handoff_brief,
             answeringDispatchId: request.dispatchId,
+            dispatchGeneration: request.generation,
+            sessionId,
+          } : workerQuestion ? {
+            question: workerQuestion.question,
+            runtimeEvent: workerQuestion.event,
+            dispatchId: request.dispatchId,
             dispatchGeneration: request.generation,
             sessionId,
           } : {
@@ -148,7 +200,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
               events: result.output.events,
             },
           }) as JsonObject,
-          handoffBrief: result.output.handoff_brief,
+          handoffBrief: workerQuestion?.question ?? result.output.handoff_brief,
           tokenUsage: null,
         });
 

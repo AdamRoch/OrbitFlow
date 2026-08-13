@@ -1,0 +1,35 @@
+[
+  {
+    "mode": "success",
+    "output": {
+      "artifact": {},
+      "handoff_brief": "Waiting for the required whitespace decision.",
+      "events": [
+        {
+          "type": "question",
+          "question": "Should --name preserve surrounding whitespace or trim it?"
+        }
+      ]
+    },
+    "usage": {
+      "input": 13,
+      "output": 9,
+      "total": 22,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "output": {
+      "artifact": { "answerApplied": "trim" },
+      "handoff_brief": "Applied the correlated answer on the resumed ticket thread.",
+      "events": []
+    },
+    "usage": {
+      "input": 17,
+      "output": 8,
+      "total": 25,
+      "cost": { "total": "0" }
+    }
+  }
+]

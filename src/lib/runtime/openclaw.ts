@@ -174,6 +174,7 @@ export interface RuntimeAdapterOptions {
   terminationGraceMs?: number;
   gatewayEnvironment?: Readonly<Record<string, string | undefined>>;
   allowedExecEnvironment?: readonly string[];
+  retryMalformedOutput?: boolean;
 }
 
 interface CommandResult {
@@ -792,6 +793,7 @@ export class OpenClawRuntimeAdapter {
   private readonly terminationGraceMs: number;
   private readonly gatewayEnvironment: Readonly<Record<string, string | undefined>>;
   private readonly allowedExecEnvironment: readonly string[];
+  private readonly retryMalformedOutput: boolean;
   private readonly activeCommands = new Map<string, Set<RunningCommand>>();
   private readonly externallyTerminatedCommands = new WeakSet<ChildProcess>();
   private versionProof: Promise<void> | null = null;
@@ -811,6 +813,7 @@ export class OpenClawRuntimeAdapter {
     );
     this.gatewayEnvironment = options.gatewayEnvironment ?? {};
     this.allowedExecEnvironment = options.allowedExecEnvironment ?? [];
+    this.retryMalformedOutput = options.retryMalformedOutput ?? true;
     const rejectedEnvironment = Object.keys(this.gatewayEnvironment).filter(
       (name) => !OPENCLAW_GATEWAY_ENVIRONMENT.has(name),
     );
@@ -957,7 +960,11 @@ export class OpenClawRuntimeAdapter {
                   completion,
                 });
               } catch (error) {
-                if (error instanceof MalformedOutputError && attempts === 1) continue;
+                if (
+                  error instanceof MalformedOutputError &&
+                  attempts === 1 &&
+                  this.retryMalformedOutput
+                ) continue;
                 throw error;
               }
             }

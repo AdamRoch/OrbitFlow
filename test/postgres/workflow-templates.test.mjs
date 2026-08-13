@@ -25,6 +25,18 @@ const CURRENT_MAIN_MIGRATIONS = Object.freeze({
   "0011-workflow-engine.sql": "11dc810b3bc4e5dbafe6dabe5cb5449cfa51e52df3232ce3636a41607885e92d",
   "0012-platform-tool-idempotency.sql": "e830c1b37b6add09867c965132ce76f00a0cd350180d36e77eb65b264cbdc80e",
 });
+const POST_CURRENT_MAIN_MIGRATIONS = Object.freeze([
+  "0013-workflow-templates.sql",
+  "0014-guardrail-wake-events.sql",
+  "0015-factory-implementer-prompt.sql",
+  "0016-telegram-channel.sql",
+  "0017-scheduling.sql",
+  "0018-channel-intake.sql",
+  "0019-factory-orchestrator-intake-prompt.sql",
+  "0020-channel-status-reports.sql",
+  "0021-workflow-questions.sql",
+  "0022-factory-demo-contract.sql",
+]);
 
 test("FACT-21 clean install: seeds both templates on a fresh database", async () => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -216,11 +228,7 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
       databaseUrl: upgradeDatabaseUrl,
       log: () => {},
     });
-    assert.deepEqual(fact21Migration.applied, [
-      "0013-workflow-templates.sql",
-      "0014-guardrail-wake-events.sql",
-      "0015-factory-implementer-prompt.sql",
-    ]);
+    assert.deepEqual(fact21Migration.applied, POST_CURRENT_MAIN_MIGRATIONS);
 
     // Verify journal
     const journal = await client.query(
@@ -228,9 +236,7 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
     );
     assert.deepEqual(journal.rows.map((row) => row.version), [
       ...Object.keys(CURRENT_MAIN_MIGRATIONS),
-      "0013-workflow-templates.sql",
-      "0014-guardrail-wake-events.sql",
-      "0015-factory-implementer-prompt.sql",
+      ...POST_CURRENT_MAIN_MIGRATIONS,
     ]);
 
     // Upgrade path: the 0013-seeded implementer prompt (untouched original) was
@@ -321,11 +327,7 @@ test("FACT-21 no-overwrite: pre-existing same-name agents and skills keep their 
 
     // Apply FACT-21 migration
     const fact21Migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(fact21Migration.applied, [
-      "0013-workflow-templates.sql",
-      "0014-guardrail-wake-events.sql",
-      "0015-factory-implementer-prompt.sql",
-    ]);
+    assert.deepEqual(fact21Migration.applied, POST_CURRENT_MAIN_MIGRATIONS);
 
     // Same-name agents preserved their custom values (not overwritten)
     const coder = await client.query(
