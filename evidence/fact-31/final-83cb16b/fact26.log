@@ -1,0 +1,48 @@
+command=npm run fact26:proof
+started_utc=2026-08-13T16:25:29Z
+
+> orbitfactory@0.1.0 fact26:proof
+> bash scripts/fact-26-critical-paths-proof.sh
+
+TAP version 13
+# Subtest: 1. Agent CRUD round trip through API and PostgreSQL persistence
+ok 1 - 1. Agent CRUD round trip through API and PostgreSQL persistence
+  ---
+  duration_ms: 204.936375
+  type: 'test'
+  ...
+# Subtest: 2. Workflow graph rejection loop and fan-out through a mock runtime adapter
+ok 2 - 2. Workflow graph rejection loop and fan-out through a mock runtime adapter
+  ---
+  duration_ms: 79.171916
+  type: 'test'
+  ...
+# Subtest: 3. Producer to bus to engine dispatch invokes the credentialless composed runtime adapter
+ok 3 - 3. Producer to bus to engine dispatch invokes the credentialless composed runtime adapter
+  ---
+  duration_ms: 265.989625
+  type: 'test'
+  ...
+# Subtest: 4. Telegram inbound creates one channel-triggered workflow run through a mock boundary
+ok 4 - 4. Telegram inbound creates one channel-triggered workflow run through a mock boundary
+  ---
+  duration_ms: 28.232292
+  type: 'test'
+  ...
+# Subtest: 5. Cost ceiling halts a run through the real guardrail state transition
+ok 5 - 5. Cost ceiling halts a run through the real guardrail state transition
+  ---
+  duration_ms: 40.246209
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1055.454792
+exit_code=0
+finished_utc=2026-08-13T16:25:31Z

@@ -1,0 +1,4 @@
+command=git diff --check origin/main...HEAD
+started_utc=2026-08-13T16:20:54Z
+exit_code=0
+finished_utc=2026-08-13T16:20:54Z

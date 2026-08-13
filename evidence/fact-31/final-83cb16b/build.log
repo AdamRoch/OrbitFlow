@@ -1,0 +1,61 @@
+command=npm run build
+started_utc=2026-08-13T16:20:48Z
+
+> orbitfactory@0.1.0 build
+> next build
+
+▲ Next.js 16.3.0 (Turbopack)
+✓ Running next.config.ts took 58ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1318ms
+  Running TypeScript ...
+  Finished TypeScript in 1716ms ...
+  Collecting page data using 9 workers ...
+  Generating static pages using 9 workers (0/18) ...
+  Generating static pages using 9 workers (4/18)
+  Generating static pages using 9 workers (8/18)
+  Generating static pages using 9 workers (13/18)
+✓ Generating static pages using 9 workers (18/18) in 163ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ○ /agents
+├ ƒ /api/agents
+├ ƒ /api/agents/[id]
+├ ƒ /api/agents/[id]/schedules
+├ ƒ /api/agents/[id]/skills/[skillId]
+├ ƒ /api/health
+├ ƒ /api/issues
+├ ƒ /api/issues/[id]
+├ ƒ /api/issues/[id]/blockers
+├ ƒ /api/issues/[id]/blockers/[blockerId]
+├ ƒ /api/issues/[id]/claim
+├ ƒ /api/issues/[id]/labels
+├ ƒ /api/issues/frontier
+├ ƒ /api/labels
+├ ƒ /api/labels/[id]
+├ ƒ /api/monitoring
+├ ƒ /api/questions/[id]/answer
+├ ƒ /api/schedules/[id]
+├ ƒ /api/schedules/[id]/trigger
+├ ƒ /api/skills
+├ ƒ /api/skills/[id]
+├ ƒ /api/state-stream
+├ ƒ /api/workflows
+├ ƒ /api/workflows/[id]
+├ ○ /frontier
+├ ƒ /issues/[identifier]
+├ ○ /labels
+├ ƒ /monitoring
+├ ○ /new
+└ ○ /workflows
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+exit_code=0
+finished_utc=2026-08-13T16:20:53Z
