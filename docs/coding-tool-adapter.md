@@ -9,6 +9,8 @@ entry point is `bin/orbit-coding-tool.mjs`.
 The tool reads exactly one JSON object from standard input and writes exactly
 one JSON response to standard output. The provider credential is never placed
 in an argument list. OpenCode receives the task in its documented CLI position.
+The same executable also accepts `<command> <json-input>` for the allowlisted
+OpenClaw gateway boundary; both forms enter the same validation and adapter.
 
 Start a run workspace after its `workflow_runs` row exists:
 

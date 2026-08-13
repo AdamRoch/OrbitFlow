@@ -69,20 +69,22 @@ function durableRuntimeMessage(
   sessionId: string,
 ): { type: "answer" | "question" | "output"; payload: JsonObject; handoffBrief: string } {
   const questionContext = request.input.questionContext as Record<string, unknown> | undefined;
-  const isQuestionAnswer = typeof questionContext?.questionId === "string";
+  const questionId = typeof questionContext?.questionId === "string"
+    ? questionContext.questionId
+    : null;
   const workerQuestion = workerQuestionEvent(output);
-  if (isQuestionAnswer && workerQuestion) {
+  if (questionId !== null && workerQuestion) {
     throw new RuntimeAdapterError(
       "openclaw_malformed_output",
       "An answer output cannot contain a question event",
     );
   }
 
-  if (isQuestionAnswer) {
+  if (questionId !== null) {
     return {
       type: "answer",
       payload: {
-        questionId: questionContext.questionId,
+        questionId,
         answer: output.handoff_brief,
         answeringDispatchId: request.dispatchId,
         dispatchGeneration: request.generation,
@@ -231,6 +233,9 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
         }
         if (error.code === "openclaw_invocation_conflict") {
           return { kind: "absent" };
+        }
+        if (error.code === "openclaw_malformed_output") {
+          return { kind: "confirmed_failure", reason: bounded(error.message) };
         }
         return { kind: "pending", reason: bounded(error.message) };
       }

@@ -143,6 +143,25 @@ test("FACT-34 question outputs reject discarded artifact and event data", async 
     assert.equal(result.kind, "confirmed_failure");
     assert.match(result.reason, reason);
   }
+
+  const replay = new OpenClawEngineAdapter({
+    pool,
+    openclaw: {
+      async wakeAgent() {
+        return {
+          replayed: true,
+          output: {
+            artifact: { ignored: true },
+            handoff_brief: "question",
+            events: [{ type: "question", question: "Choose one?" }],
+          },
+        };
+      },
+    },
+  });
+  const reconciled = await replay.reconcileSession(request);
+  assert.equal(reconciled.kind, "confirmed_failure");
+  assert.match(reconciled.reason, /empty artifact/);
 });
 
 test("FACT-34 production tools expose the ordinary coding surface", () => {
@@ -150,6 +169,7 @@ test("FACT-34 production tools expose the ordinary coding surface", () => {
     agentTool: "/app/bin/orbit-agent-tools.mjs",
     codingTool: "/app/bin/orbit-coding-tool.mjs",
   })("7", "implement", "11", "13");
+  assert.match(tools, /list_projects/);
   assert.match(tools, /create_ticket/);
   assert.match(tools, /list_tickets/);
   assert.match(tools, /update_ticket/);
@@ -157,6 +177,7 @@ test("FACT-34 production tools expose the ordinary coding surface", () => {
   assert.match(tools, /start_run_workspace/);
   assert.match(tools, /delegate_coding_task/);
   assert.match(tools, /ORBITFLOW_RUN_ID=13 ORBITFLOW_AGENT_ID=7/);
+  assert.doesNotMatch(tools, /projectId from the run spec or an existing ticket/);
 });
 
 async function until(description, action, timeoutMs = 30_000) {
@@ -250,6 +271,14 @@ test("FACT-34 real-output question and honest rejection contract", async () => {
        ) RETURNING id::text`,
       [projectId, run.id],
     )).rows[0].id;
+
+    const projects = await dispatchPlatformTool(pool, "list_projects", {
+      agentId: agents.implement,
+      runId: run.id,
+      limit: 10,
+      idempotencyKey: "fact34-list-projects",
+    });
+    assert.ok(projects.projects.some((project) => project.id === projectId && project.key === "DMO"));
 
     const calls = { implement: 0, test: 0, report: 0 };
     let providerFailure = null;

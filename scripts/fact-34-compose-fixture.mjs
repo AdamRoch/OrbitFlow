@@ -52,7 +52,11 @@ try {
       [project.rows[0].id, run.id],
     );
     await startWorkflowRun(pool, run.id);
-    process.stdout.write(`${JSON.stringify({ runId: run.id })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      runId: run.id,
+      agentId: agent.rows[0].id,
+      projectId: project.rows[0].id,
+    })}\n`);
   } else if (command === "deliver") {
     let sent = null;
     const delivered = await deliverNextTelegramOutbound(pool, {

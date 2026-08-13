@@ -74,7 +74,9 @@ and `amd64` manifests, and the OpenCode package declares Linux `arm64` and
 ## State, restart, teardown
 
 Compose names and deliberately reuses `postgres-data`, `app-data`,
-`openclaw-state`, and `engine-data`. The migration runner stores checksums in
+`openclaw-state`, and `engine-data`. OpenClaw and the engine share
+`engine-data` so the gateway's two explicitly allowlisted OrbitFlow CLIs use
+the same owned run workspaces; no general shell executable is allowlisted. The migration runner stores checksums in
 `schema_migrations`, so a rerun is a no-op. Stop the stack while retaining
 state with `docker compose down`; remove only this stack's state with:
 

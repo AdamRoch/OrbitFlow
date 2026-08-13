@@ -1,5 +1,3 @@
-import path from "node:path";
-
 export interface ProductionWorkspaceToolsOptions {
   agentTool?: string;
   codingTool?: string;
@@ -8,8 +6,8 @@ export interface ProductionWorkspaceToolsOptions {
 export function createProductionWorkspaceTools(
   options: ProductionWorkspaceToolsOptions = {},
 ): (agentId: string, nodeId: string, ticketId: string | null, runId: string) => string {
-  const agentTool = options.agentTool ?? path.resolve("bin/orbit-agent-tools.mjs");
-  const codingTool = options.codingTool ?? path.resolve("bin/orbit-coding-tool.mjs");
+  const agentTool = options.agentTool ?? "/app/bin/orbit-agent-tools.mjs";
+  const codingTool = options.codingTool ?? "/app/bin/orbit-coding-tool.mjs";
 
   return (agentId, nodeId, ticketId, runId) => [
     `# OrbitFlow tools for ${nodeId}`,
@@ -18,8 +16,17 @@ export function createProductionWorkspaceTools(
     "Replace <unique-suffix> with a new short value for each command invocation.",
     "Use only the commands required by the node prompt.",
     "",
+    "### list_projects",
+    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ${agentTool} list_projects '${JSON.stringify({
+      agentId,
+      runId,
+      limit: 50,
+      idempotencyKey: "projects-<unique-suffix>",
+    })}'`,
+    "Use a returned project id for create_ticket. Never invent a project id.",
+    "",
     "### list_tickets",
-    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" node ${agentTool} list_tickets '${JSON.stringify({
+    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ${agentTool} list_tickets '${JSON.stringify({
       agentId,
       runId,
       limit: 50,
@@ -27,10 +34,10 @@ export function createProductionWorkspaceTools(
     })}'`,
     "",
     "### create_ticket",
-    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" node ${agentTool} create_ticket '${JSON.stringify({
+    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ${agentTool} create_ticket '${JSON.stringify({
       agentId,
       runId,
-      projectId: "<projectId from the run spec or an existing ticket>",
+      projectId: "<projectId from list_projects>",
       title: "<title>",
       description: "<description or null>",
       acceptanceCriteria: "<acceptance criteria or null>",
@@ -41,7 +48,7 @@ export function createProductionWorkspaceTools(
     ...(ticketId ? [
       "",
       "### update_ticket",
-      `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" node ${agentTool} update_ticket '${JSON.stringify({
+      `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ${agentTool} update_ticket '${JSON.stringify({
         agentId,
         runId,
         ticketId,
@@ -49,11 +56,9 @@ export function createProductionWorkspaceTools(
         status: "<backlog|todo|in_progress|done|canceled>",
         idempotencyKey: "update-<unique-suffix>",
       })}'`,
-    ] : []),
-    ...(ticketId ? [
       "",
       "### post_message",
-      `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" node ${agentTool} post_message '${JSON.stringify({
+      `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ${agentTool} post_message '${JSON.stringify({
         agentId,
         runId,
         ticketId,
@@ -66,10 +71,14 @@ export function createProductionWorkspaceTools(
     ] : []),
     "",
     "### start_run_workspace",
-    `echo '${JSON.stringify({ command: "start_run_workspace", runId })}' | DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ORBITFLOW_WORKSPACE_ROOT="$ORBITFLOW_WORKSPACE_ROOT" node ${codingTool}`,
+    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ORBITFLOW_WORKSPACE_ROOT="$ORBITFLOW_WORKSPACE_ROOT" ${codingTool} start_run_workspace '${JSON.stringify({ runId })}'`,
+    "Use the returned workspace path exactly in delegate_coding_task.",
     "",
     "### delegate_coding_task",
-    "Replace <task> with a JSON-escaped task description.",
-    `printf '%s\\n' "{\\\"command\\\":\\\"delegate_coding_task\\\",\\\"task\\\":\\\"<task>\\\",\\\"workspace\\\":\\\"$ORBITFLOW_WORKSPACE_ROOT/run-${runId}\\\"}" | DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ORBITFLOW_RUN_ID=${runId} ORBITFLOW_AGENT_ID=${agentId} ORBITFLOW_WORKSPACE_ROOT="$ORBITFLOW_WORKSPACE_ROOT" node ${codingTool}`,
+    "Replace <task> with a JSON-escaped and shell-quoted task description.",
+    `DATABASE_URL="$ORBITFLOW_PLATFORM_DATABASE_URL" ORBITFLOW_RUN_ID=${runId} ORBITFLOW_AGENT_ID=${agentId} ORBITFLOW_WORKSPACE_ROOT="$ORBITFLOW_WORKSPACE_ROOT" ${codingTool} delegate_coding_task '${JSON.stringify({
+      task: "<task>",
+      workspace: "<workspace returned by start_run_workspace>",
+    })}'`,
   ].join("\n");
 }

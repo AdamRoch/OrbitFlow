@@ -11,7 +11,7 @@ function failure(code, message) {
 }
 
 if (!PLATFORM_TOOL_COMMANDS.includes(command) || extra.length !== 0 || typeof serializedInput !== "string") {
-  failure("usage", "usage: orbit-agent-tools <create_ticket|update_ticket|post_message|list_tickets> <json-input>");
+  failure("usage", `usage: orbit-agent-tools <${PLATFORM_TOOL_COMMANDS.join("|")}> <json-input>`);
 } else if (serializedInput.length > 32_768) {
   failure("too_large", "json-input exceeds 32768 characters");
 } else if (!process.env.DATABASE_URL) {

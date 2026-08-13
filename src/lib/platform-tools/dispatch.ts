@@ -5,6 +5,7 @@ import { parseAgentGuardrails } from "../guardrails.ts";
 import { insertMessage, type JsonObject, type MessageRow, type MessageType } from "../postgres/message-bus.ts";
 
 export const PLATFORM_TOOL_COMMANDS = [
+  "list_projects",
   "create_ticket",
   "update_ticket",
   "post_message",
@@ -35,6 +36,14 @@ interface TicketDTO {
   updatedAt: string;
 }
 
+interface ProjectDTO {
+  id: string;
+  key: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface MessageDTO {
   id: string;
   runId: string;
@@ -56,6 +65,7 @@ export interface BlockedToolResult {
 }
 
 export type PlatformToolResult =
+  | { projects: ProjectDTO[]; nextCursor: string | null }
   | { ticket: TicketDTO; message: MessageDTO; replayed: boolean }
   | { message: MessageDTO; replayed: boolean }
   | { tickets: TicketDTO[]; nextCursor: string | null }
@@ -116,9 +126,16 @@ type ListTicketsInput = Attribution & {
   idempotencyKey: string;
 };
 
-type ParsedInput = CreateTicketInput | UpdateTicketInput | PostMessageInput | ListTicketsInput;
+type ListProjectsInput = Attribution & {
+  command: "list_projects";
+  limit: number;
+  afterId?: string;
+  idempotencyKey: string;
+};
+
+type ParsedInput = CreateTicketInput | UpdateTicketInput | PostMessageInput | ListTicketsInput | ListProjectsInput;
 type MutationInput = CreateTicketInput | UpdateTicketInput | PostMessageInput;
-type InvocationInput = MutationInput | ListTicketsInput;
+type InvocationInput = MutationInput | ListTicketsInput | ListProjectsInput;
 type Row = Record<string, unknown>;
 
 const TICKET_STATUSES = new Set<TicketStatus>(["backlog", "todo", "in_progress", "done", "canceled"]);
@@ -228,6 +245,20 @@ function expectedUpdatedAt(value: unknown): string {
 function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
   const input = object(value);
   const base = ["agentId", "runId"];
+  if (command === "list_projects") {
+    knownFields(input, [...base, "limit", "afterId", "idempotencyKey"]);
+    const limit = input.limit === undefined ? 50 : input.limit;
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new PlatformToolError("invalid_limit", "limit must be an integer from 1 to 100");
+    }
+    return {
+      command,
+      ...attribution(input),
+      limit,
+      ...(input.afterId === undefined ? {} : { afterId: id(input.afterId, "afterId") }),
+      idempotencyKey: idempotencyKey(input.idempotencyKey),
+    };
+  }
   if (command === "create_ticket") {
     knownFields(input, [...base, "projectId", "title", "description", "acceptanceCriteria", "status", "priority", "idempotencyKey"]);
     return {
@@ -300,6 +331,16 @@ function ticketFromRow(row: Row): TicketDTO {
     acceptanceCriteria: row.acceptance_criteria === null ? null : String(row.acceptance_criteria), status: row.status as TicketStatus,
     priority: Number(row.priority), assigneeAgentId: row.assignee_agent_id === null ? null : String(row.assignee_agent_id),
     createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+  };
+}
+
+function projectFromRow(row: Row): ProjectDTO {
+  return {
+    id: String(row.id),
+    key: String(row.key),
+    name: String(row.name),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
   };
 }
 
@@ -452,6 +493,20 @@ async function listTickets(client: PoolClient, input: ListTicketsInput): Promise
   return { tickets: rows, nextCursor: result.rows.length > input.limit ? rows.at(-1)?.id ?? null : null };
 }
 
+async function listProjects(client: PoolClient, input: ListProjectsInput): Promise<PlatformToolResult> {
+  const values: unknown[] = [];
+  const where = input.afterId ? "WHERE id > $1" : "";
+  if (input.afterId) values.push(input.afterId);
+  values.push(input.limit + 1);
+  const result = await client.query<Row>(
+    `SELECT id, key, name, created_at, updated_at
+     FROM projects ${where} ORDER BY id ASC LIMIT $${values.length}`,
+    values,
+  );
+  const rows = result.rows.slice(0, input.limit).map(projectFromRow);
+  return { projects: rows, nextCursor: result.rows.length > input.limit ? rows.at(-1)?.id ?? null : null };
+}
+
 async function transaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
@@ -525,8 +580,10 @@ export async function dispatchPlatformTool(
       blockedActions.includes(input.command)
         ? rejectBlockedAction(client, input)
         : operation();
-    if (input.command === "list_tickets") {
-      return invoke(client, input, () => guarded(() => listTickets(client, input)));
+    if (input.command === "list_projects" || input.command === "list_tickets") {
+      return invoke(client, input, () => guarded(() => input.command === "list_projects"
+        ? listProjects(client, input)
+        : listTickets(client, input)));
     }
     return invoke(client, input, () => guarded(() => input.command === "create_ticket"
       ? createTicket(client, input)

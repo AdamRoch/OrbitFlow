@@ -69,7 +69,27 @@ compose up --detach --build --wait --wait-timeout 300
 readiness="$(node -e "fetch('http://127.0.0.1:$engine_port/readyz').then(async r=>{const b=await r.json();if(!r.ok)process.exit(1);process.stdout.write(JSON.stringify(b))})")"
 node -e 'const value=JSON.parse(process.argv[1]); if(value.status!=="ready"||value.workflowEngine!=="operational")process.exit(1)' "$readiness"
 
-compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs seed >/dev/null
+seeded="$(compose exec -T engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs seed)"
+run_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).runId))' "$seeded")"
+agent_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).agentId))' "$seeded")"
+project_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).projectId))' "$seeded")"
+
+projects="$(compose exec -T openclaw /app/bin/orbit-agent-tools.mjs list_projects "{\"agentId\":\"$agent_id\",\"runId\":\"$run_id\",\"limit\":10,\"idempotencyKey\":\"fact34-compose-projects\"}")"
+node -e 'const value=JSON.parse(process.argv[1]);const project=value.result.projects.find(candidate=>candidate.id===process.argv[2]);if(!value.ok||project?.key!=="CMP")process.exit(1)' "$projects" "$project_id"
+
+workspace="$(compose exec -T openclaw /app/bin/orbit-coding-tool.mjs start_run_workspace "{\"runId\":\"$run_id\"}")"
+node -e 'const value=JSON.parse(process.argv[1]);if(!value.ok||value.result.workspace!==`/var/lib/orbitflow/run-workspaces/run-${process.argv[2]}`)process.exit(1)' "$workspace" "$run_id"
+compose exec -T openclaw test -d "/var/lib/orbitflow/run-workspaces/run-$run_id"
+compose exec -T engine test -d "/var/lib/orbitflow/run-workspaces/run-$run_id"
+
+compose exec -T openclaw node -e '
+  const fs=require("node:fs");
+  const config=JSON.parse(fs.readFileSync("/home/node/.openclaw/openclaw.json","utf8"));
+  const approvals=JSON.parse(fs.readFileSync("/home/node/.openclaw/exec-approvals.json","utf8"));
+  const patterns=approvals.agents["*"].allowlist.map(entry=>entry.pattern).sort();
+  if(config.tools.exec.security!=="allowlist"||config.tools.exec.ask!=="off")process.exit(1);
+  if(JSON.stringify(patterns)!==JSON.stringify(["/app/bin/orbit-agent-tools.mjs","/app/bin/orbit-coding-tool.mjs"]))process.exit(1);
+'
 pending="$(wait_for_snapshot 'value.run_status === "running" && value.questions === 1 && value.pending_questions === 1 && value.question_messages === 1 && value.outbound_messages === 1 && value.invocations === 1')"
 node -e 'const value=JSON.parse(process.argv[1]);if(value.dispatches!==1||value.completed_dispatches!==1)process.exit(1)' "$pending"
 

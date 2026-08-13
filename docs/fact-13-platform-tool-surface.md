@@ -1,12 +1,13 @@
 # FACT-13 platform tool surface
 
 `bin/orbit-agent-tools.mjs` is the production agent CLI. It accepts exactly
-four commands and a single JSON argument:
+five commands and a single JSON argument:
 
 ```sh
 node bin/orbit-agent-tools.mjs create_ticket '{"agentId":"1","runId":"1","projectId":"1","title":"Investigate queue","idempotencyKey":"turn-12-create-1"}'
 node bin/orbit-agent-tools.mjs update_ticket '{"agentId":"1","runId":"1","ticketId":"1","expectedUpdatedAt":"2026-08-10T12:00:00Z","status":"todo","idempotencyKey":"turn-12-update-1"}'
 node bin/orbit-agent-tools.mjs post_message '{"agentId":"1","runId":"1","ticketId":"1","recipient":"agent:reviewer","type":"question","payload":{"question":"Should this be split?"},"idempotencyKey":"turn-12-question-1"}'
+node bin/orbit-agent-tools.mjs list_projects '{"agentId":"1","runId":"1","idempotencyKey":"turn-12-projects-1"}'
 node bin/orbit-agent-tools.mjs list_tickets '{"agentId":"1","runId":"1","idempotencyKey":"turn-12-list-1"}'
 ```
 
@@ -20,11 +21,13 @@ one future enforcement point for P5-1 blocked-action policy. It validates the
 closed input schema before opening a transaction, checks the agent, run, and
 ticket ownership directly in PostgreSQL, and uses parameterized SQL only.
 
-`create_ticket` and `update_ticket` append a `system` message. `post_message`
+`list_projects` gives a fresh run the durable project ids accepted by
+`create_ticket`. `create_ticket` and `update_ticket` append a `system` message. `post_message`
 appends the requested message type, including `question`. All use FACT-9's
 `insertMessage` producer inside the ticket transaction, so the ticket mutation,
 durable message, enqueue, ready projection, and idempotency result commit or
-roll back together. `list_tickets` is read-only, scoped to the calling run, and
+roll back together. `list_projects` and `list_tickets` are read-only;
+`list_tickets` is scoped to the calling run, and
 records its durable idempotent invocation in the same PostgreSQL authority.
 
 Migration `0012-platform-tool-idempotency.sql` is required because a retry after
