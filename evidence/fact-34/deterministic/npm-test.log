@@ -1,0 +1,451 @@
+
+> orbitfactory@0.1.0 test
+> npm run test:app && npm run test:phase0 && npm run test:coding-adapter
+
+
+> orbitfactory@0.1.0 test:app
+> vitest run
+
+
+ RUN  v4.1.10 /Users/adam/.treehouse/orbitflow-b83ab6/10/orbitflow
+
+
+ Test Files  21 passed | 1 skipped (22)
+      Tests  168 passed | 14 skipped (182)
+   Start at  12:28:26
+   Duration  29.70s (transform 231ms, setup 0ms, import 999ms, tests 25.83s, environment 1.43s)
+
+
+> orbitfactory@0.1.0 test:phase0
+> node --test test/*.test.mjs
+
+TAP version 13
+# Subtest: app entrypoint terminates su option parsing before forwarding a Node option
+ok 1 - app entrypoint terminates su option parsing before forwarding a Node option
+  ---
+  duration_ms: 458.235958
+  type: 'test'
+  ...
+# Subtest: Telegram remains an opt-in profile with the option-bearing Node command
+ok 2 - Telegram remains an opt-in profile with the option-bearing Node command
+  ---
+  duration_ms: 1.304458
+  type: 'test'
+  ...
+# Subtest: Telegram runtime fails closed on a blank token before it reaches the database or provider
+ok 3 - Telegram runtime fails closed on a blank token before it reaches the database or provider
+  ---
+  duration_ms: 97.838333
+  type: 'test'
+  ...
+# Subtest: Telegram Compose proof renders each credential case from an isolated interpolation file
+ok 4 - Telegram Compose proof renders each credential case from an isolated interpolation file
+  ---
+  duration_ms: 0.567
+  type: 'test'
+  ...
+# Subtest: Telegram Compose proof diagnostics classify failures and redact every controlled credential
+ok 5 - Telegram Compose proof diagnostics classify failures and redact every controlled credential
+  ---
+  duration_ms: 7.856042
+  type: 'test'
+  ...
+# Subtest: Telegram Compose proof keeps missing-token diagnostics bounded and tied to a nonzero exit
+ok 6 - Telegram Compose proof keeps missing-token diagnostics bounded and tied to a nonzero exit
+  ---
+  duration_ms: 0.414958
+  type: 'test'
+  ...
+# Subtest: Telegram Compose proof uses exact substring checks for retained provider formatting
+ok 7 - Telegram Compose proof uses exact substring checks for retained provider formatting
+  ---
+  duration_ms: 22.999208
+  type: 'test'
+  ...
+# Subtest: platform tool audit preserves command and exact arguments as structured data
+ok 8 - platform tool audit preserves command and exact arguments as structured data
+  ---
+  duration_ms: 0.65525
+  type: 'test'
+  ...
+# Subtest: platform tool audit rejects a mismatched payload and terminal-text substitutes
+ok 9 - platform tool audit rejects a mismatched payload and terminal-text substitutes
+  ---
+  duration_ms: 0.252208
+  type: 'test'
+  ...
+# Subtest: platform tool proof requires complete TOOLS.md injection metadata
+ok 10 - platform tool proof requires complete TOOLS.md injection metadata
+  ---
+  duration_ms: 0.094917
+  type: 'test'
+  ...
+# Subtest: platform tool turn requires a successful structured envelope and strict agent acknowledgement
+ok 11 - platform tool turn requires a successful structured envelope and strict agent acknowledgement
+  ---
+  duration_ms: 0.206709
+  type: 'test'
+  ...
+# Subtest: platform tool prompt mandates one exact CLI command
+ok 12 - platform tool prompt mandates one exact CLI command
+  ---
+  duration_ms: 0.079959
+  type: 'test'
+  ...
+# Subtest: platform tool evidence retains only bounded registration and acceptance facts
+ok 13 - platform tool evidence retains only bounded registration and acceptance facts
+  ---
+  duration_ms: 0.116
+  type: 'test'
+  ...
+# Subtest: parseOpenClawVersion retains the supported semantic version from official output
+ok 14 - parseOpenClawVersion retains the supported semantic version from official output
+  ---
+  duration_ms: 0.73925
+  type: 'test'
+  ...
+# Subtest: parseCliJson ignores OpenClaw diagnostic preamble and parses the JSON document
+ok 15 - parseCliJson ignores OpenClaw diagnostic preamble and parses the JSON document
+  ---
+  duration_ms: 0.370334
+  type: 'test'
+  ...
+# Subtest: parseCliJson accepts top-level arrays after bracketed diagnostics
+ok 16 - parseCliJson accepts top-level arrays after bracketed diagnostics
+  ---
+  duration_ms: 0.05675
+  type: 'test'
+  ...
+# Subtest: parseCommandJson falls back to stderr for OpenClaw 2026.4.15 agent JSON
+ok 17 - parseCommandJson falls back to stderr for OpenClaw 2026.4.15 agent JSON
+  ---
+  duration_ms: 0.063833
+  type: 'test'
+  ...
+# Subtest: parseOutputContract accepts one JSON fence without scraping surrounding prose
+ok 18 - parseOutputContract accepts one JSON fence without scraping surrounding prose
+  ---
+  duration_ms: 0.262041
+  type: 'test'
+  ...
+# Subtest: parseTurnResult accepts a completed OpenClaw 2026.4.15 envelope
+ok 19 - parseTurnResult accepts a completed OpenClaw 2026.4.15 envelope
+  ---
+  duration_ms: 0.157791
+  type: 'test'
+  ...
+# Subtest: parseTurnResult rejects OpenClaw's false zero-exit error envelope
+ok 20 - parseTurnResult rejects OpenClaw's false zero-exit error envelope
+  ---
+  duration_ms: 0.165833
+  type: 'test'
+  ...
+# Subtest: parseTurnResult rejects a timeout before parsing output
+ok 21 - parseTurnResult rejects a timeout before parsing output
+  ---
+  duration_ms: 0.058041
+  type: 'test'
+  ...
+# Subtest: parseTurnResult accepts the current official stable agent exec envelope
+ok 22 - parseTurnResult accepts the current official stable agent exec envelope
+  ---
+  duration_ms: 0.256209
+  type: 'test'
+  ...
+# Subtest: parseOpenAiRequestLog retains only authoritative request metadata
+ok 23 - parseOpenAiRequestLog retains only authoritative request metadata
+  ---
+  duration_ms: 0.406
+  type: 'test'
+  ...
+# Subtest: validateAgentProof binds output to the configured identity, theme, memory, and files
+ok 24 - validateAgentProof binds output to the configured identity, theme, memory, and files
+  ---
+  duration_ms: 0.338625
+  type: 'test'
+  ...
+# Subtest: evaluateOpenRouterDiagnostic requires one changed condition and both real inferences
+ok 25 - evaluateOpenRouterDiagnostic requires one changed condition and both real inferences
+  ---
+  duration_ms: 0.134167
+  type: 'test'
+  ...
+1..25
+# tests 25
+# suites 0
+# pass 25
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 622.713833
+
+> orbitfactory@0.1.0 test:coding-adapter
+> npm --prefix coding-adapter test
+
+
+> orbitflow-coding-adapter@0.1.0 test
+> node --test
+
+TAP version 13
+# Subtest: spawn-boundary rename and symlink replacement starts no CLI and hands off no key
+ok 1 - spawn-boundary rename and symlink replacement starts no CLI and hands off no key
+  ---
+  duration_ms: 135.082875
+  type: 'test'
+  ...
+# Subtest: one aggregate diff cap covers tracked output plus every untracked file
+ok 2 - one aggregate diff cap covers tracked output plus every untracked file
+  ---
+  duration_ms: 959.145
+  type: 'test'
+  ...
+# Subtest: delegate_coding_task builds a pure command with a minimal environment
+ok 3 - delegate_coding_task builds a pure command with a minimal environment
+  ---
+  duration_ms: 450.750917
+  type: 'test'
+  ...
+# Subtest: delegate_coding_task cleans isolated OpenCode state
+ok 4 - delegate_coding_task cleans isolated OpenCode state
+  ---
+  duration_ms: 355.961792
+  type: 'test'
+  ...
+# Subtest: missing credential short-circuits before spawning the credential-free boundary
+ok 5 - missing credential short-circuits before spawning the credential-free boundary
+  ---
+  duration_ms: 0.159583
+  type: 'test'
+  ...
+# Subtest: public error responses are bound to the complete authoritative code schema
+ok 6 - public error responses are bound to the complete authoritative code schema
+  ---
+  duration_ms: 0.25825
+  type: 'test'
+  ...
+# Subtest: the runbook public error table matches the authoritative runtime schema
+ok 7 - the runbook public error table matches the authoritative runtime schema
+  ---
+  duration_ms: 0.842417
+  type: 'test'
+  ...
+# Subtest: nonzero exit code maps to CliFailureError and cleans state
+ok 8 - nonzero exit code maps to CliFailureError and cleans state
+  ---
+  duration_ms: 300.422125
+  type: 'test'
+  ...
+# Subtest: malformed JSON line maps to MalformedOutputError
+ok 9 - malformed JSON line maps to MalformedOutputError
+  ---
+  duration_ms: 258.264375
+  type: 'test'
+  ...
+# Subtest: empty stdout maps to MalformedOutputError
+ok 10 - empty stdout maps to MalformedOutputError
+  ---
+  duration_ms: 238.772875
+  type: 'test'
+  ...
+# Subtest: unexpected JSON shape maps to MalformedOutputError
+ok 11 - unexpected JSON shape maps to MalformedOutputError
+  ---
+  duration_ms: 193.608333
+  type: 'test'
+  ...
+# Subtest: missing terminal step maps to MalformedOutputError
+ok 12 - missing terminal step maps to MalformedOutputError
+  ---
+  duration_ms: 264.718291
+  type: 'test'
+  ...
+# Subtest: oversized protocol line maps to MalformedOutputError
+ok 13 - oversized protocol line maps to MalformedOutputError
+  ---
+  duration_ms: 190.8685
+  type: 'test'
+  ...
+# Subtest: OpenCode launch failure maps to CliFailureError
+ok 14 - OpenCode launch failure maps to CliFailureError
+  ---
+  duration_ms: 152.252625
+  type: 'test'
+  ...
+# Subtest: OpenCode child error event maps to CliFailureError
+ok 15 - OpenCode child error event maps to CliFailureError
+  ---
+  duration_ms: 148.203792
+  type: 'test'
+  ...
+# Subtest: error event with exit zero maps to CliFailureError
+ok 16 - error event with exit zero maps to CliFailureError
+  ---
+  duration_ms: 235.789
+  type: 'test'
+  ...
+# Subtest: invalid fractional usage maps to MalformedOutputError before persistence
+ok 17 - invalid fractional usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 226.923625
+  type: 'test'
+  ...
+# Subtest: invalid unsafe usage maps to MalformedOutputError before persistence
+ok 18 - invalid unsafe usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 224.541417
+  type: 'test'
+  ...
+# Subtest: invalid negative usage maps to MalformedOutputError before persistence
+ok 19 - invalid negative usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 223.08575
+  type: 'test'
+  ...
+# Subtest: invalid nonfinite usage maps to MalformedOutputError before persistence
+ok 20 - invalid nonfinite usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 171.749583
+  type: 'test'
+  ...
+# Subtest: invalid overflow-sum usage maps to MalformedOutputError before persistence
+ok 21 - invalid overflow-sum usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 245.54925
+  type: 'test'
+  ...
+# Subtest: invalid cost-range usage maps to MalformedOutputError before persistence
+ok 22 - invalid cost-range usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 237.168833
+  type: 'test'
+  ...
+# Subtest: invalid cost-sum usage maps to MalformedOutputError before persistence
+ok 23 - invalid cost-sum usage maps to MalformedOutputError before persistence
+  ---
+  duration_ms: 236.002916
+  type: 'test'
+  ...
+# Subtest: literal credential in CLI output fails without exposing it
+ok 24 - literal credential in CLI output fails without exposing it
+  ---
+  duration_ms: 168.193584
+  type: 'test'
+  ...
+# Subtest: encoded credential in CLI output fails without exposing it
+ok 25 - encoded credential in CLI output fails without exposing it
+  ---
+  duration_ms: 168.894209
+  type: 'test'
+  ...
+# Subtest: credential in workspace content fails and removes the owned workspace
+ok 26 - credential in workspace content fails and removes the owned workspace
+  ---
+  duration_ms: 116.632125
+  type: 'test'
+  ...
+# Subtest: credential in binary workspace content is detected before diff encoding
+ok 27 - credential in binary workspace content is detected before diff encoding
+  ---
+  duration_ms: 113.3745
+  type: 'test'
+  ...
+# Subtest: encoded credentials in ignored and Git state remove the owned workspace
+ok 28 - encoded credentials in ignored and Git state remove the owned workspace
+  ---
+  duration_ms: 232.380709
+  type: 'test'
+  ...
+# Subtest: encoded credential in deleted committed content is detected
+ok 29 - encoded credential in deleted committed content is detected
+  ---
+  duration_ms: 268.887125
+  type: 'test'
+  ...
+# Subtest: caller-owned workspace is rejected without boundary launch or deletion
+ok 30 - caller-owned workspace is rejected without boundary launch or deletion
+  ---
+  duration_ms: 14.453667
+  type: 'test'
+  ...
+# Subtest: test/fakeChild.js
+ok 4 - test/fakeChild.js
+  ---
+  duration_ms: 34.835875
+  type: 'test'
+  ...
+# Subtest: diff ignores repository external helpers and fsmonitor
+ok 32 - diff ignores repository external helpers and fsmonitor
+  ---
+  duration_ms: 834.009084
+  type: 'test'
+  ...
+# Subtest: workspace creation ignores host Git config and hooks
+ok 33 - workspace creation ignores host Git config and hooks
+  ---
+  duration_ms: 52.922125
+  type: 'test'
+  ...
+# Subtest: usage parsing is complete while the returned log stays bounded
+ok 34 - usage parsing is complete while the returned log stays bounded
+  ---
+  duration_ms: 452.875458
+  type: 'test'
+  ...
+# Subtest: omitted usage stays unknown while explicit zero stays zero
+ok 35 - omitted usage stays unknown while explicit zero stays zero
+  ---
+  duration_ms: 335.162792
+  type: 'test'
+  ...
+# Subtest: test/protocolFixture.js
+ok 7 - test/protocolFixture.js
+  ---
+  duration_ms: 36.347334
+  type: 'test'
+  ...
+# Subtest: workspace cleanup refuses a substituted temporary root
+ok 37 - workspace cleanup refuses a substituted temporary root
+  ---
+  duration_ms: 76.207375
+  type: 'test'
+  ...
+# Subtest: OpenCode state cleanup refuses a substituted temporary root
+ok 38 - OpenCode state cleanup refuses a substituted temporary root
+  ---
+  duration_ms: 437.3515
+  type: 'test'
+  ...
+# Subtest: workspace setup failures clean only the verified temporary root
+ok 39 - workspace setup failures clean only the verified temporary root
+  ---
+  duration_ms: 23.461166
+  type: 'test'
+  ...
+# Subtest: test/testAdapter.js
+ok 9 - test/testAdapter.js
+  ---
+  duration_ms: 38.007542
+  type: 'test'
+  ...
+# Subtest: timeout kills complete CLI process groups after bounded child-start handshakes
+ok 41 - timeout kills complete CLI process groups after bounded child-start handshakes
+  ---
+  duration_ms: 1942.015208
+  type: 'test'
+  ...
+# Subtest: process-group inspection distinguishes absence from uninspectable liveness
+ok 42 - process-group inspection distinguishes absence from uninspectable liveness
+  ---
+  duration_ms: 0.501708
+  type: 'test'
+  ...
+1..42
+# tests 42
+# suites 0
+# pass 42
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4688.293084

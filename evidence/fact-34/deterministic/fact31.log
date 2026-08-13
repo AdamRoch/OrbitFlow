@@ -1,0 +1,537 @@
+
+> orbitfactory@0.1.0 fact31:proof
+> bash scripts/fact-31-compose-proof.sh
+
+ Image orbitfactory-fact31-proof-74104-app Building 
+ Image orbitfactory-fact31-proof-74104-openclaw Building 
+ Image orbitfactory-fact31-proof-74104-engine Building 
+ Image orbitfactory-fact31-proof-74104-migrate Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 2.24kB done
+#1 DONE 0.0s
+
+#2 [app internal] load build definition from Dockerfile
+#2 transferring dockerfile: 1.43kB done
+#2 DONE 0.0s
+
+#3 [openclaw internal] load build definition from Dockerfile
+#3 transferring dockerfile: 384B done
+#3 DONE 0.0s
+
+#4 [migrate internal] load metadata for docker.io/library/node:22.22.2-bookworm-slim
+#4 DONE 0.0s
+
+#5 [migrate internal] load .dockerignore
+#5 transferring context: 155B done
+#5 DONE 0.0s
+
+#6 [app build 1/6] FROM docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e
+#6 resolve docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e done
+#6 DONE 0.0s
+
+#7 [app internal] load build context
+#7 transferring context: 351.97kB 0.1s done
+#7 DONE 0.1s
+
+#8 [migrate build 2/6] WORKDIR /app
+#8 CACHED
+
+#9 [migrate build 3/6] COPY package.json package-lock.json ./
+#9 CACHED
+
+#10 [app build 4/6] RUN npm ci
+#10 CACHED
+
+#11 [app build 5/6] COPY . ./
+#11 ...
+
+#5 [engine internal] load .dockerignore
+#5 transferring context: 155B done
+#5 DONE 0.0s
+
+#6 [engine build 1/6] FROM docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e
+#6 resolve docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e done
+#6 DONE 0.0s
+
+#7 [engine internal] load build context
+#7 transferring context: 351.97kB 0.1s done
+#7 DONE 0.1s
+
+#9 [engine build 3/6] COPY package.json package-lock.json ./
+#9 CACHED
+
+#8 [engine build 2/6] WORKDIR /app
+#8 CACHED
+
+#10 [engine build 4/6] RUN npm ci
+#10 CACHED
+
+#12 [openclaw internal] load metadata for ghcr.io/openclaw/openclaw:2026.4.15
+#12 DONE 0.5s
+
+#13 [openclaw 1/4] FROM ghcr.io/openclaw/openclaw:2026.4.15@sha256:9d5f1dfbd5deedc37706c78f745b958ffbe9b4f20840cfb4d49c617a50326902
+#13 resolve ghcr.io/openclaw/openclaw:2026.4.15@sha256:9d5f1dfbd5deedc37706c78f745b958ffbe9b4f20840cfb4d49c617a50326902 done
+#13 DONE 0.0s
+
+#14 [openclaw internal] load build context
+#14 transferring context: 161B done
+#14 DONE 0.0s
+
+#15 [openclaw 3/4] COPY --chown=root:root docker/openclaw/entrypoint.sh /usr/local/bin/orbitflow-openclaw-gateway
+#15 CACHED
+
+#16 [openclaw 2/4] COPY --chown=node:node docker/openclaw/openclaw.json /opt/orbitflow/openclaw.json
+#16 CACHED
+
+#17 [openclaw 4/4] RUN chmod 755 /usr/local/bin/orbitflow-openclaw-gateway
+#17 CACHED
+
+#11 [app build 5/6] COPY . ./
+#11 DONE 0.5s
+
+#18 [openclaw] exporting to image
+#18 exporting layers done
+#18 exporting manifest sha256:09a41571fe9a4cfd1ba286f8c58e7ae98f322d232d6c134736684e8b77c7b402 0.1s done
+#18 exporting config sha256:5f4272428c6de21bc669b791417869f703fd5669616fef8c63b9126e18de6654 0.0s done
+#18 exporting attestation manifest sha256:ca34a8bb0fc86f91ecfa4ad62e92f2a04d6360982bf1e423278d881038bc4764 done
+#18 exporting manifest list sha256:9d6cca4a87727ef311a80ccd3827cc0b9a915bff04b6ce8152694d0c3d5c072d done
+#18 naming to docker.io/library/orbitfactory-fact31-proof-74104-openclaw:latest done
+#18 unpacking to docker.io/library/orbitfactory-fact31-proof-74104-openclaw:latest 0.0s done
+#18 DONE 0.2s
+
+#19 [openclaw] resolving provenance for metadata file
+#19 DONE 0.0s
+
+#20 [app build 6/6] RUN npm run build && npm prune --omit=dev
+#20 0.192 
+#20 0.192 > orbitfactory@0.1.0 build
+#20 0.192 > next build
+#20 0.192 
+#20 0.477 ▲ Next.js 16.3.0 (Turbopack)
+#20 0.585 ✓ Running next.config.ts took 107ms
+#20 0.590 Attention: Next.js now collects completely anonymous telemetry regarding usage.
+#20 0.590 This information is used to shape Next.js' roadmap and prioritize features.
+#20 0.590 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+#20 0.590 https://nextjs.org/telemetry
+#20 0.591 
+#20 0.614 
+#20 0.642   Creating an optimized production build ...
+#20 4.740 ✓ Compiled successfully in 3.6s
+#20 4.742   Running TypeScript ...
+#20 8.338   Finished TypeScript in 3.6s ...
+#20 8.340   Collecting page data using 5 workers ...
+#20 8.680   Generating static pages using 5 workers (0/18) ...
+#20 8.693   Generating static pages using 5 workers (4/18) 
+#20 8.766   Generating static pages using 5 workers (8/18) 
+#20 8.814   Generating static pages using 5 workers (13/18) 
+#20 8.850 ✓ Generating static pages using 5 workers (18/18) in 170ms
+#20 8.852   Finalizing page optimization ...
+#20 8.858 
+#20 8.860 Route (app)
+#20 8.860 ┌ ƒ /
+#20 8.860 ├ ○ /_not-found
+#20 8.860 ├ ○ /agents
+#20 8.860 ├ ƒ /api/agents
+#20 8.860 ├ ƒ /api/agents/[id]
+#20 8.860 ├ ƒ /api/agents/[id]/schedules
+#20 8.860 ├ ƒ /api/agents/[id]/skills/[skillId]
+#20 8.860 ├ ƒ /api/health
+#20 8.860 ├ ƒ /api/issues
+#20 8.860 ├ ƒ /api/issues/[id]
+#20 8.860 ├ ƒ /api/issues/[id]/blockers
+#20 8.860 ├ ƒ /api/issues/[id]/blockers/[blockerId]
+#20 8.860 ├ ƒ /api/issues/[id]/claim
+#20 8.860 ├ ƒ /api/issues/[id]/labels
+#20 8.860 ├ ƒ /api/issues/frontier
+#20 8.860 ├ ƒ /api/labels
+#20 8.860 ├ ƒ /api/labels/[id]
+#20 8.860 ├ ƒ /api/monitoring
+#20 8.860 ├ ƒ /api/questions/[id]/answer
+#20 8.860 ├ ƒ /api/schedules/[id]
+#20 8.860 ├ ƒ /api/schedules/[id]/trigger
+#20 8.860 ├ ƒ /api/skills
+#20 8.860 ├ ƒ /api/skills/[id]
+#20 8.860 ├ ƒ /api/state-stream
+#20 8.860 ├ ƒ /api/workflows
+#20 8.860 ├ ƒ /api/workflows/[id]
+#20 8.860 ├ ○ /frontier
+#20 8.860 ├ ƒ /issues/[identifier]
+#20 8.860 ├ ○ /labels
+#20 8.860 ├ ƒ /monitoring
+#20 8.860 ├ ○ /new
+#20 8.860 └ ○ /workflows
+#20 8.860 
+#20 8.860 
+#20 8.860 ○  (Static)   prerendered as static content
+#20 8.860 ƒ  (Dynamic)  server-rendered on demand
+#20 8.860 
+#20 10.29 
+#20 10.29 up to date, audited 187 packages in 1s
+#20 10.29 
+#20 10.29 76 packages are looking for funding
+#20 10.29   run `npm fund` for details
+#20 10.29 
+#20 10.29 found 0 vulnerabilities
+#20 DONE 10.3s
+
+#13 [engine 1/4] FROM ghcr.io/openclaw/openclaw:2026.4.15@sha256:9d5f1dfbd5deedc37706c78f745b958ffbe9b4f20840cfb4d49c617a50326902
+#13 CACHED
+
+#8 [engine build 2/6] WORKDIR /app
+#8 CACHED
+
+#21 [engine app 3/7] COPY --from=build --chown=node:node /app ./
+#21 DONE 1.2s
+
+#22 [engine app 4/7] COPY --chown=root:root docker/app-entrypoint.sh /usr/local/bin/orbitflow-app-entrypoint
+#22 DONE 0.1s
+
+#23 [engine app 5/7] COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitflow-coding-adapter-entrypoint
+#23 DONE 0.0s
+
+#24 [migrate app 6/7] COPY --chown=root:root docker/engine-entrypoint.sh /usr/local/bin/orbitflow-engine-entrypoint
+#24 DONE 0.0s
+
+#25 [app app 7/7] RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint
+#25 DONE 0.1s
+
+#26 [migrate] exporting to image
+#26 exporting layers
+#26 ...
+
+#27 [engine engine 1/4] RUN apt-get update     && apt-get install --no-install-recommends --yes git     && rm -rf /var/lib/apt/lists/*
+#27 0.210 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+#27 0.258 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#27 0.278 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+#27 0.313 Get:4 http://deb.debian.org/debian bookworm/main arm64 Packages [8689 kB]
+#27 1.886 Get:5 http://deb.debian.org/debian bookworm-updates/main arm64 Packages [6936 B]
+#27 1.886 Get:6 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages [331 kB]
+#27 2.430 Fetched 9269 kB in 2s (4061 kB/s)
+#27 2.430 Reading package lists...
+#27 2.682 Reading package lists...
+#27 2.918 Building dependency tree...
+#27 2.992 Reading state information...
+#27 3.070 The following additional packages will be installed:
+#27 3.070   git-man libbrotli1 libcurl3-gnutls liberror-perl libexpat1 libgdbm-compat4
+#27 3.070   libgdbm6 libgssapi-krb5-2 libk5crypto3 libkeyutils1 libkrb5-3
+#27 3.070   libkrb5support0 libldap-2.5-0 libnghttp2-14 libperl5.36 libpsl5 librtmp1
+#27 3.070   libsasl2-2 libsasl2-modules-db libssh2-1 libssl3 perl perl-modules-5.36
+#27 3.070 Suggested packages:
+#27 3.070   gettext-base git-daemon-run | git-daemon-sysvinit git-doc git-email git-gui
+#27 3.070   gitk gitweb git-cvs git-mediawiki git-svn gdbm-l10n krb5-doc krb5-user
+#27 3.070   sensible-utils perl-doc libterm-readline-gnu-perl
+#27 3.070   | libterm-readline-perl-perl make libtap-harness-archive-perl
+#27 3.070 Recommended packages:
+#27 3.070   ca-certificates patch less ssh-client krb5-locales libldap-common
+#27 3.070   publicsuffix libsasl2-modules netbase
+#27 3.172 The following NEW packages will be installed:
+#27 3.172   git git-man libbrotli1 libcurl3-gnutls liberror-perl libexpat1
+#27 3.172   libgdbm-compat4 libgdbm6 libgssapi-krb5-2 libk5crypto3 libkeyutils1
+#27 3.172   libkrb5-3 libkrb5support0 libldap-2.5-0 libnghttp2-14 libperl5.36 libpsl5
+#27 3.172   librtmp1 libsasl2-2 libsasl2-modules-db libssh2-1 libssl3 perl
+#27 3.172   perl-modules-5.36
+#27 3.261 0 upgraded, 24 newly installed, 0 to remove and 13 not upgraded.
+#27 3.261 Need to get 20.1 MB of archives.
+#27 3.261 After this operation, 112 MB of additional disk space will be used.
+#27 3.261 Get:1 http://deb.debian.org/debian bookworm/main arm64 perl-modules-5.36 all 5.36.0-7+deb12u3 [2815 kB]
+#27 3.534 Get:2 http://deb.debian.org/debian bookworm/main arm64 libgdbm6 arm64 1.23-3 [70.9 kB]
+#27 3.534 Get:3 http://deb.debian.org/debian bookworm/main arm64 libgdbm-compat4 arm64 1.23-3 [48.0 kB]
+#27 3.543 Get:4 http://deb.debian.org/debian bookworm/main arm64 libperl5.36 arm64 5.36.0-7+deb12u3 [4009 kB]
+#27 3.927 Get:5 http://deb.debian.org/debian bookworm/main arm64 perl arm64 5.36.0-7+deb12u3 [239 kB]
+#27 3.938 Get:6 http://deb.debian.org/debian bookworm/main arm64 libbrotli1 arm64 1.0.9-2+b6 [269 kB]
+#27 3.961 Get:7 http://deb.debian.org/debian bookworm/main arm64 libkrb5support0 arm64 1.20.1-2+deb12u5 [32.6 kB]
+#27 3.963 Get:8 http://deb.debian.org/debian bookworm/main arm64 libk5crypto3 arm64 1.20.1-2+deb12u5 [79.9 kB]
+#27 3.969 Get:9 http://deb.debian.org/debian bookworm/main arm64 libkeyutils1 arm64 1.6.3-2 [8844 B]
+#27 3.969 Get:10 http://deb.debian.org/debian bookworm/main arm64 libssl3 arm64 3.0.20-1~deb12u2 [1824 kB]
+#27 4.142 Get:11 http://deb.debian.org/debian bookworm/main arm64 libkrb5-3 arm64 1.20.1-2+deb12u5 [316 kB]
+#27 4.181 Get:12 http://deb.debian.org/debian bookworm/main arm64 libgssapi-krb5-2 arm64 1.20.1-2+deb12u5 [124 kB]
+#27 4.199 Get:13 http://deb.debian.org/debian bookworm/main arm64 libsasl2-modules-db arm64 2.1.28+dfsg-10 [20.8 kB]
+#27 4.203 Get:14 http://deb.debian.org/debian bookworm/main arm64 libsasl2-2 arm64 2.1.28+dfsg-10 [58.0 kB]
+#27 4.210 Get:15 http://deb.debian.org/debian bookworm/main arm64 libldap-2.5-0 arm64 2.5.13+dfsg-5 [171 kB]
+#27 4.219 Get:16 http://deb.debian.org/debian bookworm/main arm64 libnghttp2-14 arm64 1.52.0-1+deb12u3 [69.0 kB]
+#27 4.223 Get:17 http://deb.debian.org/debian bookworm/main arm64 libpsl5 arm64 0.21.2-1 [58.6 kB]
+#27 4.231 Get:18 http://deb.debian.org/debian bookworm/main arm64 librtmp1 arm64 2.4+20151223.gitfa8646d.1-2+b2 [59.4 kB]
+#27 4.255 Get:19 http://deb.debian.org/debian bookworm/main arm64 libssh2-1 arm64 1.10.0-3+b1 [172 kB]
+#27 4.273 Get:20 http://deb.debian.org/debian bookworm/main arm64 libcurl3-gnutls arm64 7.88.1-10+deb12u15 [362 kB]
+#27 4.292 Get:21 http://deb.debian.org/debian bookworm/main arm64 libexpat1 arm64 2.5.0-1+deb12u2 [86.3 kB]
+#27 4.302 Get:22 http://deb.debian.org/debian bookworm/main arm64 liberror-perl all 0.17029-2 [29.0 kB]
+#27 4.302 Get:23 http://deb.debian.org/debian bookworm/main arm64 git-man all 1:2.39.5-0+deb12u3 [2053 kB]
+#27 4.479 Get:24 http://deb.debian.org/debian bookworm/main arm64 git arm64 1:2.39.5-0+deb12u3 [7153 kB]
+#27 5.193 debconf: delaying package configuration, since apt-utils is not installed
+#27 5.203 Fetched 20.1 MB in 2s (10.3 MB/s)
+#27 5.213 Selecting previously unselected package perl-modules-5.36.
+#27 5.213 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6090 files and directories currently installed.)
+#27 5.222 Preparing to unpack .../00-perl-modules-5.36_5.36.0-7+deb12u3_all.deb ...
+#27 5.223 Unpacking perl-modules-5.36 (5.36.0-7+deb12u3) ...
+#27 5.372 Selecting previously unselected package libgdbm6:arm64.
+#27 5.373 Preparing to unpack .../01-libgdbm6_1.23-3_arm64.deb ...
+#27 5.375 Unpacking libgdbm6:arm64 (1.23-3) ...
+#27 5.385 Selecting previously unselected package libgdbm-compat4:arm64.
+#27 5.386 Preparing to unpack .../02-libgdbm-compat4_1.23-3_arm64.deb ...
+#27 5.387 Unpacking libgdbm-compat4:arm64 (1.23-3) ...
+#27 5.397 Selecting previously unselected package libperl5.36:arm64.
+#27 5.398 Preparing to unpack .../03-libperl5.36_5.36.0-7+deb12u3_arm64.deb ...
+#27 5.399 Unpacking libperl5.36:arm64 (5.36.0-7+deb12u3) ...
+#27 5.594 Selecting previously unselected package perl.
+#27 5.595 Preparing to unpack .../04-perl_5.36.0-7+deb12u3_arm64.deb ...
+#27 5.598 Unpacking perl (5.36.0-7+deb12u3) ...
+#27 5.616 Selecting previously unselected package libbrotli1:arm64.
+#27 5.617 Preparing to unpack .../05-libbrotli1_1.0.9-2+b6_arm64.deb ...
+#27 5.618 Unpacking libbrotli1:arm64 (1.0.9-2+b6) ...
+#27 5.638 Selecting previously unselected package libkrb5support0:arm64.
+#27 5.638 Preparing to unpack .../06-libkrb5support0_1.20.1-2+deb12u5_arm64.deb ...
+#27 5.641 Unpacking libkrb5support0:arm64 (1.20.1-2+deb12u5) ...
+#27 5.650 Selecting previously unselected package libk5crypto3:arm64.
+#27 5.650 Preparing to unpack .../07-libk5crypto3_1.20.1-2+deb12u5_arm64.deb ...
+#27 5.651 Unpacking libk5crypto3:arm64 (1.20.1-2+deb12u5) ...
+#27 5.665 Selecting previously unselected package libkeyutils1:arm64.
+#27 5.665 Preparing to unpack .../08-libkeyutils1_1.6.3-2_arm64.deb ...
+#27 5.666 Unpacking libkeyutils1:arm64 (1.6.3-2) ...
+#27 5.677 Selecting previously unselected package libssl3:arm64.
+#27 5.678 Preparing to unpack .../09-libssl3_3.0.20-1~deb12u2_arm64.deb ...
+#27 5.679 Unpacking libssl3:arm64 (3.0.20-1~deb12u2) ...
+#27 5.754 Selecting previously unselected package libkrb5-3:arm64.
+#27 5.755 Preparing to unpack .../10-libkrb5-3_1.20.1-2+deb12u5_arm64.deb ...
+#27 5.755 Unpacking libkrb5-3:arm64 (1.20.1-2+deb12u5) ...
+#27 5.778 Selecting previously unselected package libgssapi-krb5-2:arm64.
+#27 5.779 Preparing to unpack .../11-libgssapi-krb5-2_1.20.1-2+deb12u5_arm64.deb ...
+#27 5.780 Unpacking libgssapi-krb5-2:arm64 (1.20.1-2+deb12u5) ...
+#27 5.792 Selecting previously unselected package libsasl2-modules-db:arm64.
+#27 5.793 Preparing to unpack .../12-libsasl2-modules-db_2.1.28+dfsg-10_arm64.deb ...
+#27 5.794 Unpacking libsasl2-modules-db:arm64 (2.1.28+dfsg-10) ...
+#27 5.802 Selecting previously unselected package libsasl2-2:arm64.
+#27 5.802 Preparing to unpack .../13-libsasl2-2_2.1.28+dfsg-10_arm64.deb ...
+#27 5.803 Unpacking libsasl2-2:arm64 (2.1.28+dfsg-10) ...
+#27 5.813 Selecting previously unselected package libldap-2.5-0:arm64.
+#27 5.814 Preparing to unpack .../14-libldap-2.5-0_2.5.13+dfsg-5_arm64.deb ...
+#27 5.814 Unpacking libldap-2.5-0:arm64 (2.5.13+dfsg-5) ...
+#27 5.830 Selecting previously unselected package libnghttp2-14:arm64.
+#27 5.831 Preparing to unpack .../15-libnghttp2-14_1.52.0-1+deb12u3_arm64.deb ...
+#27 5.832 Unpacking libnghttp2-14:arm64 (1.52.0-1+deb12u3) ...
+#27 5.845 Selecting previously unselected package libpsl5:arm64.
+#27 5.845 Preparing to unpack .../16-libpsl5_0.21.2-1_arm64.deb ...
+#27 5.846 Unpacking libpsl5:arm64 (0.21.2-1) ...
+#27 5.865 Selecting previously unselected package librtmp1:arm64.
+#27 5.865 Preparing to unpack .../17-librtmp1_2.4+20151223.gitfa8646d.1-2+b2_arm64.deb ...
+#27 5.865 Unpacking librtmp1:arm64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+#27 5.884 Selecting previously unselected package libssh2-1:arm64.
+#27 5.885 Preparing to unpack .../18-libssh2-1_1.10.0-3+b1_arm64.deb ...
+#27 5.886 Unpacking libssh2-1:arm64 (1.10.0-3+b1) ...
+#27 5.901 Selecting previously unselected package libcurl3-gnutls:arm64.
+#27 5.902 Preparing to unpack .../19-libcurl3-gnutls_7.88.1-10+deb12u15_arm64.deb ...
+#27 5.903 Unpacking libcurl3-gnutls:arm64 (7.88.1-10+deb12u15) ...
+#27 5.923 Selecting previously unselected package libexpat1:arm64.
+#27 5.924 Preparing to unpack .../20-libexpat1_2.5.0-1+deb12u2_arm64.deb ...
+#27 5.925 Unpacking libexpat1:arm64 (2.5.0-1+deb12u2) ...
+#27 5.935 Selecting previously unselected package liberror-perl.
+#27 5.936 Preparing to unpack .../21-liberror-perl_0.17029-2_all.deb ...
+#27 5.937 Unpacking liberror-perl (0.17029-2) ...
+#27 5.945 Selecting previously unselected package git-man.
+#27 5.946 Preparing to unpack .../22-git-man_1%3a2.39.5-0+deb12u3_all.deb ...
+#27 5.946 Unpacking git-man (1:2.39.5-0+deb12u3) ...
+#27 6.000 Selecting previously unselected package git.
+#27 6.001 Preparing to unpack .../23-git_1%3a2.39.5-0+deb12u3_arm64.deb ...
+#27 6.003 Unpacking git (1:2.39.5-0+deb12u3) ...
+#27 6.205 Setting up libexpat1:arm64 (2.5.0-1+deb12u2) ...
+#27 6.207 Setting up libkeyutils1:arm64 (1.6.3-2) ...
+#27 6.211 Setting up libpsl5:arm64 (0.21.2-1) ...
+#27 6.213 Setting up libbrotli1:arm64 (1.0.9-2+b6) ...
+#27 6.215 Setting up libssl3:arm64 (3.0.20-1~deb12u2) ...
+#27 6.218 Setting up libnghttp2-14:arm64 (1.52.0-1+deb12u3) ...
+#27 6.220 Setting up libkrb5support0:arm64 (1.20.1-2+deb12u5) ...
+#27 6.222 Setting up libsasl2-modules-db:arm64 (2.1.28+dfsg-10) ...
+#27 6.225 Setting up perl-modules-5.36 (5.36.0-7+deb12u3) ...
+#27 6.227 Setting up librtmp1:arm64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+#27 6.230 Setting up libk5crypto3:arm64 (1.20.1-2+deb12u5) ...
+#27 6.232 Setting up libsasl2-2:arm64 (2.1.28+dfsg-10) ...
+#27 6.234 Setting up git-man (1:2.39.5-0+deb12u3) ...
+#27 6.237 Setting up libssh2-1:arm64 (1.10.0-3+b1) ...
+#27 6.239 Setting up libkrb5-3:arm64 (1.20.1-2+deb12u5) ...
+#27 6.242 Setting up libgdbm6:arm64 (1.23-3) ...
+#27 6.244 Setting up libldap-2.5-0:arm64 (2.5.13+dfsg-5) ...
+#27 6.247 Setting up libgssapi-krb5-2:arm64 (1.20.1-2+deb12u5) ...
+#27 6.250 Setting up libgdbm-compat4:arm64 (1.23-3) ...
+#27 6.252 Setting up libperl5.36:arm64 (5.36.0-7+deb12u3) ...
+#27 6.256 Setting up libcurl3-gnutls:arm64 (7.88.1-10+deb12u15) ...
+#27 6.258 Setting up perl (5.36.0-7+deb12u3) ...
+#27 6.263 Setting up liberror-perl (0.17029-2) ...
+#27 6.265 Setting up git (1:2.39.5-0+deb12u3) ...
+#27 6.270 Processing triggers for libc-bin (2.36-9+deb12u13) ...
+#27 DONE 6.4s
+
+#28 [app] exporting to image
+#28 ...
+
+#29 [engine engine 2/4] RUN npm ci --prefix coding-adapter --omit=dev
+#29 ...
+
+#26 [migrate] exporting to image
+#26 exporting layers 11.0s done
+#26 exporting manifest sha256:4f61b8029c1a47a35f5832de6ef5beb0e226d4c6094c898bf5decfaecce11db7 done
+#26 exporting config sha256:14716b0418abc7635554762a20247724f3a18c6a055ad645915273a15013dabc done
+#26 exporting attestation manifest sha256:b25042be2657add94d0cd1aeddbf5913debf5a79d5712f271cb9e89b753fd559 0.0s done
+#26 exporting manifest list sha256:d8fb0132602c8d69f1ec0eedc7bd3bc5db411590199aa6f17fb8730ca480fec4 done
+#26 naming to docker.io/library/orbitfactory-fact31-proof-74104-migrate:latest done
+#26 unpacking to docker.io/library/orbitfactory-fact31-proof-74104-migrate:latest
+#26 unpacking to docker.io/library/orbitfactory-fact31-proof-74104-migrate:latest 3.0s done
+#26 DONE 14.1s
+
+#28 [app] exporting to image
+#28 exporting layers 11.0s done
+#28 exporting manifest sha256:fd9ee36fb98378b469e1245e1a3cd35ae8670386b549c333f8869fda62fb668d done
+#28 exporting config sha256:82cf74d472aba5a6ed71b4f60ff6f44acd0c6ed0e1e308cc8c9bb0f367801822 done
+#28 exporting attestation manifest sha256:3eb9702e9a6bd7f5154410466c07db31ef00f8c87a1a470577694bb51d08720a 0.0s done
+#28 exporting manifest list sha256:310dbee3c9b2ddd2fab2d2550da1e28e9415385569859b68a6ea690530a7ac59 done
+#28 naming to docker.io/library/orbitfactory-fact31-proof-74104-app:latest done
+#28 unpacking to docker.io/library/orbitfactory-fact31-proof-74104-app:latest 3.0s done
+#28 DONE 14.1s
+
+#30 [migrate] resolving provenance for metadata file
+#30 DONE 0.1s
+
+#31 [app] resolving provenance for metadata file
+#31 DONE 0.0s
+
+#29 [engine engine 2/4] RUN npm ci --prefix coding-adapter --omit=dev
+#29 12.70 
+#29 12.70 added 17 packages, and audited 18 packages in 13s
+#29 12.70 
+#29 12.70 found 0 vulnerabilities
+#29 12.70 npm notice
+#29 12.70 npm notice New major version of npm available! 10.9.7 -> 12.0.2
+#29 12.70 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+#29 12.70 npm notice To update run: npm install -g npm@12.0.2
+#29 12.70 npm notice
+#29 DONE 13.0s
+
+#32 [engine engine 3/4] COPY --from=openclaw-runtime /app /opt/openclaw
+#32 DONE 9.4s
+
+#33 [engine engine 4/4] RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
+#33 DONE 0.4s
+
+#34 [engine] exporting to image
+#34 exporting layers
+#34 exporting layers 27.7s done
+#34 exporting manifest sha256:3f5407a3ea1fb3ae0e27299191eedb0a9f2f3c6a474ebf8eaf5fd3fb38788855 done
+#34 exporting config sha256:c8d6179c9976e6a917d1d3a9bd2f7bb07267a12fde37378ad7f3300ea20b3f99 done
+#34 exporting attestation manifest sha256:fcd15f09b3099146b0847b74eb5647177db0c0735f3c2ebf58cfac910540b3f4 done
+#34 exporting manifest list sha256:1781e2e2f9388b9b864f379644c864f010eed313042d841a3c4102d23096ff81 done
+#34 naming to docker.io/library/orbitfactory-fact31-proof-74104-engine:latest done
+#34 unpacking to docker.io/library/orbitfactory-fact31-proof-74104-engine:latest
+#34 unpacking to docker.io/library/orbitfactory-fact31-proof-74104-engine:latest 10.1s done
+#34 DONE 37.8s
+
+#35 [engine] resolving provenance for metadata file
+#35 DONE 0.0s
+ Image orbitfactory-fact31-proof-74104-engine Built 
+ Image orbitfactory-fact31-proof-74104-migrate Built 
+ Image orbitfactory-fact31-proof-74104-app Built 
+ Image orbitfactory-fact31-proof-74104-openclaw Built 
+ Network orbitfactory-fact31-proof-74104_default Creating 
+ Network orbitfactory-fact31-proof-74104_default Created 
+ Volume orbitfactory-fact31-proof-74104_postgres-data Creating 
+ Volume orbitfactory-fact31-proof-74104_postgres-data Created 
+ Volume orbitfactory-fact31-proof-74104_app-data Creating 
+ Volume orbitfactory-fact31-proof-74104_app-data Created 
+ Volume orbitfactory-fact31-proof-74104_openclaw-state Creating 
+ Volume orbitfactory-fact31-proof-74104_openclaw-state Created 
+ Volume orbitfactory-fact31-proof-74104_engine-data Creating 
+ Volume orbitfactory-fact31-proof-74104_engine-data Created 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Creating 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Creating 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Created 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Created 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Creating 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Created 
+ Container orbitfactory-fact31-proof-74104-app-1 Creating 
+ Container orbitfactory-fact31-proof-74104-app-1 Created 
+ Container orbitfactory-fact31-proof-74104-engine-1 Creating 
+ Container orbitfactory-fact31-proof-74104-engine-1 Created 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Starting 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Starting 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Started 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Started 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Starting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Started 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-app-1 Starting 
+ Container orbitfactory-fact31-proof-74104-app-1 Started 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-engine-1 Starting 
+ Container orbitfactory-fact31-proof-74104-engine-1 Started 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-engine-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-engine-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-engine-1 Restarting 
+ Container orbitfactory-fact31-proof-74104-engine-1 Started 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Running 
+ Container orbitfactory-fact31-proof-74104-engine-1 Running 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Running 
+ Container orbitfactory-fact31-proof-74104-app-1 Running 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Starting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Started 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-engine-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-engine-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-engine-1 Restarting 
+ Container orbitfactory-fact31-proof-74104-engine-1 Started 
+ Container orbitfactory-fact31-proof-74104-app-1 Running 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Running 
+ Container orbitfactory-fact31-proof-74104-engine-1 Running 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Running 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Starting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Started 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-app-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-engine-1 Waiting 
+ Container orbitfactory-fact31-proof-74104-migrate-1 Exited 
+ Container orbitfactory-fact31-proof-74104-openclaw-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-postgres-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-app-1 Healthy 
+ Container orbitfactory-fact31-proof-74104-engine-1 Healthy 
+FACT-31 production engine Compose proof passed for orbitfactory-fact31-proof-74104

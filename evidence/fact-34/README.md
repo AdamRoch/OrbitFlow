@@ -40,3 +40,24 @@ Each run retains:
 Internal invocation hashes are shortened in the retained JSON. They are
 idempotency identifiers, not credentials, and the shortening prevents generic
 secret scanners from misclassifying them as API keys.
+
+## Deterministic proof
+
+The `deterministic/` logs were recorded on retained-evidence commit
+`465df1e34eeba7a04bbf4ca68ba5d32fe4a65409`. Every command exited zero:
+
+| Gate | Result |
+| --- | --- |
+| `npm run typecheck` and `npm run lint` | Passed |
+| `npm test` | 168 app tests passed, 14 skipped; 25 phase-zero tests passed; 42 coding-adapter tests passed |
+| `npm run build` | Next.js production build passed |
+| `npm audit --omit=dev` | 0 vulnerabilities |
+| `npm run fact21:proof` | 4 template clean-install, restart, upgrade, and no-overwrite tests passed |
+| `npm run fact24:proof` | 4 durable question, restart, and exact-thread tests passed |
+| `npm run fact11:proof` | OpenClaw 2026.4.15 CLI path and 24 production-adapter tests passed |
+| `npm run fact31:proof` | Dependency production-engine Compose proof passed |
+| `npm run fact34:proof` | Real PostgreSQL test and isolated production-adapter Compose proof passed |
+
+FACT-14's funded provider proof was not run because that would have created an
+unauthorized third paid attempt. The two authorized provider attempts above are
+the complete funded evidence for this delivery.
