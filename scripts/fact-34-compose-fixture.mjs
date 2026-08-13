@@ -110,13 +110,24 @@ try {
     );
     process.stdout.write(`${JSON.stringify(result.rows[0])}\n`);
   } else if (command === "tool-proof") {
-    const result = await pool.query(
+    const invocations = await pool.query(
       `SELECT idempotency_key
        FROM agent_tool_invocations
        WHERE idempotency_key LIKE 'fact34-%'
        ORDER BY idempotency_key`,
     );
-    process.stdout.write(`${JSON.stringify({ keys: result.rows.map((row) => row.idempotency_key) })}\n`);
+    const costs = await pool.query(
+      `SELECT run_id::text AS "runId", agent_id::text AS "agentId", model,
+              tokens_in::text AS "tokensIn", tokens_out::text AS "tokensOut",
+              computed_cost::text AS cost
+       FROM cost_events
+       WHERE model = 'proof/isolation-model'
+       ORDER BY id`,
+    );
+    process.stdout.write(`${JSON.stringify({
+      keys: invocations.rows.map((row) => row.idempotency_key),
+      codingCosts: costs.rows,
+    })}\n`);
   } else if (command === "tamper-tool-context") {
     const agentId = process.argv[3];
     const replacementRunId = process.argv[4];

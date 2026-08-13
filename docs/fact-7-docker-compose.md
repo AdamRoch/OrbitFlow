@@ -30,6 +30,8 @@ dependencies.
 | `migrate` | One-shot ordered FACT-6 migration runner | exits successfully |
 | `app` | Current OrbitTrack-derived board UI plus control-plane API | `GET /api/health`; proof also requires PostgreSQL-backed `GET /api/agents` |
 | `openclaw` | Dedicated FACT-1 gateway container | `GET /readyz` on its internal port |
+| `tool-broker` | Privileged dispatch validation and PostgreSQL mutation broker | root-owned Unix socket exists |
+| `coding-executor` | Database-isolated OpenCode execution plane | root-owned Unix socket exists |
 | `engine` | FACT-31 production consumer, dispatcher, scheduler, and runtime adapter | `GET /readyz` after successful consumer and dispatcher polls |
 
 The engine reports `workflowEngine: operational` only after the real FACT-9
@@ -74,15 +76,18 @@ and `amd64` manifests, and the OpenCode package declares Linux `arm64` and
 ## State, restart, teardown
 
 Compose names and deliberately reuses `postgres-data`, `app-data`,
-`openclaw-state`, and `engine-data`. OpenClaw and the engine share
-`engine-data` so the gateway's one explicitly allowlisted, context-bound
-OrbitFlow wrapper uses the same owned agent and run workspaces. The wrapper
-injects the active dispatch's agent, run, ticket, database, and workspace
-attribution outside model-controlled arguments. Gateway startup writes the
-bounded CLI environment to an ephemeral, agent-unreachable runtime file, and
-the wrapper requires the database dispatch lease and canonical wake context to
-still match before invoking a project CLI. No general shell executable or
-underlying project CLI is allowlisted. The migration runner stores checksums in
+`openclaw-state`, `engine-data`, and `run-workspaces`. OpenClaw and the engine
+share `engine-data` only for runtime and agent workspace state. The gateway's
+one explicitly allowlisted wrapper has no database credential and sends the
+active dispatch context to `tool-broker` over a root-owned socket. The broker
+reloads the engine context, requires the PostgreSQL dispatch lease and
+canonical wake context to match, and performs only the named platform or coding
+operation. Coding work crosses a second root-owned socket to
+`coding-executor`, which has the provider key but no database credential and
+only the provider network. Each delegated process uses a persisted run-specific
+UID and a mode-`0700` run directory, preventing access to sibling workspaces and
+broker sockets. No general shell executable or underlying project CLI is
+allowlisted. The migration runner stores checksums in
 `schema_migrations`, so a rerun is a no-op. Stop the stack while retaining
 state with `docker compose down`; remove only this stack's state with:
 

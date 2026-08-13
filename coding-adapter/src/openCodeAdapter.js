@@ -5,7 +5,7 @@
 // See ../DECISION.md for why opencode was picked over claude/codex.
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { chownSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { devNull } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -63,6 +63,7 @@ export function createOpenCodeAdapter({
   env = process.env,
   workspaceAuthority = createTemporaryWorkspaceAuthority(),
   beforeCredential,
+  executionIdentity,
 } = {}) {
   async function delegate_coding_task(task, workspace, { signal } = {}) {
     if (signal?.aborted) {
@@ -76,7 +77,7 @@ export function createOpenCodeAdapter({
     const workspaceHandle = await workspaceAuthority.resolve(workspace);
     workspace = workspaceHandle.workspace;
     const secrets = secretVariants(credential);
-    const isolatedState = await createIsolatedState(env.PATH);
+    const isolatedState = await createIsolatedState(env.PATH, executionIdentity);
     try {
       try {
         const result = await runAnchoredBoundary({
@@ -97,6 +98,7 @@ export function createOpenCodeAdapter({
           childStartHandshakeMs,
           secrets,
           signal,
+          executionIdentity,
         });
         if (!(await workspaceAuthority.assertCurrent(workspaceHandle))) {
           throw new CliFailureError("workspace ownership changed during CLI execution");
@@ -122,9 +124,13 @@ export function createOpenCodeAdapter({
   return { delegate_coding_task };
 }
 
-async function createIsolatedState(toolPath) {
+async function createIsolatedState(toolPath, executionIdentity) {
   const ownership = await createOwnedTempRoot("opencode-state-");
   const root = ownership.root;
+  if (executionIdentity) {
+    validateExecutionIdentity(executionIdentity);
+    chownTree(root, executionIdentity.uid, executionIdentity.gid);
+  }
   return {
     ownership,
     root,
@@ -164,6 +170,7 @@ function runAnchoredBoundary({
   childStartHandshakeMs,
   secrets,
   signal,
+  executionIdentity,
 }) {
   const identity = workspaceIdentity(workspaceHandle);
   return new Promise((resolve, reject) => {
@@ -177,6 +184,9 @@ function runAnchoredBoundary({
           TMPDIR: isolatedState.root,
         },
         stdio: ["ignore", "pipe", "pipe", "ipc"],
+        ...(executionIdentity
+          ? { uid: executionIdentity.uid, gid: executionIdentity.gid }
+          : {}),
       });
     } catch (error) {
       reject(new CliFailureError(`failed to start coding execution boundary: ${errorMessage(error)}`));
@@ -332,6 +342,27 @@ function runAnchoredBoundary({
       }
     });
   });
+}
+
+function validateExecutionIdentity(value) {
+  if (
+    !Number.isSafeInteger(value?.uid) ||
+    value.uid < 1 ||
+    !Number.isSafeInteger(value?.gid) ||
+    value.gid < 1
+  ) {
+    throw new CliFailureError("coding execution identity is invalid");
+  }
+}
+
+function chownTree(target, uid, gid) {
+  const stat = lstatSync(target);
+  if (stat.isDirectory()) {
+    for (const entry of readdirSync(target)) {
+      chownTree(path.join(target, entry), uid, gid);
+    }
+  }
+  chownSync(target, uid, gid);
 }
 
 function workspaceIdentity(handle) {

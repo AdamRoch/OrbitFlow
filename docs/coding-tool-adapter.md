@@ -56,6 +56,17 @@ same `TOOLS.md` pattern proved by FACT-2. The engine binds `ORBITFLOW_RUN_ID`,
 `ORBITFLOW_AGENT_ID`, and the run workspace. Run and agent identity are process
 context, not values the model submits in the request.
 
+In the production Compose path, OpenClaw does not execute this database-bearing
+entry point. Its credentialless allowlisted wrapper sends a closed operation to
+the root-owned tool broker. The broker validates the active dispatch and owns
+workspace creation and cost persistence. Coding execution crosses a second
+Unix socket into a provider-network-only executor with no database environment
+or route to the PostgreSQL service. The executor server runs as root, but each
+OpenCode delegation drops to a distinct persisted UID for its run. The run
+workspace parent is searchable but not listable, and every run directory is
+mode `0700` and owned by its assigned UID, so delegated code cannot read sibling
+run workspaces or either privileged socket.
+
 ## Configuration and containment
 
 The process requires:
@@ -144,8 +155,17 @@ OpenClaw tool boundary. With neither gate set, no provider request is made.
 
 ## Trust boundary
 
-As in FACT-3, tasks and invoked programs are evaluator-authored and trusted.
-Minimal environment inheritance, path ownership, and process-group teardown are
-defense-in-depth, not an operating-system sandbox for hostile code. Workflow
-execution, fan-out policy, message routing, Telegram, and the implementer review
-prompt remain outside FACT-12.
+OpenCode itself is not a general operating-system sandbox. The provider key must
+enter the OpenCode process so it can call the selected provider, and model-authored
+code can therefore observe that provider credential. PostgreSQL authority is a
+separate boundary: unrestricted database credentials, active-dispatch checks,
+platform mutations, workspace ownership records, and cost persistence remain in
+the tool broker. Delegated code runs under a run-specific unprivileged UID in a
+container that mounts only run workspaces and the executor socket, cannot open
+that root-owned socket, and joins only the provider network where the PostgreSQL
+service is neither resolvable nor reachable. The executor validates the persisted
+run/UID/workspace device and inode before dropping identity. This boundary limits
+database authority and cross-run filesystem access; it does not claim protection
+against provider-key disclosure or denial of service within the delegated run.
+Workflow execution, fan-out policy, message routing, Telegram, and the
+implementer review prompt remain outside FACT-12.

@@ -81,6 +81,7 @@ compose exec -T openclaw node -e '
   const config=JSON.parse(fs.readFileSync("/home/node/.openclaw/openclaw.json","utf8"));
   const approvals=JSON.parse(fs.readFileSync("/home/node/.openclaw/exec-approvals.json","utf8"));
   const patterns=approvals.agents["*"].allowlist.map(entry=>entry.pattern).sort();
+  if(Object.hasOwn(process.env,"DATABASE_URL")||fs.existsSync("/run/orbitflow/tool-env.json"))process.exit(1);
   if(config.tools.exec.security!=="allowlist"||config.tools.exec.ask!=="off")process.exit(1);
   if(JSON.stringify(patterns)!==JSON.stringify(["/app/bin/orbit-openclaw-tool.mjs"]))process.exit(1);
 '
@@ -88,6 +89,46 @@ live_dispatch="$(wait_for_snapshot 'value.run_status === "running" && value.disp
 node -e 'const value=JSON.parse(process.argv[1]);if(value.questions!==0||value.invocations!==0)process.exit(1)' "$live_dispatch"
 
 agent_workspace="/var/lib/orbitflow/runtime/workspaces/orbitflow-$agent_id"
+if ! workspace_started="$(compose exec -T --user node --workdir "$agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs start_run_workspace '{}' 2>&1)"; then
+  printf 'Engine-context workspace start failed: %s\n' "$workspace_started" >&2
+  exit 1
+fi
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.ok!==true||value.result.workspace!==process.argv[2])process.exit(1);
+' "$workspace_started" "/var/lib/orbitflow/run-workspaces/run-$run_id"
+compose exec -T coding-executor node -e '
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const root="/var/lib/orbitflow/run-workspaces";
+  const identity=JSON.parse(fs.readFileSync(path.join(root,".orbitflow","executor-identities",`run-${process.argv[1]}.json`),"utf8"));
+  const target=path.join(root,`run-${process.argv[2]}`);
+  fs.mkdirSync(target,{mode:0o700});
+  const otherUid=identity.uid===59999?20000:identity.uid+1;
+  fs.chownSync(target,otherUid,otherUid);
+' "$run_id" "$other_run_id"
+if ! delegated="$(compose exec -T --user node --workdir "$agent_workspace" openclaw \
+  /app/bin/orbit-openclaw-tool.mjs delegate_coding_task \
+  "{\"task\":\"FACT34_ISOLATION other-run=$other_run_id\"}" 2>&1)"; then
+  printf 'Engine-context coding delegation failed: %s\n' "$delegated" >&2
+  exit 1
+fi
+node -e '
+  const value=JSON.parse(process.argv[1]);
+  if(value.ok!==true||value.result.usage.inputTokens!==11||value.result.usage.outputTokens!==7||value.result.usage.costUsd!==0.01)process.exit(1);
+' "$delegated"
+compose exec -T coding-executor node -e '
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const workspace=path.join("/var/lib/orbitflow/run-workspaces",`run-${process.argv[1]}`);
+  if(fs.readFileSync(path.join(workspace,"delegated.txt"),"utf8")!=="engine-produced delegation succeeded\n")process.exit(1);
+  const proof=JSON.parse(fs.readFileSync(path.join(workspace,"isolation-proof.json"),"utf8"));
+  for(const field of ["databaseEnvironmentPresent","databaseCredentialReadable","brokerSocketReadable","executorSocketReadable","platformCliExecutable","codingCliExecutable","brokerExecutable","workspaceRootListable","otherWorkspaceReadable","directPostgresConnected"]){
+    if(proof[field]!==false)process.exit(1);
+  }
+  if(!Number.isInteger(proof.uid)||proof.uid<20000||proof.gid!==proof.uid)process.exit(1);
+' "$run_id"
 for proof_agent in "orbitflow-$agent_id" "orbitflow-$agent_id-deny-unlisted" "orbitflow-$agent_id-deny-assignment"; do
   if ! agent_setup="$(compose exec -T --user node openclaw node /opt/openclaw/openclaw.mjs agents add \
     "$proof_agent" --workspace "$agent_workspace" \
@@ -157,7 +198,10 @@ tool_proof="$(compose exec -T engine node --experimental-strip-types scripts/fac
 node -e '
   const value=JSON.parse(process.argv[1]);
   if(JSON.stringify(value.keys)!==JSON.stringify(["fact34-agent-side-allowed"]))process.exit(1);
-' "$tool_proof"
+  if(value.codingCosts.length!==1)process.exit(1);
+  const cost=value.codingCosts[0];
+  if(cost.runId!==process.argv[2]||cost.agentId!==process.argv[3]||cost.model!=="proof/isolation-model"||cost.tokensIn!=="11"||cost.tokensOut!=="7"||cost.cost!=="0.01000000")process.exit(1);
+' "$tool_proof" "$run_id" "$agent_id"
 compose exec -T --user node engine node --experimental-strip-types scripts/fact-34-compose-fixture.mjs release-tool-proof >/dev/null
 
 pending="$(wait_for_snapshot 'value.run_status === "running" && value.questions === 1 && value.pending_questions === 1 && value.question_messages === 1 && value.outbound_messages === 1 && value.invocations === 1')"

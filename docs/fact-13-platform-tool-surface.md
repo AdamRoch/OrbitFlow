@@ -19,9 +19,12 @@ derives the new ticket attribution in the same PostgreSQL transaction.
 OpenClaw does not invoke this attribution-bearing CLI directly. Its only
 allowlisted executable is `bin/orbit-openclaw-tool.mjs`, which reads the
 engine-written active-dispatch context from the synchronized agent workspace,
-rejects model-supplied attribution fields, verifies the context against the
-currently leased PostgreSQL dispatch, and invokes this CLI with the bound
-agent, run, and ticket ids plus the gateway's bounded ephemeral environment.
+rejects model-supplied attribution fields, and sends that bounded request over
+a Unix socket to the separately privileged tool broker. The broker independently
+reloads the engine-written context, verifies it against the currently leased
+PostgreSQL dispatch, and invokes this CLI with the bound agent, run, and ticket
+ids. Neither the OpenClaw gateway nor the allowlisted wrapper receives a
+PostgreSQL credential.
 
 Every CLI invocation enters `dispatchPlatformTool`. That typed dispatcher is the
 one future enforcement point for P5-1 blocked-action policy. It validates the
