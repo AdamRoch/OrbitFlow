@@ -168,8 +168,8 @@ services:
         condition: service_healthy
     networks: [control]
 
-  # This is deliberately opt-in: a provider key belongs only to an ephemeral
-  # coding delegation, never to the long-lived engine readiness process.
+  # This standalone proof boundary is deliberately opt-in. Production coding
+  # credentials belong to coding-executor, never engine or tool-broker.
   coding-adapter:
     profiles: ["coding-adapter"]
     build:

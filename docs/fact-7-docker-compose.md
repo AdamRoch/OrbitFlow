@@ -48,13 +48,14 @@ in its named state volume; it is neither an evaluator-provided credential nor
 baked into an image. The gateway has no host port and accepts only the
 Compose-internal network. Do not publish port `18789`.
 
-The engine image installs Git, the FACT-3 selection `opencode-ai@1.18.4`, and
-the pinned OpenClaw 2026.4.15 CLI used by the production runtime adapter. The
-gateway token is mounted read-only from the gateway state volume. Engine
-runtime state and run workspaces use their own durable volume. The provider key
-is present because the shipped Factory Implementer can invoke the existing
-scoped coding adapter; its child-environment allowlist and strict output
-validation remain in force.
+The engine image installs Git and the pinned OpenClaw 2026.4.15 CLI used by the
+production runtime adapter. The gateway token is mounted read-only from the
+gateway state volume. Engine runtime state and run workspaces use their own
+durable volume. The engine and tool broker receive no provider credential.
+Production OpenCode execution and its scoped child environment are owned by
+`coding-executor`, which receives `OPENROUTER_API_KEY` but no database
+credential. OpenClaw separately receives that evaluator key for gateway model
+calls and has no access to the coding-executor socket or run workspaces.
 
 The opt-in `coding-adapter` Compose profile remains an ephemeral one-shot
 boundary, not part of `docker compose up`; invoke it with the already-created
@@ -67,11 +68,10 @@ docker compose --profile coding-adapter run --rm coding-adapter 'create hello.tx
 
 That wrapper passes the key only into FACT-3's existing adapter, whose child
 process receives the key, tool path, and temporary isolated state paths only.
-The production engine uses the same scoped adapter contract for durable run
-workspaces. The gateway separately uses the evaluator key for its FACT-1
-runtime configuration. The gateway image has verified upstream Linux `arm64`
-and `amd64` manifests, and the OpenCode package declares Linux `arm64` and
-`x64` support.
+The opt-in profile uses the same scoped adapter contract as the production
+`coding-executor`, but is not on the production engine path. The gateway image
+has verified upstream Linux `arm64` and `amd64` manifests, and the OpenCode
+package declares Linux `arm64` and `x64` support.
 
 ## State, restart, teardown
 
