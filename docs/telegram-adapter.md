@@ -14,10 +14,17 @@ command deliberately leaves this adapter off.
 
 `src/runtime/telegram.ts` maps text-only Telegram updates to
 `ingestTelegramInbound`. The adapter stores the chat and sender identity, text,
-Telegram update id, and Telegram message id in the normal `messages` row. The
-same transaction creates a channel workflow run and a Telegram-specific update
-receipt. A repeated long-poll update returns the original run/message instead
-of starting a second workflow.
+Telegram update id, Telegram message id, and optional
+`reply_to_message.message_id` in the normal `messages` row. The same transaction
+creates a channel workflow run and a Telegram-specific update receipt. A
+repeated long-poll update returns the original run/message instead of starting
+a second workflow.
+
+An explicit reply to a sent, pending Factory question is stored as an `answer`
+for that exact run and ticket. Correlation requires the Telegram chat id and
+replied-to message id to match the durable outbound delivery. Missing,
+mismatched, and stale reply identities remain ordinary `channel_inbound`
+messages; they never select a pending question by recency.
 
 The binding lives on the receiving agent as:
 
@@ -59,3 +66,10 @@ persistence/deduplication, normal engine wake dispatch, outbound delivery,
 unsupported update handling, retained message-log rows, and the shipped
 OpenClaw-off invariant. It also validates the opt-in Compose profile with a
 non-secret fake token.
+
+FACT-37's focused reply-correlation proof also uses only a fake Telegram
+boundary and a disposable database:
+
+```sh
+npm run fact37:proof
+```

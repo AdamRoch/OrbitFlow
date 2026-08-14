@@ -33,6 +33,29 @@ export interface TelegramInboundUpdate {
   replyToMessageId?: number;
 }
 
+export interface GrammyTextUpdate {
+  update_id: number;
+  message: {
+    message_id: number;
+    chat: {
+      id: number;
+      type: string;
+      username?: string;
+      title?: string;
+    };
+    from?: {
+      id: number;
+      username?: string;
+      first_name: string;
+      last_name?: string;
+    };
+    text: string;
+    reply_to_message?: {
+      message_id: number;
+    };
+  };
+}
+
 export type TelegramInboundResult =
   | { kind: "ignored" }
   | { kind: "duplicate"; runId: string; messageId: string }
@@ -85,6 +108,35 @@ function chatId(value: unknown, field: string): string {
 
 function supportedInbound(update: TelegramInboundUpdate): update is TelegramInboundUpdate & { text: string } {
   return typeof update?.text === "string" && update.text.trim() !== "";
+}
+
+/** Preserve Telegram's explicit reply identity at the grammY runtime boundary. */
+export function telegramInboundFromGrammyUpdate(update: GrammyTextUpdate): TelegramInboundUpdate {
+  const message = update.message;
+  return {
+    updateId: update.update_id,
+    messageId: message.message_id,
+    chat: {
+      id: message.chat.id,
+      type: message.chat.type,
+      ...(message.chat.username ? { username: message.chat.username } : {}),
+      ...(message.chat.title ? { title: message.chat.title } : {}),
+    },
+    ...(message.from
+      ? {
+          from: {
+            id: message.from.id,
+            ...(message.from.username ? { username: message.from.username } : {}),
+            firstName: message.from.first_name,
+            ...(message.from.last_name ? { lastName: message.from.last_name } : {}),
+          },
+        }
+      : {}),
+    text: message.text,
+    ...(message.reply_to_message
+      ? { replyToMessageId: message.reply_to_message.message_id }
+      : {}),
+  };
 }
 
 function inboundPayload(update: TelegramInboundUpdate & { text: string }): JsonObject {

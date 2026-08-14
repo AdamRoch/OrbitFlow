@@ -31,6 +31,12 @@ non-approving answer remains visible in Trail but does not close the question
 or resume the thread. PostgreSQL locks and the question's single durable answer
 link make duplicate delivery and process restart safe.
 
+Telegram correlation never guesses from the latest pending question. The
+runtime preserves the explicit replied-to Telegram message id, and ingestion
+requires it to match a sent outbound delivery in the same chat before creating
+an answer. Run `npm run fact37:proof` for realistic grammY update, duplicate,
+stale, mismatched-chat, retry, and restart coverage.
+
 Run the disposable proof with:
 
 ```sh

@@ -10,7 +10,11 @@ import {
   getWorkflowRun, startWorkflowRun,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import { answerWorkflowQuestionFromUi } from "../../src/lib/postgres/workflow-questions.ts";
-import { deliverNextTelegramOutbound, ingestTelegramInbound } from "../../src/lib/telegram/adapter.ts";
+import {
+  deliverNextTelegramOutbound,
+  ingestTelegramInbound,
+  telegramInboundFromGrammyUpdate,
+} from "../../src/lib/telegram/adapter.ts";
 
 const { Client, Pool } = pg;
 const migrationDirectory = fileURLToPath(new URL("../../db/migrations/", import.meta.url));
@@ -25,6 +29,35 @@ class Runtime {
     this.calls.push(request);
     return { kind: "started", sessionId: `fact24-${request.dispatchId}` };
   }
+}
+
+function grammyTextUpdate({ updateId, messageId, chatId, text, replyToMessageId }) {
+  const chat = { id: chatId, type: "supergroup", title: "Factory operators" };
+  return {
+    update_id: updateId,
+    message: {
+      message_id: messageId,
+      date: 1_786_666_000,
+      chat,
+      from: {
+        id: 37001,
+        is_bot: false,
+        first_name: "Adam",
+        username: "adam",
+        language_code: "en",
+      },
+      text,
+      ...(replyToMessageId === undefined ? {} : {
+        reply_to_message: {
+          message_id: replyToMessageId,
+          date: 1_786_665_900,
+          chat,
+          from: { id: 37002, is_bot: true, first_name: "OrbitFlow" },
+          text: "Which implementation constraint should I use?",
+        },
+      }),
+    },
+  };
 }
 
 test("FACT-24 durable question, escalation, and approval mechanism", async () => {
@@ -194,6 +227,166 @@ test("FACT-24 durable question, escalation, and approval mechanism", async () =>
         assert.notEqual(continuation.id, worker.id);
         assert.equal(continuation.source_message_id, pending.answer_message_id ?? (await client.query("SELECT answer_message_id FROM workflow_questions WHERE id = $1", [pending.id])).rows[0].answer_message_id);
       }
+    });
+
+    await test("correlates realistic Telegram replies durably and fails safe across duplicates, stale replies, mismatches, retries, and restart", async () => {
+      const channelAgent = (await client.query(
+        `INSERT INTO agents (name, role, system_prompt, model, channel_binding)
+         VALUES ('FACT-37 channel entry', 'orchestrator', 'ordinary input', 'mock/channel',
+                 '{"provider":"telegram","workflow":"FACT-37 channel fallback"}'::jsonb)
+         RETURNING id`,
+      )).rows[0].id;
+      await client.query(
+        `INSERT INTO workflows (name, description, graph)
+         VALUES ('FACT-37 channel fallback', 'Ordinary Telegram input', $1)`,
+        [{ nodes: [{ id: "entry", agentId: channelAgent, config: { entry: true, channelBinding: true } }], edges: [] }],
+      );
+
+      async function openQuestion(chatId, telegramMessageId) {
+        const graph = {
+          nodes: [{
+            id: "worker",
+            agentId: agents.worker,
+            config: {
+              entry: true,
+              fanOut: { maxConcurrency: 1 },
+              questionEscalation: { target: "human-via-channel" },
+            },
+          }],
+          edges: [],
+        };
+        const { run, ticketIds } = await createRun(graph, {
+          tickets: 1,
+          spec: {
+            objective: `FACT-37 correlation ${telegramMessageId}`,
+            channelContext: { provider: "telegram", chat: { id: String(chatId), type: "supergroup" } },
+          },
+        });
+        const runtime = new Runtime();
+        await activate(run.id, ticketIds[0], runtime, `fact37-${telegramMessageId}`);
+        const questionMessage = await insertMessage(pool, {
+          runId: run.id,
+          ticketId: ticketIds[0],
+          sender: `agent:${agents.worker}`,
+          recipient: "workflow-engine",
+          type: "question",
+          payload: { question: `Question sent as ${telegramMessageId}` },
+          handoffBrief: `Question sent as ${telegramMessageId}`,
+        });
+        await consumeThrough(questionMessage.id);
+        const question = (await client.query(
+          "SELECT * FROM workflow_questions WHERE question_message_id = $1",
+          [questionMessage.id],
+        )).rows[0];
+        assert.equal(await deliverNextTelegramOutbound(pool, {
+          async sendMessage(sentChatId) {
+            assert.equal(sentChatId, String(chatId));
+            return { messageId: telegramMessageId };
+          },
+        }), true);
+        return { run, ticketId: ticketIds[0], question };
+      }
+
+      const first = await openQuestion(-1003700, 83700);
+      const second = await openQuestion(-1003700, 83701);
+      const otherChat = await openQuestion(-1003701, 83702);
+
+      const realistic = grammyTextUpdate({
+        updateId: 37001,
+        messageId: 47001,
+        chatId: -1003700,
+        text: "Use the durable existing contract.",
+        replyToMessageId: 83700,
+      });
+      const normalized = telegramInboundFromGrammyUpdate(realistic);
+      assert.equal(normalized.replyToMessageId, realistic.message.reply_to_message.message_id);
+      assert.deepEqual(normalized.from, { id: 37001, username: "adam", firstName: "Adam" });
+
+      const accepted = await ingestTelegramInbound(pool, normalized);
+      assert.equal(accepted.kind, "accepted");
+      assert.equal(accepted.runId, first.run.id);
+      const answerRow = (await client.query(
+        "SELECT run_id, ticket_id, type, payload FROM messages WHERE id = $1",
+        [accepted.messageId],
+      )).rows[0];
+      assert.equal(answerRow.run_id, first.run.id);
+      assert.equal(answerRow.ticket_id, first.ticketId);
+      assert.equal(answerRow.type, "answer");
+      assert.equal(answerRow.payload.questionId, first.question.id);
+      assert.equal(answerRow.payload.replyToMessageId, "83700");
+
+      const retry = await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(realistic));
+      assert.deepEqual(retry, { kind: "duplicate", runId: accepted.runId, messageId: accepted.messageId });
+
+      const wrongChat = await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(grammyTextUpdate({
+        updateId: 37002,
+        messageId: 47002,
+        chatId: -1003701,
+        text: "This must not answer the first chat.",
+        replyToMessageId: 83700,
+      })));
+      const unrelated = await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(grammyTextUpdate({
+        updateId: 37003,
+        messageId: 47003,
+        chatId: -1003700,
+        text: "Start an ordinary channel request.",
+      })));
+      for (const result of [wrongChat, unrelated]) {
+        const row = (await client.query("SELECT type, recipient FROM messages WHERE id = $1", [result.messageId])).rows[0];
+        assert.equal(row.type, "channel_inbound");
+        assert.equal(row.recipient, `agent:${channelAgent}`);
+      }
+      assert.deepEqual(
+        (await client.query(
+          "SELECT id, status FROM workflow_questions WHERE id = ANY($1::bigint[]) ORDER BY id",
+          [[first.question.id, second.question.id, otherChat.question.id]],
+        )).rows.map((row) => row.status),
+        ["pending", "pending", "pending"],
+        "mismatched and unrelated updates cannot answer any pending question",
+      );
+
+      const restartedPool = new Pool({ connectionString: databaseUrl, max: 2 });
+      await consumeThrough(accepted.messageId, restartedPool);
+      await restartedPool.end();
+      const answeredFirst = (await client.query(
+        "SELECT status, answer_message_id FROM workflow_questions WHERE id = $1",
+        [first.question.id],
+      )).rows[0];
+      assert.deepEqual(answeredFirst, { status: "answered", answer_message_id: accepted.messageId });
+      assert.equal((await dispatch(first.run.id, first.ticketId)).source_message_id, accepted.messageId);
+
+      const stale = await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(grammyTextUpdate({
+        updateId: 37004,
+        messageId: 47004,
+        chatId: -1003700,
+        text: "A late second answer.",
+        replyToMessageId: 83700,
+      })));
+      const staleRow = (await client.query("SELECT type FROM messages WHERE id = $1", [stale.messageId])).rows[0];
+      assert.equal(staleRow.type, "channel_inbound");
+      assert.deepEqual(
+        (await client.query("SELECT status, answer_message_id FROM workflow_questions WHERE id = $1", [first.question.id])).rows[0],
+        answeredFirst,
+        "a stale reply cannot replace the durable answer",
+      );
+
+      const secondAnswer = await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(grammyTextUpdate({
+        updateId: 37005,
+        messageId: 47005,
+        chatId: -1003700,
+        text: "The exact second answer.",
+        replyToMessageId: 83701,
+      })));
+      await consumeThrough(secondAnswer.messageId);
+      assert.equal(
+        (await client.query("SELECT status FROM workflow_questions WHERE id = $1", [second.question.id])).rows[0].status,
+        "answered",
+      );
+      assert.equal(
+        (await client.query("SELECT status FROM workflow_questions WHERE id = $1", [otherChat.question.id])).rows[0].status,
+        "pending",
+        "answering one exact message cannot answer another chat's pending question",
+      );
     });
 
     await test("uses the same durable question record for before and after approvals", async () => {
