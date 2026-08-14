@@ -14,8 +14,9 @@ const command = process.argv[2];
 try {
   if (command === "seed") {
     const project = await pool.query(
-      `INSERT INTO projects (key, name, next_number)
-       VALUES ('FACT', 'FACT-31 proof', 2)
+      `UPDATE projects
+       SET name = 'FACT-31 proof', next_number = 2
+       WHERE key = 'FACT'
        RETURNING id::text`,
     );
     const agent = await pool.query(

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readdir } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -12,6 +13,13 @@ pg.types.setTypeParser(1184, (value) => value);
 const databaseUrl = process.env.DATABASE_URL;
 const proofDatabase = process.env.ORBITFACTORY_FACT13_PROOF_DATABASE;
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const migrationDirectory = path.join(repoRoot, "db", "migrations");
+
+async function committedMigrationFiles() {
+  return (await readdir(migrationDirectory))
+    .filter((name) => /^\d{4}-[a-z0-9-]+\.sql$/.test(name))
+    .sort();
+}
 
 function callAgentTool(command, input, environment = {}) {
   return new Promise((resolve, reject) => {
@@ -53,25 +61,13 @@ test("dispatch rejects unknown commands before parsing input or opening PostgreS
 test("FACT-13 production agent CLI persists attributed ticket and message mutations", { skip: !databaseUrl }, async (t) => {
   assert.equal(proofDatabase, new URL(databaseUrl).pathname.slice(1), "proof database identity must match ORBITFACTORY_FACT13_PROOF_DATABASE");
   const migration = await migratePostgres({ databaseUrl, log: () => {} });
-  assert.deepEqual(migration.applied, [
-    "0001-control-plane.sql",
-    "0002-tickets.sql",
-    "0003-message-plane.sql",
-    "0004-message-consumption.sql",
-    "0009-state-stream-notify.sql",
-    "0010-coding-tool-usage.sql",
-    "0011-workflow-engine.sql",
-    "0012-platform-tool-idempotency.sql",
-    "0013-workflow-templates.sql",
-    "0014-guardrail-wake-events.sql",
-    "0015-factory-implementer-prompt.sql",
-  ]);
+  assert.deepEqual(migration.applied, await committedMigrationFiles());
 
   const client = new Client({ connectionString: databaseUrl, application_name: "orbitfactory-fact13-proof" });
   await client.connect();
   try {
     const project = await client.query(
-      "INSERT INTO projects (key, name) VALUES ('FACT', 'FACT-13 proof') RETURNING id",
+      "SELECT id FROM projects WHERE key = 'FACT'",
     );
     const agent = await client.query(
       `INSERT INTO agents (name, role, system_prompt, model, coding_tool_enabled)

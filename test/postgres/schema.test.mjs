@@ -914,8 +914,9 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
     let ids;
     await t.test("preserves retained board, label, blocker, and frontier query shapes", async () => {
       const project = await client.query(
-        `INSERT INTO projects (key, name, next_number)
-         VALUES ('FACT', 'OrbitFactory', 5)
+        `UPDATE projects
+         SET name = 'OrbitFactory', next_number = 5
+         WHERE key = 'FACT'
          RETURNING id`,
       );
       const agent = await client.query(
