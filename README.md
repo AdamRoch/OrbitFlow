@@ -5,6 +5,10 @@ their execution trail in PostgreSQL, and connecting an OpenClaw agent runtime to
 the workflow engine. It includes an adapted OrbitTrack board as the current UI
 foundation.
 
+Accepted Factory workspaces can be copied from the Compose volume with the
+single operator command documented in
+[`docs/factory-workspace-export.md`](docs/factory-workspace-export.md).
+
 The default Compose stack runs the production PostgreSQL consumer, dispatcher,
 scheduler, and OpenClaw runtime adapter. Its readiness endpoint becomes
 operational only after both durable polling loops have reached PostgreSQL.
