@@ -3,6 +3,10 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
+import {
+  DEFAULT_OPENCLAW_CONFIG,
+  loadOpenClawModelCatalog,
+} from "../src/lib/runtime/openclaw-model-catalog.mjs";
 
 const { Client } = pg;
 const DEFAULT_MIGRATION_DIRECTORY = join(
@@ -13,6 +17,8 @@ const DEFAULT_MIGRATION_DIRECTORY = join(
 );
 const MIGRATION_FILE = /^(\d{4})-[a-z0-9-]+\.sql$/;
 export const MIGRATION_LOCK_NAME = "orbitfactory-schema-migrations-v1";
+const LATE_RESERVED_MIGRATION = "0024-factory-agent-model-catalog.sql";
+const MERGED_SUCCESSOR_MIGRATION = "0025-factory-project.sql";
 
 async function loadMigrations(migrationDirectory) {
   const names = (await readdir(migrationDirectory))
@@ -75,7 +81,10 @@ function validateAppliedHistory(migrations, applied) {
       );
     }
 
-    if (firstPending) {
+    const isReservedConcurrencyRepair =
+      firstPending?.version === LATE_RESERVED_MIGRATION &&
+      migration.version === MERGED_SUCCESSOR_MIGRATION;
+    if (firstPending && !isReservedConcurrencyRepair) {
       throw new Error(
         `unapplied migration ${firstPending.version} was introduced before already-applied ${migration.version}`,
       );
@@ -87,6 +96,7 @@ export async function migratePostgres({
   databaseUrl = process.env.DATABASE_URL,
   log = console.log,
   migrationDirectory = DEFAULT_MIGRATION_DIRECTORY,
+  openClawConfigPath = DEFAULT_OPENCLAW_CONFIG,
 } = {}) {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required to run PostgreSQL migrations");
@@ -97,6 +107,7 @@ export async function migratePostgres({
     application_name: "orbitfactory-migrator",
   });
   const migrations = await loadMigrations(migrationDirectory);
+  const modelCatalog = await loadOpenClawModelCatalog(openClawConfigPath);
   const appliedNow = [];
   let connected = false;
   let lockAcquired = false;
@@ -129,6 +140,10 @@ export async function migratePostgres({
 
       await client.query("BEGIN");
       try {
+        await client.query(
+          "SELECT set_config('orbitflow.openclaw_primary_model', $1, true)",
+          [modelCatalog.primaryModel],
+        );
         await client.query(migration.sql);
         await client.query(
           "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)",

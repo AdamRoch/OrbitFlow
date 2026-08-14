@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
+import { loadOpenClawModelCatalog } from "../../src/lib/runtime/openclaw-model-catalog.mjs";
 import { parseWorkflowGraph } from "../../src/lib/workflow/graph-contract.ts";
 
 const { Client } = pg;
@@ -36,6 +37,9 @@ const POST_CURRENT_MAIN_MIGRATIONS = Object.freeze([
   "0020-channel-status-reports.sql",
   "0021-workflow-questions.sql",
   "0022-factory-demo-contract.sql",
+  "0023-openclaw-dispatch-inputs.sql",
+  "0024-factory-agent-model-catalog.sql",
+  "0025-factory-project.sql",
 ]);
 
 test("FACT-21 clean install: seeds both templates on a fresh database", async () => {
@@ -273,7 +277,7 @@ test("FACT-21 upgrade: applies 0013 on top of current main without touching exis
   }
 });
 
-test("FACT-21 no-overwrite: pre-existing same-name agents and skills keep their custom values after 0013", async () => {
+test("FACT-21 no-overwrite: 0013 preserves custom definitions while later migrations align runtime models", async () => {
   const databaseUrl = process.env.ORBITFACTORY_FACT21_NOOVERWRITE_DATABASE_URL;
   assert.ok(databaseUrl, "no-overwrite proof database URL must be configured");
   const snapshotDirectory = await mkdtemp(path.join(tmpdir(), CURRENT_MAIN_FIXTURE_LABEL));
@@ -329,14 +333,17 @@ test("FACT-21 no-overwrite: pre-existing same-name agents and skills keep their 
     const fact21Migration = await migratePostgres({ databaseUrl, log: () => {} });
     assert.deepEqual(fact21Migration.applied, POST_CURRENT_MAIN_MIGRATIONS);
 
-    // Same-name agents preserved their custom values (not overwritten)
+    // Same-name agents preserve their custom role and prompt. FACT-35 makes the
+    // model the deliberate exception because this agent is referenced by a
+    // shipped template and an unavailable model would make the template fail.
     const coder = await client.query(
       "SELECT role, system_prompt, model FROM agents WHERE id = $1",
       [existingCoder.rows[0].id],
     );
     assert.equal(coder.rows[0].role, "custom-role");
     assert.equal(coder.rows[0].system_prompt, "Custom system prompt");
-    assert.equal(coder.rows[0].model, "custom-model");
+    const catalog = await loadOpenClawModelCatalog();
+    assert.equal(coder.rows[0].model, catalog.primaryModel);
 
     const reviewer = await client.query(
       "SELECT role, system_prompt, model FROM agents WHERE id = $1",
@@ -344,7 +351,7 @@ test("FACT-21 no-overwrite: pre-existing same-name agents and skills keep their 
     );
     assert.equal(reviewer.rows[0].role, "custom-reviewer");
     assert.equal(reviewer.rows[0].system_prompt, "Custom reviewer prompt");
-    assert.equal(reviewer.rows[0].model, "custom-reviewer-model");
+    assert.equal(reviewer.rows[0].model, catalog.primaryModel);
 
     // Same-name skill preserved its custom values
     const skill = await client.query(

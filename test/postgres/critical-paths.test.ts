@@ -28,6 +28,7 @@ import {
 } from "../../src/lib/postgres/workflow-engine.ts";
 import { ingestTelegramInbound } from "../../src/lib/telegram/adapter.ts";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
+import { loadOpenClawModelCatalog } from "../../src/lib/runtime/openclaw-model-catalog.mjs";
 
 const { Client, Pool } = pg;
 const databaseUrl = process.env.DATABASE_URL;
@@ -162,11 +163,26 @@ before(async () => {
 
 test("1. Agent CRUD round trip through API and PostgreSQL persistence", async () => {
       await resetControlPlaneRepository();
+      const catalog = await loadOpenClawModelCatalog();
+      const unavailableResponse = await createAgent(request({
+        name: "FACT-26 unavailable-model agent",
+        role: "proof worker",
+        systemPrompt: "This must fail before persistence.",
+        model: "openrouter/unavailable/model",
+        codingToolEnabled: false,
+        guardrails: {},
+        interactionRules: {},
+        channelBinding: null,
+        memory: {},
+        openclawRef: null,
+      }));
+      assert.equal(unavailableResponse.status, 400);
+      assert.equal((await unavailableResponse.json() as { error: { code: string } }).error.code, "unavailable_model");
       const createdResponse = await createAgent(request({
         name: "FACT-26 API agent",
         role: "proof worker",
         systemPrompt: "Persist this agent through the route handler.",
-        model: "mock/api",
+        model: catalog.primaryModel,
         codingToolEnabled: false,
         guardrails: {},
         interactionRules: {},

@@ -12,8 +12,12 @@ try {
 current.tools = template.tools;
 if (process.env.ORBITFLOW_OPENCLAW_BASE_URL) {
   template.models.providers.openrouter.baseUrl = process.env.ORBITFLOW_OPENCLAW_BASE_URL;
-  current.models = template.models;
 }
+current.models = template.models;
+current.agents = {
+  ...(current.agents ?? {}),
+  defaults: template.agents.defaults,
+};
 current.channels = {
   ...(current.channels ?? {}),
   telegram: template.channels.telegram,

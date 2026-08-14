@@ -20,6 +20,9 @@ import type {
   MonitoringMessageDTO,
   MonitoringSnapshot,
 } from "./types";
+import { ValidationError } from "../validate";
+import { parseOpenClawModelCatalog } from "../runtime/openclaw-model-catalog.mjs";
+import openClawConfig from "../../../docker/openclaw/openclaw.json";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 type Row = Record<string, unknown>;
@@ -46,6 +49,17 @@ const AGENT_SELECT = `
   LEFT JOIN agent_skills assn ON assn.agent_id = a.id
   LEFT JOIN skills s ON s.id = assn.skill_id
 `;
+
+const modelCatalog = parseOpenClawModelCatalog(openClawConfig);
+
+async function requireAvailableModel(model: string): Promise<void> {
+  if (!modelCatalog.availableModels.includes(model)) {
+    throw new ValidationError(
+      `model "${model}" is unavailable in the OpenClaw runtime catalog; available models: ${modelCatalog.availableModels.join(", ")}`,
+      "unavailable_model",
+    );
+  }
+}
 
 function iso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -204,6 +218,7 @@ export class ControlPlaneRepository {
   }
 
   async createAgent(input: CreateAgentInput): Promise<AgentDTO> {
+    await requireAvailableModel(input.model);
     const row = await one<Row>(
       this.pool,
       `INSERT INTO agents (
@@ -222,6 +237,7 @@ export class ControlPlaneRepository {
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<UpdateResult<AgentDTO>> {
+    if (input.model !== undefined) await requireAvailableModel(input.model);
     const assignments: string[] = [];
     const values: unknown[] = [];
     const add = (column: string, value: unknown, json = false) => {

@@ -12,6 +12,7 @@ const agent = (id: string, name: string): AgentDTO => ({
   codingToolEnabled: false, guardrails: {}, interactionRules: {}, channelBinding: null, memory: {}, openclawRef: null,
   skills: [], createdAt: "2026-08-10T00:00:00.000Z", updatedAt: "2026-08-10T00:00:00.000Z",
 });
+const modelProps = { availableModels: ["openrouter/test"], primaryModel: "openrouter/test" } as const;
 
 const schedule = (id: string, agentId: string, taskPrompt: string): ScheduleDTO => ({
   id, agentId, workflowId: null, cronExpression: "0 9 * * 1-5", taskPrompt, enabled: true,
@@ -60,7 +61,7 @@ describe("AgentEditor regressions", () => {
 
   async function renderAndLoad() {
     await act(async () => {
-      root.render(<AgentEditor />);
+      root.render(<AgentEditor {...modelProps} />);
     });
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -173,7 +174,7 @@ describe("AgentEditor regressions", () => {
       if (url === "/api/agents/1/schedules") return Promise.resolve(json([schedule("1", "1", "Standing task")]));
       throw new Error(`unexpected request: ${url}`);
     });
-    await act(async () => root.render(<><button onClick={() => { outsideClicks += 1; }}>Layout navigation</button><AgentEditor /></>));
+    await act(async () => root.render(<><button onClick={() => { outsideClicks += 1; }}>Layout navigation</button><AgentEditor {...modelProps} /></>));
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); await Promise.resolve(); });
     await act(async () => click([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Delete Me"))!));
     await act(async () => { await Promise.resolve(); });
