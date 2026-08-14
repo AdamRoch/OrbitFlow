@@ -3,6 +3,7 @@ import pg from "pg";
 import {
   ingestTelegramInbound,
   startTelegramOutboundWorker,
+  telegramInboundFromGrammyUpdate,
 } from "../lib/telegram/adapter.ts";
 
 const { Pool } = pg;
@@ -25,28 +26,7 @@ const outbound = startTelegramOutboundWorker(pool, {
 });
 
 bot.on("message:text", async (context) => {
-  const message = context.message;
-  await ingestTelegramInbound(pool, {
-    updateId: context.update.update_id,
-    messageId: message.message_id,
-    chat: {
-      id: message.chat.id,
-      type: message.chat.type,
-      ...(message.chat.username ? { username: message.chat.username } : {}),
-      ...(message.chat.title ? { title: message.chat.title } : {}),
-    },
-    ...(message.from
-      ? {
-          from: {
-            id: message.from.id,
-            ...(message.from.username ? { username: message.from.username } : {}),
-            ...(message.from.first_name ? { firstName: message.from.first_name } : {}),
-            ...(message.from.last_name ? { lastName: message.from.last_name } : {}),
-          },
-        }
-      : {}),
-    text: message.text,
-  });
+  await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(context.update));
 });
 
 bot.catch((error) => {
