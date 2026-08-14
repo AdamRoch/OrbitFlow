@@ -35,6 +35,13 @@ FACT-23 reserves `0014-guardrail-wake-events.sql` (FACT-21 owns `0013`). It
 adds the durable per-agent wake log the rate limiter reads; the contract lives
 in `docs/guardrails-enforcement.md`.
 
+FACT-36 reserves `0025-factory-project.sql`. It seeds the stable `FACT` project
+in PostgreSQL on fresh installations and forward upgrades. The insert is
+conflict-safe and preserves an existing `FACT` row. Factory agents must still
+discover its database-generated id through `list_projects`; neither planner
+prompts nor runtime code own or hard-code that id. This PostgreSQL project is
+separate from the retained SQLite board.
+
 ## Run the FACT-6 proof
 
 ```sh
@@ -48,6 +55,12 @@ container when it exits. It refuses to start if a container with that name
 already exists. Teardown preserves a failed test status, reports removal
 failures, and verifies that the exact container name no longer exists. It does
 not use or modify Docker Compose resources.
+
+Run the FACT-36 fresh-install, forward-upgrade, and planner tool proof with:
+
+```sh
+npm run fact36:proof
+```
 
 Messages are reconstructed with
 `WHERE run_id = $1 ORDER BY sequence_number`. Incremental readers retain the

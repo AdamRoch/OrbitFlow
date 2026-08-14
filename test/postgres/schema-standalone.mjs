@@ -420,7 +420,7 @@ try {
 
   let ids;
   await run("preserves retained board, label, blocker, and frontier query shapes", async () => {
-    const project = await client.query(`INSERT INTO projects (key, name, next_number) VALUES ('FACT', 'OrbitFactory', 5) RETURNING id`);
+    const project = await client.query(`UPDATE projects SET name = 'OrbitFactory', next_number = 5 WHERE key = 'FACT' RETURNING id`);
     const agent = await client.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Implementer', 'worker', 'Implement the assigned ticket.', 'test/model', '{"cost_limit": 5}', '{"autonomy": "high"}', '{"facts": []}') RETURNING id`);
     const skill = await client.query(`INSERT INTO skills (name, description, procedure) VALUES ('testing', 'Prove behavior', 'Run the contract tests.') RETURNING id`);
     await client.query("INSERT INTO agent_skills (agent_id, skill_id) VALUES ($1, $2)", [agent.rows[0].id, skill.rows[0].id]);

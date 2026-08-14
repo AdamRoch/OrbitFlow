@@ -51,6 +51,7 @@
     "fact34:compose-proof": "bash scripts/fact-34-compose-proof.sh",
     "fact34:proof": "npm run fact34:postgres-proof && npm run fact34:compose-proof",
     "fact34:funded-run": "bash scripts/fact-34-funded-dry-run.sh",
+    "fact36:proof": "bash scripts/fact-36-factory-project-proof.sh",
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
     "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs",
     "coding-tool": "node bin/orbit-coding-tool.mjs"

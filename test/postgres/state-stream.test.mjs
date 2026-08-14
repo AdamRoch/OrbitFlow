@@ -54,7 +54,7 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
     assert.equal(first.length, 0, "malformed wake-up must not reach clients");
 
     const project = await client.query(
-      "INSERT INTO projects (key, name, next_number) VALUES ('FACT', 'OrbitFactory', 1) RETURNING id",
+      "UPDATE projects SET next_number = 1 WHERE key = 'FACT' RETURNING id",
     );
     const workflow = await client.query(
       "INSERT INTO workflows (name, description, graph) VALUES ('Stream proof', 'FACT-18', '{}') RETURNING id",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -53,23 +53,21 @@ test(`FACT-13 upgrades the exact ${CURRENT_MAIN_SHA} migration history forward`,
     });
     assert.deepEqual(mainMigration.applied, Object.keys(CURRENT_MAIN_MIGRATIONS));
 
+    const currentMigrations = (await readdir(MIGRATION_DIRECTORY))
+      .filter((name) => /^\d{4}-[a-z0-9-]+\.sql$/.test(name))
+      .sort();
+    const expectedForwardMigrations = currentMigrations.filter(
+      (name) => !(name in CURRENT_MAIN_MIGRATIONS),
+    );
     const fact13Migration = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(fact13Migration.applied, [
-      "0012-platform-tool-idempotency.sql",
-      "0013-workflow-templates.sql",
-      "0014-guardrail-wake-events.sql",
-      "0015-factory-implementer-prompt.sql",
-    ]);
+    assert.deepEqual(fact13Migration.applied, expectedForwardMigrations);
 
     const journal = await client.query(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
     assert.deepEqual(journal.rows.map((row) => row.version), [
       ...Object.keys(CURRENT_MAIN_MIGRATIONS),
-      "0012-platform-tool-idempotency.sql",
-      "0013-workflow-templates.sql",
-      "0014-guardrail-wake-events.sql",
-      "0015-factory-implementer-prompt.sql",
+      ...expectedForwardMigrations,
     ]);
   } finally {
     await client.end().catch(() => {});
