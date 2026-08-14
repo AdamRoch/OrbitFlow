@@ -178,6 +178,7 @@ export interface RuntimeAdapterOptions {
   terminationGraceMs?: number;
   gatewayEnvironment?: Readonly<Record<string, string | undefined>>;
   allowedExecEnvironment?: readonly string[];
+  availableModels?: readonly string[];
   retryMalformedOutput?: boolean;
 }
 
@@ -804,6 +805,7 @@ export class OpenClawRuntimeAdapter {
   private readonly terminationGraceMs: number;
   private readonly gatewayEnvironment: Readonly<Record<string, string | undefined>>;
   private readonly allowedExecEnvironment: readonly string[];
+  private readonly availableModels: ReadonlySet<string> | null;
   private readonly retryMalformedOutput: boolean;
   private readonly activeCommands = new Map<string, Set<RunningCommand>>();
   private readonly externallyTerminatedCommands = new WeakSet<ChildProcess>();
@@ -824,6 +826,9 @@ export class OpenClawRuntimeAdapter {
     );
     this.gatewayEnvironment = options.gatewayEnvironment ?? {};
     this.allowedExecEnvironment = options.allowedExecEnvironment ?? [];
+    this.availableModels = options.availableModels
+      ? new Set(options.availableModels)
+      : null;
     this.retryMalformedOutput = options.retryMalformedOutput ?? true;
     const rejectedEnvironment = Object.keys(this.gatewayEnvironment).filter(
       (name) => !OPENCLAW_GATEWAY_ENVIRONMENT.has(name),
@@ -875,6 +880,7 @@ export class OpenClawRuntimeAdapter {
     const runtimeAgent = agentModel === undefined
       ? context.agent
       : { ...context.agent, model: agentModel };
+    this.requireAvailableModel(runtimeAgent);
     const invocation = runtimeInvocation(normalizedInput, runId, agentId, invocationId);
     const ref = openClawRef(runtimeAgent);
     const session = runtimeSession(ref, normalizedInput, invocationId);
@@ -1078,7 +1084,18 @@ export class OpenClawRuntimeAdapter {
         agentId,
       });
     }
+    this.requireAvailableModel(agent);
     return agent;
+  }
+
+  private requireAvailableModel(agent: Pick<AgentRow, "name" | "model">): void {
+    if (this.availableModels && !this.availableModels.has(agent.model)) {
+      throw new RuntimeAdapterError(
+        "openclaw_configuration_failed",
+        `Agent "${agent.name}" references unavailable OpenClaw model "${agent.model}"; registered models: ${[...this.availableModels].join(", ")}`,
+        { agentName: agent.name, model: agent.model },
+      );
+    }
   }
 
   private async syncAgentRow(

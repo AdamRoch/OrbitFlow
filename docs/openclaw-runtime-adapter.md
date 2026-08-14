@@ -50,6 +50,27 @@ The proof first requires the installed `openclaw` executable to report exactly `
 
 Provider execution is disabled by default and retained proof never calls OpenRouter. Setting `ORBITFLOW_FACT11_REAL_PROVIDER_PROOF` to a nonzero value makes the proof refuse to run rather than accidentally spending credentials.
 
+## Runtime model catalog
+
+`docker/openclaw/openclaw.json` is the single model catalog for the OpenClaw
+runtime, database migration, and production-engine startup check. Migration
+`0024-factory-agent-model-catalog.sql` receives the catalog's validated primary
+model through a transaction-local setting and realigns every agent referenced
+by a shipped workflow template. It contains no copied provider model name.
+
+The production engine checks every database agent against that same committed
+catalog before starting workers, at API writes, and again before each runtime
+sync or wake. An unavailable reference names the agent, model, and registered
+alternatives, then fails before provider execution. OpenClaw config application
+also replaces persisted model catalog/default state while retaining the mutable
+per-agent list.
+
+Run `npm run fact35:proof` for fresh-install and upgrade PostgreSQL coverage,
+negative configuration validation, and a credential-free local HTTP smoke. The
+smoke sends the catalog-derived provider model to a disposable fake OpenRouter
+boundary with `max_tokens: 1`; it never contacts OpenRouter or uses a provider
+key, so it spends no paid tokens.
+
 FACT-11 itself uses the existing `agents.memory`, `agents.openclaw_ref`,
 `messages`, `cost_events`, and workflow-run aggregate columns. FACT-34 adds
 `0023-openclaw-dispatch-inputs.sql` so the production engine can persist the

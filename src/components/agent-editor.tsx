@@ -53,26 +53,26 @@ type ScheduleTriggerState =
   | { kind: "disabled" }
   | { kind: "error"; message: string };
 
-const templates = [
+const templates = (model: string) => [
   {
     id: "orchestrator",
     name: "Orchestrator",
     role: "orchestrator",
-    model: "openrouter/openai/gpt-4.1-mini",
+    model,
     prompt: "Coordinate the work, preserve the human's intent, and make the next useful decision explicit.",
   },
   {
     id: "implementer",
     name: "Implementer",
     role: "software engineer",
-    model: "openrouter/anthropic/claude-sonnet-4",
+    model,
     prompt: "Implement the assigned change carefully, validate the behavior, and report concrete evidence and remaining risks.",
   },
   {
     id: "reviewer",
     name: "Reviewer",
     role: "reviewer",
-    model: "openrouter/openai/gpt-4.1-mini",
+    model,
     prompt: "Review the proposed work against its contract. Identify real defects, explain impact, and suggest the smallest correction.",
   },
 ] as const;
@@ -103,10 +103,10 @@ function withoutKeys(value: JsonObject, keys: string[]): JsonObject {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 }
 
-function formFromAgent(agent?: AgentDTO): EditorForm {
+function formFromAgent(primaryModel: string, agent?: AgentDTO): EditorForm {
   if (!agent) {
     return {
-      name: "", role: "", systemPrompt: "", model: templates[0].model, codingToolEnabled: false,
+      name: "", role: "", systemPrompt: "", model: primaryModel, codingToolEnabled: false,
       costLimit: "", rateLimit: "", blockedActions: "", mayAnswerQuestions: false, autonomy: "",
       channelProvider: "", channelChatId: "", openclawRef: "", facts: [],
       guardrailsAdvanced: "{}", interactionRulesAdvanced: "{}", channelBindingAdvanced: "{}", memoryAdvanced: "{}",
@@ -225,12 +225,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function AgentEditor() {
+export function AgentEditor({ availableModels, primaryModel }: { availableModels: readonly string[]; primaryModel: string }) {
+  const agentTemplates = useMemo(() => templates(primaryModel), [primaryModel]);
   const [agents, setAgents] = useState<AgentDTO[]>([]);
   const [skills, setSkills] = useState<SkillDTO[]>([]);
   const [schedules, setSchedules] = useState<ScheduleDTO[]>([]);
   const [selected, setSelected] = useState<AgentDTO | null>(null);
-  const [form, setForm] = useState<EditorForm>(() => formFromAgent());
+  const [form, setForm] = useState<EditorForm>(() => formFromAgent(primaryModel));
   const [scheduleForm, setScheduleForm] = useState<ScheduleForm>(blankSchedule);
   const [editingSchedule, setEditingSchedule] = useState<ScheduleDTO | null>(null);
   const [loading, setLoading] = useState(true);
@@ -285,7 +286,7 @@ export function AgentEditor() {
       const nextSelected = agentId ? nextAgents.find((agent) => agent.id === agentId) ?? null : null;
       selectedAgentId.current = nextSelected?.id ?? null;
       setSelected(nextSelected);
-      setForm(formFromAgent(nextSelected ?? undefined));
+      setForm(formFromAgent(primaryModel, nextSelected ?? undefined));
       if (nextSelected) await loadSchedules(nextSelected.id);
       else {
         ++scheduleRequestGeneration.current;
@@ -301,7 +302,7 @@ export function AgentEditor() {
     } finally {
       setLoading(false);
     }
-  }, [loadSchedules]);
+  }, [loadSchedules, primaryModel]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
@@ -311,7 +312,7 @@ export function AgentEditor() {
   const selectAgent = async (agent: AgentDTO) => {
     selectedAgentId.current = agent.id;
     setSelected(agent);
-    setForm(formFromAgent(agent));
+    setForm(formFromAgent(primaryModel, agent));
     setEditingSchedule(null);
     setError("");
     setMessage("");
@@ -322,7 +323,7 @@ export function AgentEditor() {
   const newAgent = () => {
     selectedAgentId.current = null;
     ++scheduleRequestGeneration.current;
-    setSelected(null); setForm(formFromAgent()); setSchedules([]); setSchedulesLoading(false); setSchedulesLoadError(""); setEditingSchedule(null); setMessage(""); setError(""); setStale(false);
+    setSelected(null); setForm(formFromAgent(primaryModel)); setSchedules([]); setSchedulesLoading(false); setSchedulesLoadError(""); setEditingSchedule(null); setMessage(""); setError(""); setStale(false);
   };
 
   const beginDelete = (record: PendingDelete) => {
@@ -394,7 +395,7 @@ export function AgentEditor() {
   }, [modalRoot, pendingDelete]);
 
   const applyTemplate = (templateId: string) => {
-    const template = templates.find((item) => item.id === templateId);
+    const template = agentTemplates.find((item) => item.id === templateId);
     if (!template) return;
     setForm((current) => ({ ...current, name: current.name || template.name, role: template.role, model: template.model, systemPrompt: template.prompt }));
   };
@@ -535,8 +536,8 @@ export function AgentEditor() {
           <form onSubmit={(event) => void submitAgent(event)}>
           <div className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-[--foreground]">{selected ? `Edit ${selected.name}` : "Create an agent"}</h2><p className="mt-1 text-xs text-[--foreground-muted]">{selected ? "Changes use the version you opened; stale updates never overwrite another editor." : "Templates are starting points. Their prompts remain editable."}</p></div>{selected && <Button variant="danger" size="sm" onClick={() => beginDelete({ kind: "agent", id: selected.id, name: selected.name })}>Delete agent</Button>}</div>
 
-          {!selected && <div className="mb-5"><Label htmlFor="agent-template">Start from a template</Label><Select id="agent-template" defaultValue="" onChange={(event) => applyTemplate(event.target.value)}><option value="">Choose a starting point</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name} · {template.role}</option>)}</Select></div>}
-          <section className="grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Name" htmlFor="agent-name"><Input id="agent-name" value={form.name} onChange={(event) => setField("name", event.target.value)} required /></Field><Field label="Role" htmlFor="agent-role"><Input id="agent-role" value={form.role} onChange={(event) => setField("role", event.target.value)} required /></Field><Field label="Model" htmlFor="agent-model"><Input id="agent-model" value={form.model} onChange={(event) => setField("model", event.target.value)} required /></Field><Field label="OpenClaw reference" htmlFor="agent-openclaw"><Input id="agent-openclaw" value={form.openclawRef} onChange={(event) => setField("openclawRef", event.target.value)} placeholder="Optional external runtime id" /></Field></section>
+          {!selected && <div className="mb-5"><Label htmlFor="agent-template">Start from a template</Label><Select id="agent-template" defaultValue="" onChange={(event) => applyTemplate(event.target.value)}><option value="">Choose a starting point</option>{agentTemplates.map((template) => <option key={template.id} value={template.id}>{template.name} · {template.role}</option>)}</Select></div>}
+          <section className="grid min-w-0 gap-4 sm:grid-cols-2"><Field label="Name" htmlFor="agent-name"><Input id="agent-name" value={form.name} onChange={(event) => setField("name", event.target.value)} required /></Field><Field label="Role" htmlFor="agent-role"><Input id="agent-role" value={form.role} onChange={(event) => setField("role", event.target.value)} required /></Field><Field label="Model" htmlFor="agent-model"><Select id="agent-model" value={form.model} onChange={(event) => setField("model", event.target.value)} required>{availableModels.map((model) => <option key={model} value={model}>{model}</option>)}</Select></Field><Field label="OpenClaw reference" htmlFor="agent-openclaw"><Input id="agent-openclaw" value={form.openclawRef} onChange={(event) => setField("openclawRef", event.target.value)} placeholder="Optional external runtime id" /></Field></section>
           <div className="mt-4"><Field label="System prompt" htmlFor="agent-prompt"><Textarea id="agent-prompt" value={form.systemPrompt} onChange={(event) => setField("systemPrompt", event.target.value)} required /></Field></div>
           <p className="mt-2 rounded-xl border border-[--border] bg-[--surface-2]/40 p-3 text-xs leading-relaxed text-[--foreground-muted]"><strong className="text-[--foreground]">Fixed runtime contract.</strong> Structured output, platform tool surface, and message types are applied by the runtime and are not editable here.</p>
 

@@ -5,6 +5,10 @@ import { startWorkflowEngine } from "../lib/postgres/workflow-engine.ts";
 import { OpenClawEngineAdapter } from "../lib/runtime/engine-adapter.ts";
 import { OpenClawRuntimeAdapter } from "../lib/runtime/openclaw.ts";
 import { createProductionWorkspaceTools } from "../lib/runtime/workspace-tools.ts";
+import {
+  loadOpenClawModelCatalog,
+  validateConfiguredAgentModels,
+} from "../lib/runtime/openclaw-model-catalog.mjs";
 
 const { Pool } = pg;
 
@@ -35,6 +39,14 @@ const pool = new Pool({
   max: positiveIntegerEnvironment("ORBITFLOW_ENGINE_DB_POOL_SIZE", 12),
 });
 
+const modelCatalog = await loadOpenClawModelCatalog();
+try {
+  await validateConfiguredAgentModels(pool, modelCatalog);
+} catch (error) {
+  await pool.end();
+  throw error;
+}
+
 const gatewayEnvironment = {
   OPENCLAW_GATEWAY_URL: requiredEnvironment("OPENCLAW_GATEWAY_URL"),
   OPENCLAW_GATEWAY_TOKEN: requiredEnvironment("OPENCLAW_GATEWAY_TOKEN"),
@@ -47,6 +59,7 @@ const openclaw = new OpenClawRuntimeAdapter({
   openClawCommandArguments: openClawArguments,
   wakeTimeoutMs: positiveIntegerEnvironment("ORBITFLOW_OPENCLAW_WAKE_TIMEOUT_MS", 300_000),
   gatewayEnvironment,
+  availableModels: modelCatalog.availableModels,
 });
 const runtime = new OpenClawEngineAdapter({
   pool,

@@ -222,6 +222,21 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
   });
 
   await t.test("creates a live agent and applies row edits on resync", async () => {
+    const catalogBoundAdapter = new OpenClawRuntimeAdapter({
+      pool,
+      runtimeRoot,
+      openClawCommand: process.execPath,
+      openClawCommandArguments: [fixture],
+      availableModels: ["openrouter/registered/model"],
+    });
+    await assert.rejects(
+      catalogBoundAdapter.syncAgent(agentId),
+      (error) => {
+        assert.equal(error.code, "openclaw_configuration_failed");
+        assert.match(error.message, /Mira.*openrouter\/openai\/gpt-4\.1-mini.*registered models/);
+        return true;
+      },
+    );
     const first = await adapter.syncAgent(agentId);
     assert.equal(first.created, true);
     assert.equal(first.openclawRef, `orbitflow-${agentId}`);

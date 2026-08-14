@@ -35,12 +35,24 @@ FACT-23 reserves `0014-guardrail-wake-events.sql` (FACT-21 owns `0013`). It
 adds the durable per-agent wake log the rate limiter reads; the contract lives
 in `docs/guardrails-enforcement.md`.
 
+FACT-35 reserves `0024-factory-agent-model-catalog.sql`. It aligns all agents
+referenced by shipped templates to the validated primary model from
+`docker/openclaw/openclaw.json`; the migrator supplies that value
+transaction-locally rather than copying a model name into SQL. Prove clean and
+upgraded installations with `npm run fact35:proof`.
+
 FACT-36 reserves `0025-factory-project.sql`. It seeds the stable `FACT` project
 in PostgreSQL on fresh installations and forward upgrades. The insert is
 conflict-safe and preserves an existing `FACT` row. Factory agents must still
 discover its database-generated id through `list_projects`; neither planner
 prompts nor runtime code own or hard-code that id. This PostgreSQL project is
 separate from the retained SQLite board.
+
+FACT-35 and FACT-36 merged concurrently after their migration numbers were
+reserved. The runner therefore permits exactly one late-reservation shape:
+`0024-factory-agent-model-catalog.sql` may be applied to an installation that
+already recorded `0025-factory-project.sql`. Every other migration gap still
+fails closed.
 
 ## Run the FACT-6 proof
 
