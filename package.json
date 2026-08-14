@@ -53,6 +53,8 @@
     "fact34:funded-run": "bash scripts/fact-34-funded-dry-run.sh",
     "fact35:proof": "bash scripts/fact-35-model-catalog-proof.sh",
     "fact36:proof": "bash scripts/fact-36-factory-project-proof.sh",
+    "factory:export": "node bin/orbit-export-factory-workspace.mjs",
+    "fact38:proof": "bash scripts/fact-38-workspace-export-proof.sh",
     "fact1:spike": "node scripts/fact-1-openclaw-spike.mjs",
     "fact2:spike": "node scripts/fact-2-platform-tool-spike.mjs",
     "coding-tool": "node bin/orbit-coding-tool.mjs"
