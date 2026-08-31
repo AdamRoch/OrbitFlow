@@ -106,7 +106,10 @@ production Compose entrypoint with the deterministic fake OpenClaw request
 path, so it spends no provider credit. It proves operational readiness, a
 ticket-backed UI run, adapter completion, scheduler consumption, duplicate tick
 resistance, two engine restarts, exact migration readiness, and project-scoped
-cleanup.
+cleanup. The proof leaves its app and engine host-port variables unset. Docker
+assigns separate `127.0.0.1` ports after startup, and the proof resolves them
+with `docker compose port` before issuing host-side readiness requests. It
+rejects malformed, non-loopback, and out-of-range results.
 
 ## Retained proof command
 

@@ -124,8 +124,23 @@ dependency counts. Exit status 2 means issues or dependencies remain. Stop
 there. Importing, archiving, or discarding retained work needs Adam's separate
 decision. A connection or file error also stops the cutover.
 
-The 2026-08-31 preflight found one project, zero issues, and zero dependencies.
-That permits the no-import cutover for the current production deployment.
+Do not treat an unretained preflight, including an old terminal result, as
+cutover evidence. Before deploying the PostgreSQL replacement, retain all of
+the following for the exact candidate commit:
+
+1. A successful `npm run fact42:proof` transcript, including its exit status.
+   This runs the disposable PostgreSQL cutover proof and the FACT-31 Compose
+   proof together.
+2. A fresh `npm run fact42:preflight` transcript from the selected production
+   Railway project, service, and environment immediately before the cutover,
+   with its exit status and UTC timestamp. The retained result must show zero
+   issues and zero dependencies.
+3. The candidate Git SHA and the deployment record that ties that SHA to the
+   retained proof and preflight transcripts.
+
+The preflight only reports whether the legacy SQLite file has retained issue or
+dependency work. It does not authorize a deployment by itself, migrate data, or
+prove PostgreSQL readiness.
 
 Before applying the PostgreSQL migration chain to a database that can still
 need `0027`, stop or quiesce the workflow engine and dispatcher. If the
@@ -133,15 +148,16 @@ precondition reports unfinished duplicate ownership or inconsistent active
 ticket activity, manually reconcile or quarantine it and rerun the command.
 Do not treat the migrator as a repair tool.
 
-Run the local integration gates before redeploying:
+Run the combined local integration gate before redeploying:
 
 ```sh
-npm run fact42:postgres-proof
-npm run fact31:proof
+npm run fact42:proof
 ```
 
 The PostgreSQL proof uses one disposable container for clean install, upgrade
 validation, committed stream wakeups, run-scoped dependency and assignment
-races, and the run-filtered Monitoring board. The Compose proof checks app and
-engine readiness, rejects a stale migration checksum, and proves restart
+races, and the run-filtered Monitoring board. Its FACT-31 step asks Docker to
+assign loopback host ports after the services start, resolves those ports with
+`docker compose port`, rejects malformed or non-loopback results, checks app
+and engine readiness, rejects a stale migration checksum, and proves restart
 recovery.

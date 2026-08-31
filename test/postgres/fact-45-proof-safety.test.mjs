@@ -12,13 +12,63 @@ const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const fakeDockerScript = `#!/usr/bin/env bash
 set -u
 
-printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+log_file="\${FAKE_DOCKER_LOG:-$(cd "$(dirname "$0")/.." && pwd)/docker.log}"
+printf '%s\\n' "$*" >> "$log_file"
 command="\${1:-}"
 subcommand="\${2:-}"
+compose_config="$(cd "$(dirname "$0")/.." && pwd)/compose-config"
+compose_app_endpoint="127.0.0.1:51001"
+compose_engine_endpoint="127.0.0.1:51002"
+compose_down_exit="0"
+if [[ -f "$compose_config" ]]; then
+  exec 3< "$compose_config"
+  IFS= read -r compose_app_endpoint <&3
+  IFS= read -r compose_engine_endpoint <&3
+  IFS= read -r compose_down_exit <&3
+  exec 3<&-
+fi
+
+if [[ "$command" == "compose" ]]; then
+  compose_command=""
+  for argument in "$@"; do
+    case "$argument" in
+      up|down|exec|port|restart)
+        compose_command="$argument"
+        break
+        ;;
+    esac
+  done
+  if [[ "$compose_command" == "port" ]]; then
+    service=""
+    container_port=""
+    for argument in "$@"; do
+      case "$argument" in
+        app|engine) service="$argument" ;;
+        3000|3001) container_port="$argument" ;;
+      esac
+    done
+    case "$service:$container_port" in
+      app:3000) printf '%s\\n' "$compose_app_endpoint" ;;
+      engine:3001) printf '%s\\n' "$compose_engine_endpoint" ;;
+      *) printf 'unexpected fake compose port command: %s\\n' "$*" >&2; exit 1 ;;
+    esac
+    exit 0
+  fi
+  if [[ "$compose_command" == "down" ]]; then
+    exit "$compose_down_exit"
+  fi
+  case "$compose_command" in
+    up|exec|restart) exit 0 ;;
+    *) printf 'unexpected fake compose command: %s\\n' "$*" >&2; exit 1 ;;
+  esac
+fi
 
 if [[ "$command" == "container" && "$subcommand" == "inspect" ]]; then
   [[ -f "$FAKE_DOCKER_STATE" ]]
   exit $?
+fi
+if [[ "$subcommand" == "ls" ]] && [[ "$command" == "container" || "$command" == "network" || "$command" == "volume" || "$command" == "image" ]]; then
+  exit 0
 fi
 if [[ "$command" == "inspect" ]]; then
   [[ -f "$FAKE_DOCKER_STATE" ]] && printf 'healthy\\n'
@@ -69,18 +119,30 @@ function runCommand(command, args, environment) {
   });
 }
 
-async function runProofScript(script, { nodeExit, rmExit, preserveAfterRm, preexisting = false }) {
+async function runProofScript(script, {
+  nodeExit,
+  rmExit,
+  preserveAfterRm,
+  preexisting = false,
+  appEndpoint = "127.0.0.1:51001",
+  engineEndpoint = "127.0.0.1:51002",
+  composeDownExit = 0,
+}) {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "orbitflow-fact45-shell-"));
   const binDirectory = path.join(temporaryRoot, "bin");
   const stateFile = path.join(temporaryRoot, "container-state");
   const logFile = path.join(temporaryRoot, "docker.log");
+  const composeConfigFile = path.join(temporaryRoot, "compose-config");
   await mkdir(binDirectory);
   const dockerPath = path.join(binDirectory, "docker");
   const nodePath = path.join(binDirectory, "node");
   await writeFile(dockerPath, fakeDockerScript);
   await writeFile(nodePath, fakeNodeScript);
   await Promise.all([chmod(dockerPath, 0o755), chmod(nodePath, 0o755)]);
-  await writeFile(logFile, "");
+  await Promise.all([
+    writeFile(logFile, ""),
+    writeFile(composeConfigFile, `${appEndpoint}\n${engineEndpoint}\n${composeDownExit}\n`),
+  ]);
   if (preexisting) await writeFile(stateFile, "preexisting");
 
   try {
@@ -167,3 +229,45 @@ for (const [script, containerName] of [
     assert.doesNotMatch(result.dockerLog, /^run /m);
   });
 }
+
+test("FACT-31 resolves Docker-assigned loopback ports after startup", async () => {
+  const result = await runProofScript("scripts/fact-31-compose-proof.sh", {
+    nodeExit: 0,
+    rmExit: 0,
+    preserveAfterRm: false,
+  });
+  assert.equal(result.code, 0);
+  assert.match(result.dockerLog, /^compose .* port app 3000$/m);
+  assert.match(result.dockerLog, /^compose .* port engine 3001$/m);
+  assert.match(result.dockerLog, /^compose .* down --volumes --remove-orphans$/m);
+});
+
+for (const { service, port, appEndpoint, engineEndpoint } of [
+  { service: "app", port: 3000, appEndpoint: "0.0.0.0:51001", engineEndpoint: "127.0.0.1:51002" },
+  { service: "engine", port: 3001, appEndpoint: "127.0.0.1:51001", engineEndpoint: "127.0.0.1:70000" },
+]) {
+  test(`FACT-31 rejects an invalid ${service} published endpoint`, async () => {
+    const result = await runProofScript("scripts/fact-31-compose-proof.sh", {
+      nodeExit: 0,
+      rmExit: 0,
+      preserveAfterRm: false,
+      appEndpoint,
+      engineEndpoint,
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, new RegExp(`FACT-31 proof expected ${service}:${port} to publish on a valid 127\\.0\\.0\\.1 port`));
+    assert.match(result.dockerLog, new RegExp(`^compose .* port ${service} ${port}$`, "m"));
+    assert.match(result.dockerLog, /^compose .* down --volumes --remove-orphans$/m);
+  });
+}
+
+test("FACT-31 fails closed when its exact Compose cleanup fails", async () => {
+  const result = await runProofScript("scripts/fact-31-compose-proof.sh", {
+    nodeExit: 0,
+    rmExit: 0,
+    preserveAfterRm: false,
+    composeDownExit: 1,
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.dockerLog, /^compose .* down --volumes --remove-orphans$/m);
+});

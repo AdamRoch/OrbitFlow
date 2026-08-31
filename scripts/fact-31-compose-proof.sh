@@ -2,8 +2,6 @@
 set -euo pipefail
 
 project="orbitfactory-fact31-proof-$$"
-app_port="$((41000 + ($$ % 1000)))"
-engine_port="$((42000 + ($$ % 1000)))"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact31-env.XXXXXX")"
 started=false
 
@@ -38,14 +36,32 @@ printf '%s\n' \
   'POSTGRES_USER=orbitfactory' \
   'POSTGRES_PASSWORD=fact31-local-proof' \
   'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' \
-  "ORBITFACTORY_APP_PORT=$app_port" \
-  "ORBITFACTORY_ENGINE_HOST_PORT=$engine_port" \
   >"$env_file"
 
 compose() {
   env -i PATH="$PATH" HOME="${HOME:?HOME is required}" \
     docker compose --project-name "$project" --env-file "$env_file" \
       -f compose.yaml -f docker/fact31-compose-proof.compose.yaml "$@"
+}
+
+resolve_loopback_origin() {
+  local service="$1"
+  local container_port="$2"
+  local endpoint
+  local host_port
+
+  endpoint="$(compose port "$service" "$container_port")"
+  if [[ "$endpoint" =~ ^127\.0\.0\.1:([1-9][0-9]{0,4})$ ]]; then
+    host_port="${BASH_REMATCH[1]}"
+    if (( 10#$host_port <= 65535 )); then
+      printf 'http://127.0.0.1:%s' "$host_port"
+      return 0
+    fi
+  fi
+
+  printf 'FACT-31 proof expected %s:%s to publish on a valid 127.0.0.1 port, got %q\n' \
+    "$service" "$container_port" "$endpoint" >&2
+  return 1
 }
 
 wait_for_snapshot() {
@@ -66,15 +82,18 @@ wait_for_snapshot() {
 started=true
 compose up --detach --build --wait --wait-timeout 300
 
-readiness="$(node -e "fetch('http://127.0.0.1:$engine_port/readyz').then(async r=>{const b=await r.json();if(!r.ok)process.exit(1);process.stdout.write(JSON.stringify(b))})")"
+app_origin="$(resolve_loopback_origin app 3000)"
+engine_origin="$(resolve_loopback_origin engine 3001)"
+
+readiness="$(node -e "fetch('$engine_origin/readyz').then(async r=>{const b=await r.json();if(!r.ok)process.exit(1);process.stdout.write(JSON.stringify(b))})")"
 node -e 'const value=JSON.parse(process.argv[1]); if(value.status!=="ready"||value.workflowEngine!=="operational")process.exit(1)' "$readiness"
 
 required_migration="$(compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -Atc "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")"
 required_checksum="$(compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -Atc "SELECT checksum FROM schema_migrations WHERE version = '$required_migration'")"
 compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -c "UPDATE schema_migrations SET checksum = 'stale-proof-checksum' WHERE version = '$required_migration'" >/dev/null
-node -e "Promise.all([fetch('http://127.0.0.1:$app_port/api/health'), fetch('http://127.0.0.1:$engine_port/readyz')]).then((responses) => { if (responses.some((response) => response.status !== 503)) process.exit(1); })"
+node -e "Promise.all([fetch('$app_origin/api/health'), fetch('$engine_origin/readyz')]).then((responses) => { if (responses.some((response) => response.status !== 503)) process.exit(1); })"
 compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -c "UPDATE schema_migrations SET checksum = '$required_checksum' WHERE version = '$required_migration'" >/dev/null
-node -e "Promise.all([fetch('http://127.0.0.1:$app_port/api/health'), fetch('http://127.0.0.1:$engine_port/readyz')]).then((responses) => { if (responses.some((response) => !response.ok)) process.exit(1); })"
+node -e "Promise.all([fetch('$app_origin/api/health'), fetch('$engine_origin/readyz')]).then((responses) => { if (responses.some((response) => !response.ok)) process.exit(1); })"
 
 compose exec -T engine node --experimental-strip-types scripts/fact-31-compose-fixture.mjs seed >/dev/null
 manual="$(wait_for_snapshot 'value.completed_runs === 1 && value.completed_dispatches === 1 && value.materialized_tickets === 1 && value.pending_messages === 0')"
