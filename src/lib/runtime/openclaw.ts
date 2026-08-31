@@ -1633,7 +1633,7 @@ export class OpenClawRuntimeAdapter {
     if (!receipt) {
       const error = new RuntimeAdapterError(
         "openclaw_invocation_indeterminate",
-        "OpenClaw invocation was reserved but has no durable terminal result",
+        "OpenClaw invocation was reserved but has no durable terminal result; the external effect is uncertain, so the provider will not be called again",
       );
       await this.persistSystemError(client, { ...input, attempts: 0, error });
       throw error;

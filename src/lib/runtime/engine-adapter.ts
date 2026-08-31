@@ -219,7 +219,12 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
     } catch (error) {
       if (error instanceof RuntimeAdapterError) {
         if (error.code === "openclaw_invocation_indeterminate") {
-          return { kind: "absent" };
+          return {
+            kind: "confirmed_failure",
+            reason: bounded(
+              `${error.code}: external effect is uncertain; the provider will not be called again. ${error.message}`,
+            ),
+          };
         }
         if (error.code === "openclaw_invocation_conflict") {
           return { kind: "confirmed_failure", reason: bounded(error.message) };
