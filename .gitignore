@@ -9,12 +9,6 @@
 /out/
 /build/
 /coverage/
-/data/*.db
-/data/*.db-journal
-/data/*.db-wal
-/data/*.db-shm
-/data/*.db.bak
-/data/migration-snapshot-*.md
 .DS_Store
 *.pem
 .env*

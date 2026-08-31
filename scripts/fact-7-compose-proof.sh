@@ -16,7 +16,6 @@ POSTGRES_PASSWORD=fact7-proof-password
 OPENROUTER_API_KEY=not-a-real-key-for-structural-compose-proof
 ORBITFACTORY_APP_PORT=$app_port
 ORBITFACTORY_ENGINE_HOST_PORT=$engine_host_port
-ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db
 ORBITFACTORY_CODING_ADAPTER_BINARY=/app/scripts/fact-7-fake-opencode.mjs
 EOF
 
@@ -102,14 +101,13 @@ rendered_config="$(POSTGRES_DB=ambient-compose-value \
   OPENROUTER_API_KEY=ambient-compose-value \
   ORBITFACTORY_APP_PORT=49999 \
   ORBITFACTORY_ENGINE_HOST_PORT=49998 \
-  ORBITFACTORY_DB_PATH=/ambient-compose-value \
   ORBITFACTORY_CODING_ADAPTER_BINARY=/ambient-compose-value \
   compose --profile coding-adapter config)"
 if [[ "$rendered_config" == *"ambient-compose-value"* || "$rendered_config" == *"49999"* || "$rendered_config" == *"49998"* ]]; then
   echo "FACT-7 proof allowed ambient Compose interpolation" >&2
   exit 1
 fi
-for expected in orbitfactory_proof fact7-proof-password not-a-real-key-for-structural-compose-proof "$app_port" "$engine_host_port" /app/data/orbitfactory.db /app/scripts/fact-7-fake-opencode.mjs; do
+for expected in orbitfactory_proof fact7-proof-password not-a-real-key-for-structural-compose-proof "$app_port" "$engine_host_port" /app/scripts/fact-7-fake-opencode.mjs; do
   if [[ "$rendered_config" != *"$expected"* ]]; then
     echo "FACT-7 proof did not render expected controlled configuration" >&2
     exit 1

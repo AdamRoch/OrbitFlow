@@ -40,7 +40,7 @@ printf '%s\n' \
   'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' \
   "ORBITFACTORY_APP_PORT=$app_port" \
   "ORBITFACTORY_ENGINE_HOST_PORT=$engine_port" \
-  'ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db' >"$env_file"
+  >"$env_file"
 
 compose() {
   env -i PATH="$PATH" HOME="${HOME:?HOME is required}" \

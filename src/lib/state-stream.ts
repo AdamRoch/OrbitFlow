@@ -2,7 +2,6 @@ import { Client } from "pg";
 import {
   createStateEvent,
   parseStateEvent,
-  subscribeLocalStateEvents,
   type StateEvent,
   type StateEventListener,
 } from "./state-events.ts";
@@ -27,7 +26,6 @@ export class StateEventHub {
   private client: Client | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connecting: Promise<void> | null = null;
-  private localUnsubscribe: (() => void) | null = null;
 
   constructor(options: StateEventHubOptions = {}) {
     this.connectionString = options.connectionString ?? process.env.DATABASE_URL;
@@ -36,9 +34,6 @@ export class StateEventHub {
 
   subscribe(listener: StateEventListener): () => void {
     this.listeners.add(listener);
-    if (!this.localUnsubscribe) {
-      this.localUnsubscribe = subscribeLocalStateEvents((event) => this.broadcast(event));
-    }
     void this.connect();
     return () => {
       this.listeners.delete(listener);
@@ -62,8 +57,6 @@ export class StateEventHub {
   async stop(): Promise<void> {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    this.localUnsubscribe?.();
-    this.localUnsubscribe = null;
     const client = this.client;
     this.client = null;
     if (client) await client.end().catch(() => undefined);

@@ -87,7 +87,6 @@ OPENROUTER_API_KEY=not-a-real-key-for-fact32-proof
 TELEGRAM_BOT_TOKEN=$telegram_token
 ORBITFACTORY_APP_PORT=$((41000 + ($$ % 1000)))
 ORBITFACTORY_ENGINE_HOST_PORT=$((42000 + ($$ % 1000)))
-ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db
 EOF
 }
 

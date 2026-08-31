@@ -4,15 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { UfoIcon, AlienIcon, StarIcon, CometIcon, OrbitIcon, SignalIcon } from "@/components/icons";
+import { UfoIcon, OrbitIcon, SignalIcon } from "@/components/icons";
 
 const LINKS = [
-  { href: "/", label: "Tickets", Icon: StarIcon },
-  { href: "/frontier", label: "Frontier", Icon: CometIcon },
   { href: "/monitoring", label: "Monitoring", Icon: SignalIcon },
   { href: "/agents", label: "Agents", Icon: UfoIcon },
   { href: "/workflows", label: "Workflows", Icon: OrbitIcon },
-  { href: "/labels", label: "Labels", Icon: AlienIcon },
 ];
 
 /**
@@ -85,15 +82,14 @@ function RouteSiteNav({ pathname }: { pathname: string }) {
     }
   };
 
-  const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname.startsWith(href);
+  const isActive = (href: string) => pathname.startsWith(href);
 
   return (
     <>
       <header className="fixed inset-x-0 top-0 z-40 flex justify-center px-4 pt-4">
         <nav className="glass glow-edge-pulse flex items-center gap-1 rounded-full px-2 py-1.5 shadow-[0_18px_50px_-28px_rgba(0,0,0,0.95)]">
           <Link
-            href="/"
+            href="/monitoring?tab=board"
             className="group mr-1 flex items-center gap-2 rounded-full px-3 py-1.5"
           >
             <span className="animate-ufo-float flex h-7 w-7 items-center justify-center rounded-full bg-[--accent]/15 text-[--accent] ring-1 ring-[--accent]/40 transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:rotate-[18deg]">
@@ -125,16 +121,6 @@ function RouteSiteNav({ pathname }: { pathname: string }) {
               </Link>
             ))}
           </div>
-
-          <Link
-            href="/new"
-            className="group ml-1 hidden items-center gap-2 rounded-full bg-[var(--accent)] px-4 py-1.5 text-sm font-medium text-[#04121a] ring-1 ring-[color-mix(in_srgb,var(--accent)_55%,transparent)] transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-[var(--accent-hover)] active:scale-[0.97] md:inline-flex"
-          >
-            New
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#04121a]/15 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-px">
-              <CometIcon className="h-3 w-3" />
-            </span>
-          </Link>
 
           {/* Mobile hamburger */}
           <button
@@ -177,13 +163,6 @@ function RouteSiteNav({ pathname }: { pathname: string }) {
               {label}
             </Link>
           ))}
-          <Link
-            href="/new"
-            className="mt-4 flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-3 text-lg font-medium text-[#04121a] ring-1 ring-[color-mix(in_srgb,var(--accent)_55%,transparent)] transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
-          >
-            New ticket
-            <CometIcon className="h-4 w-4" />
-          </Link>
         </nav>
       )}
     </>

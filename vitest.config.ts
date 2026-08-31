@@ -4,9 +4,7 @@ import { resolve } from "node:path";
 /**
  * Vitest config for the API test suite.
  *
- * The tests are "black-box" HTTP tests: they boot a real Next.js server on a
- * random port, point it at a fresh temp SQLite file, and assert on JSON
- * responses. Per the PRD, the REST API is the one seam we test through.
+ * The Vitest suite covers browser components and PostgreSQL-backed contracts.
  */
 export default defineConfig({
   test: {

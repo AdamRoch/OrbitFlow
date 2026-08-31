@@ -51,7 +51,6 @@ OPENROUTER_API_KEY=not-a-real-key \
 TELEGRAM_BOT_TOKEN=not-a-real-telegram-token \
 ORBITFACTORY_APP_PORT=39015 \
 ORBITFACTORY_ENGINE_HOST_PORT=40015 \
-ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db \
 docker compose --profile telegram config --quiet
 
 echo "FACT-15 Telegram proof passed"

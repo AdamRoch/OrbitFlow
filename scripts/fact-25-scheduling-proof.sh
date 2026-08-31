@@ -17,5 +17,5 @@ host_port="$(docker port "$container_name" 5432/tcp | sed 's/.*://')"
 export DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$database_name"
 export ORBITFACTORY_FACT25_PROOF_DATABASE="$database_name"
 npm run test:scheduling
-POSTGRES_DB=orbitfactory_proof POSTGRES_USER=orbitfactory POSTGRES_PASSWORD=fact25-proof-password OPENROUTER_API_KEY=not-a-real-key ORBITFACTORY_APP_PORT=39025 ORBITFACTORY_ENGINE_HOST_PORT=40025 ORBITFACTORY_DB_PATH=/app/data/orbitfactory.db docker compose config --quiet
+POSTGRES_DB=orbitfactory_proof POSTGRES_USER=orbitfactory POSTGRES_PASSWORD=fact25-proof-password OPENROUTER_API_KEY=not-a-real-key ORBITFACTORY_APP_PORT=39025 ORBITFACTORY_ENGINE_HOST_PORT=40025 docker compose config --quiet
 echo "FACT-25 scheduling proof passed"

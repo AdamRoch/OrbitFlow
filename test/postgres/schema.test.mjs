@@ -86,7 +86,6 @@ const expectedColumns = {
     "failure_reason",
     "graph_snapshot",
   ],
-  labels: ["id", "name", "color", "created_at", "updated_at"],
   tickets: [
     "id",
     "number",
@@ -99,13 +98,6 @@ const expectedColumns = {
     "status",
     "priority",
     "assignee_agent_id",
-    "created_at",
-    "updated_at",
-  ],
-  ticket_labels: [
-    "id",
-    "ticket_id",
-    "label_id",
     "created_at",
     "updated_at",
   ],
@@ -323,7 +315,6 @@ const requiredConstraints = [
   "schedules_exactly_one_target",
   "schedule_ticks_key_not_blank",
   "schedule_ticks_schedule_key_unique",
-  "ticket_labels_ticket_label_unique",
   "tickets_priority_range",
   "tickets_project_number_unique",
   "workflow_runs_spec_object",
@@ -377,7 +368,6 @@ const requiredIndexes = [
   "idx_schedules_enabled",
   "idx_schedules_workflow",
   "idx_schedule_ticks_schedule_created",
-  "idx_ticket_labels_label",
   "idx_tickets_assignee",
   "idx_tickets_project",
   "idx_tickets_run_board",
@@ -787,8 +777,6 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           "REFERENCES schedules(id) ON DELETE RESTRICT",
         schedule_agent_workflows_workflow_id_fkey:
           "REFERENCES workflows(id) ON DELETE RESTRICT",
-        ticket_labels_label_id_fkey: "REFERENCES labels(id) ON DELETE CASCADE",
-        ticket_labels_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE CASCADE",
         tickets_assignee_agent_id_fkey: "REFERENCES agents(id) ON DELETE SET NULL",
         tickets_project_id_fkey: "REFERENCES projects(id) ON DELETE RESTRICT",
         tickets_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
@@ -912,7 +900,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
     });
 
     let ids;
-    await t.test("preserves retained board, label, blocker, and frontier query shapes", async () => {
+    await t.test("preserves ticket, blocker, and frontier query shapes", async () => {
       const project = await client.query(
         `UPDATE projects
          SET name = 'OrbitFactory', next_number = 5
@@ -972,13 +960,6 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       const ticketIds = Object.fromEntries(
         ticketRows.rows.map((row) => [row.identifier, row.id]),
       );
-      const label = await client.query(
-        "INSERT INTO labels (name, color) VALUES ('feature', '#8b5cf6') RETURNING id",
-      );
-      await client.query(
-        "INSERT INTO ticket_labels (ticket_id, label_id) VALUES ($1, $2)",
-        [ticketIds["FACT-2"], label.rows[0].id],
-      );
       await client.query(
         `INSERT INTO dependencies (project_id, blocker_ticket_id, blocked_ticket_id)
          VALUES ($1, $2, $3), ($1, $4, $5)`,
@@ -992,26 +973,15 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       );
 
       const board = await client.query(
-        `SELECT t.identifier, t.status, t.priority,
-                COALESCE(
-                  array_agg(l.name ORDER BY l.name) FILTER (WHERE l.id IS NOT NULL),
-                  ARRAY[]::text[]
-                ) AS labels
+        `SELECT t.identifier, t.status, t.priority
          FROM tickets t
-         LEFT JOIN ticket_labels tl ON tl.ticket_id = t.id
-         LEFT JOIN labels l ON l.id = tl.label_id
          WHERE t.run_id = $1
-         GROUP BY t.id
          ORDER BY t.priority DESC, t.created_at DESC, t.id DESC`,
         [run.rows[0].id],
       );
       assert.deepEqual(
         board.rows.map((row) => row.identifier),
         ["FACT-3", "FACT-2", "FACT-1", "FACT-4"],
-      );
-      assert.deepEqual(
-        board.rows.find((row) => row.identifier === "FACT-2").labels,
-        ["feature"],
       );
 
       const frontier = await client.query(

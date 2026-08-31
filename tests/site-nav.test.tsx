@@ -72,6 +72,6 @@ describe("SiteNav mobile dialog", () => {
     expect(mobileNavigation?.querySelector('a[href="/workflows"]')?.textContent).toContain(
       "Workflows",
     );
-    expect(mobileNavigation?.querySelectorAll("a")).toHaveLength(7);
+    expect(mobileNavigation?.querySelectorAll("a")).toHaveLength(3);
   });
 });

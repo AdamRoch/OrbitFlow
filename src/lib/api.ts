@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import type { DB } from "./db";
-import { getDefaultProject } from "./db";
-import type { ProjectRow } from "./db/schema";
-import type { ApiErrorBody } from "./types";
 import { ValidationError } from "./validate";
+
+export interface ApiErrorBody {
+  error: { message: string; code: string | null };
+}
 
 /**
  * Shared HTTP helpers for the REST API. Every response goes through these so
@@ -86,16 +86,4 @@ export interface RouteContext<
   T extends Record<string, string> = { id: string },
 > {
   params: Promise<T>;
-}
-
-/**
- * Resolve OrbitFactory's internal ticket scope. FACT-6 will replace this
- * temporary SQLite boundary with the application PostgreSQL schema.
- */
-export function requireProject(db: DB): ProjectRow {
-  const project = getDefaultProject(db);
-  if (!project) {
-    throw new ValidationError("ticket scope is unavailable", "project_not_found");
-  }
-  return project;
 }

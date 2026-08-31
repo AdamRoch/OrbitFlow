@@ -105,9 +105,7 @@ const expectedColumns = {
   agent_skills: ["id","agent_id","skill_id","created_at","updated_at"],
   workflows: ["id","name","description","graph","is_template","created_at","updated_at"],
   workflow_runs: ["id","workflow_id","status","trigger_type","spec","started_at","ended_at","total_tokens","total_cost","created_at","updated_at","failure_reason","graph_snapshot"],
-  labels: ["id","name","color","created_at","updated_at"],
   tickets: ["id","number","identifier","project_id","run_id","title","description","acceptance_criteria","status","priority","assignee_agent_id","created_at","updated_at"],
-  ticket_labels: ["id","ticket_id","label_id","created_at","updated_at"],
   dependencies: ["id","project_id","blocker_ticket_id","blocked_ticket_id","created_at","updated_at"],
   messages: ["id","run_id","ticket_id","sequence_number","sender","recipient","type","payload","handoff_brief","token_usage","created_at","updated_at"],
   message_consumer_runs: ["run_id","next_sequence_number","last_consumed_at"],
@@ -166,7 +164,7 @@ const requiredConstraints = [
   "channel_intakes_clarification_nonnegative","channel_intakes_conversation_not_blank",
   "channel_intakes_provider_not_blank","channel_intakes_spec_object","channel_intakes_state_complete",
   "channel_completion_events_state_complete",
-  "ticket_labels_ticket_label_unique","tickets_priority_range","tickets_project_number_unique",
+  "tickets_priority_range","tickets_project_number_unique",
   "workflow_runs_spec_object","workflow_runs_failure_state","workflow_runs_graph_snapshot_object",
   "workflow_runs_total_cost_nonnegative","workflow_runs_total_tokens_nonnegative",
   "workflow_fanout_groups_activation_unique","workflow_fanout_groups_agent_model_not_blank",
@@ -195,7 +193,7 @@ const requiredIndexes = [
   "channel_intakes_one_collecting_conversation","channel_intakes_status_updated",
   "idx_schedules_agent","idx_schedules_enabled","idx_schedules_workflow",
   "idx_schedule_ticks_schedule_created",
-  "idx_ticket_labels_label","idx_tickets_assignee","idx_tickets_project",
+  "idx_tickets_assignee","idx_tickets_project",
   "idx_tickets_run_board","idx_tickets_run_frontier",
   "idx_workflow_runs_status","idx_workflow_runs_workflow_created",
   "idx_workflow_fanout_groups_run_node","idx_workflow_fanout_members_ticket",
@@ -351,8 +349,6 @@ try {
       schedule_ticks_message_id_fkey: "REFERENCES messages(id) ON DELETE RESTRICT",
       schedule_agent_workflows_schedule_id_fkey: "REFERENCES schedules(id) ON DELETE RESTRICT",
       schedule_agent_workflows_workflow_id_fkey: "REFERENCES workflows(id) ON DELETE RESTRICT",
-      ticket_labels_label_id_fkey: "REFERENCES labels(id) ON DELETE CASCADE",
-      ticket_labels_ticket_id_fkey: "REFERENCES tickets(id) ON DELETE CASCADE",
       tickets_assignee_agent_id_fkey: "REFERENCES agents(id) ON DELETE SET NULL",
       tickets_project_id_fkey: "REFERENCES projects(id) ON DELETE RESTRICT",
       tickets_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
@@ -419,7 +415,7 @@ try {
   });
 
   let ids;
-  await run("preserves retained board, label, blocker, and frontier query shapes", async () => {
+  await run("preserves ticket, blocker, and frontier query shapes", async () => {
     const project = await client.query(`UPDATE projects SET name = 'OrbitFactory', next_number = 5 WHERE key = 'FACT' RETURNING id`);
     const agent = await client.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Implementer', 'worker', 'Implement the assigned ticket.', 'test/model', '{"cost_limit": 5}', '{"autonomy": "high"}', '{"facts": []}') RETURNING id`);
     const skill = await client.query(`INSERT INTO skills (name, description, procedure) VALUES ('testing', 'Prove behavior', 'Run the contract tests.') RETURNING id`);
@@ -430,13 +426,10 @@ try {
 
     const ticketRows = await client.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, description, acceptance_criteria, status, priority, assignee_agent_id) VALUES (1, 'FACT-1', $1, $2, 'Finished blocker', NULL, NULL, 'done', 2, NULL), (2, 'FACT-2', $1, $2, 'Ready work', 'Retained description', 'The proof passes.', 'todo', 3, $3), (3, 'FACT-3', $1, $2, 'Blocked work', NULL, NULL, 'todo', 4, NULL), (4, 'FACT-4', $1, $2, 'Open blocker', NULL, NULL, 'todo', 0, NULL), (5, 'FACT-5', $1, NULL, 'Unscoped retained ticket', NULL, NULL, 'backlog', 0, NULL) RETURNING id, identifier`, [project.rows[0].id, run.rows[0].id, agent.rows[0].id]);
     const ticketIds = Object.fromEntries(ticketRows.rows.map((row) => [row.identifier, row.id]));
-    const label = await client.query("INSERT INTO labels (name, color) VALUES ('feature', '#8b5cf6') RETURNING id");
-    await client.query("INSERT INTO ticket_labels (ticket_id, label_id) VALUES ($1, $2)", [ticketIds["FACT-2"], label.rows[0].id]);
     await client.query(`INSERT INTO dependencies (project_id, blocker_ticket_id, blocked_ticket_id) VALUES ($1, $2, $3), ($1, $4, $5)`, [project.rows[0].id, ticketIds["FACT-1"], ticketIds["FACT-2"], ticketIds["FACT-4"], ticketIds["FACT-3"]]);
 
-    const board = await client.query(`SELECT t.identifier, t.status, t.priority, COALESCE(array_agg(l.name ORDER BY l.name) FILTER (WHERE l.id IS NOT NULL), ARRAY[]::text[]) AS labels FROM tickets t LEFT JOIN ticket_labels tl ON tl.ticket_id = t.id LEFT JOIN labels l ON l.id = tl.label_id WHERE t.run_id = $1 GROUP BY t.id ORDER BY t.priority DESC, t.created_at DESC, t.id DESC`, [run.rows[0].id]);
+    const board = await client.query(`SELECT t.identifier, t.status, t.priority FROM tickets t WHERE t.run_id = $1 ORDER BY t.priority DESC, t.created_at DESC, t.id DESC`, [run.rows[0].id]);
     assert.deepEqual(board.rows.map((row) => row.identifier), ["FACT-3", "FACT-2", "FACT-1", "FACT-4"]);
-    assert.deepEqual(board.rows.find((row) => row.identifier === "FACT-2").labels, ["feature"]);
 
     const frontier = await client.query(`SELECT candidate.identifier FROM tickets candidate WHERE candidate.run_id = $1 AND candidate.status = 'todo' AND NOT EXISTS (SELECT 1 FROM dependencies dependency JOIN tickets blocker ON blocker.id = dependency.blocker_ticket_id WHERE dependency.blocked_ticket_id = candidate.id AND blocker.status <> 'done') ORDER BY candidate.priority DESC, candidate.created_at, candidate.id`, [run.rows[0].id]);
     assert.deepEqual(frontier.rows.map((row) => row.identifier), ["FACT-2", "FACT-4"]);

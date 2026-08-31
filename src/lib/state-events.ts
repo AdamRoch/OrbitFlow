@@ -39,10 +39,9 @@ export type StateEventInput = Omit<StateEvent, "schemaVersion" | "occurredAt" | 
   occurredAt?: string;
 };
 
-type StateEventListener = (event: StateEvent) => void;
+export type StateEventListener = (event: StateEvent) => void;
 
 const eventTypes = new Set<string>(STATE_EVENT_TYPES);
-const localListeners = new Set<StateEventListener>();
 
 function identifier(value: unknown): string | null {
   if (value === null) return null;
@@ -91,19 +90,3 @@ export function createStateEvent(input: StateEventInput): StateEvent {
   if (!event) throw new TypeError("state event has an invalid envelope");
   return event;
 }
-
-/**
- * Used only for inherited SQLite ticket writes. PostgreSQL writers notify from
- * an AFTER trigger, which PostgreSQL delivers only after their transaction commits.
- */
-export function publishLocalStateEvent(input: StateEventInput): void {
-  const event = createStateEvent(input);
-  for (const listener of localListeners) listener(event);
-}
-
-export function subscribeLocalStateEvents(listener: StateEventListener): () => void {
-  localListeners.add(listener);
-  return () => localListeners.delete(listener);
-}
-
-export type { StateEventListener };
