@@ -1,7 +1,7 @@
 # ADR 0001: Make PostgreSQL the only ticket authority
 
-**Status:** Accepted  
-**Date:** 2026-08-31  
+**Status:** Accepted
+**Date:** 2026-08-31
 **Implementation:** `FACT-40`, `FACT-41`, and `FACT-42`
 
 ## Context

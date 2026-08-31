@@ -1,6 +1,6 @@
 # FACT-40 Delete the SQLite tracker and use Monitoring as the ticket board
 
-**Priority:** High  
+**Priority:** High
 **Depends on:** None
 
 ## Outcome

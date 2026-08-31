@@ -1,6 +1,6 @@
 # FACT-42 Prove the PostgreSQL-only cutover and demo data path
 
-**Priority:** High  
+**Priority:** High
 **Depends on:** FACT-40, FACT-41
 
 ## Outcome

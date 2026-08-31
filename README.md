@@ -172,8 +172,9 @@ workflow engine or write directly to a provider from an agent.
 
 OrbitFlow adapted its ticket foundation from OrbitTrack commit
 [`589e04165a0744be10b7fc1b05984c6a3bff234c`](https://github.com/AdamRoch/OrbitTrack/commit/589e04165a0744be10b7fc1b05984c6a3bff234c),
-retaining the board, ticket workflow, labels, blockers, frontier/claim behavior,
-and supporting application code. OrbitFlow-specific work added the PostgreSQL
+retaining the run-filtered board, ticket workflow, and blocker concepts. OrbitFlow's
+PostgreSQL database is the runtime ticket authority; OrbitTrack remains the
+external development work tracker. OrbitFlow-specific work added the PostgreSQL
 contracts, bus, engine, runtime/tool boundaries, templates, Telegram adapter,
 guardrails, and scheduling.
 

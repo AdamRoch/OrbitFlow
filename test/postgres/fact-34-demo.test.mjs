@@ -259,7 +259,7 @@ test("FACT-34 reconciliation reuses the durable canonical wake input", async () 
   assert.equal(storedWake.toolContext.dispatchId, request.dispatchId);
 });
 
-test("FACT-34 production tools expose the ordinary coding surface", () => {
+test("FACT-50 ticket-bound tools state the broker and engine ownership rules", () => {
   const tools = createProductionWorkspaceTools({
     tool: "/app/bin/orbit-openclaw-tool.mjs",
   })("7", "implement", "11", "13");
@@ -273,19 +273,26 @@ test("FACT-34 production tools expose the ordinary coding surface", () => {
   assert.match(tools, /delegate_coding_task/);
   assert.doesNotMatch(tools, /DATABASE_URL=|ORBITFLOW_RUN_ID=|ORBITFLOW_AGENT_ID=/);
   assert.doesNotMatch(tools, /"agentId"|"runId"|"ticketId"|"workspace"/);
+  assert.ok(tools.includes("The broker injects agentId and runId for every command, and ticketId for ticket-bound commands."));
+  assert.ok(tools.includes("Do not supply or replace broker-injected attribution fields."));
+  assert.ok(tools.includes("Only workflow-engine assignment moves tickets to in_progress. Agents cannot set that status."));
+  assert.ok(tools.includes("Ticket-bound update_ticket, post_message, and set_ticket_dependencies calls use the broker-injected active ticketId; do not supply a replacement."));
+  assert.doesNotMatch(tools, /Never supply or attempt to replace those bound fields\./);
   assert.match(tools, /^\/app\/bin\/orbit-openclaw-tool\.mjs/m);
   assert.doesNotMatch(tools, /projectId from the run spec or an existing ticket/);
 });
 
-test("FACT-43 planner tools expose an explicit dependency target", () => {
+test("FACT-50 planner tools distinguish their dependency target from bound attribution", () => {
   const tools = createProductionWorkspaceTools({
     tool: "/app/bin/orbit-openclaw-tool.mjs",
   })("7", "plan", null, "13");
   assert.match(tools, /### set_ticket_dependencies/);
   assert.match(tools, /"ticketId":"<ticketId from list_tickets>"/);
+  assert.ok(tools.includes("A planner dispatch has no active ticket. For set_ticket_dependencies, supply the target ticketId returned by list_tickets; this planner target is not broker-injected and is preserved."));
+  assert.ok(tools.includes("Only workflow-engine assignment moves tickets to in_progress. Agents cannot set that status."));
   assert.doesNotMatch(tools, /### update_ticket/);
   assert.doesNotMatch(tools, /### post_message/);
-  assert.doesNotMatch(tools, /in_progress/);
+  assert.doesNotMatch(tools, /Never supply or attempt to replace those bound fields\./);
 });
 
 async function until(description, action, timeoutMs = 30_000) {

@@ -10,7 +10,9 @@ export function createProductionWorkspaceTools(
   return (_agentId, nodeId, ticketId, _runId) => [
     `# OrbitFlow tools for ${nodeId}`,
     "The active dispatch binds agent, run, ticket, database, and workspace context.",
-    "Never supply or attempt to replace those bound fields.",
+    "The broker injects agentId and runId for every command, and ticketId for ticket-bound commands.",
+    "Do not supply or replace broker-injected attribution fields.",
+    "Only workflow-engine assignment moves tickets to in_progress. Agents cannot set that status.",
     "Replace <unique-suffix> with a new short value for each command invocation.",
     "Use only the commands required by the node prompt.",
     "",
@@ -37,9 +39,12 @@ export function createProductionWorkspaceTools(
       priority: 1,
       idempotencyKey: "create-<unique-suffix>",
     })}'`,
-    ...(ticketId ? [] : [
+    ...(ticketId ? [
       "",
-      "A planner dispatch has no active ticket. Include the target ticketId from list_tickets when setting dependencies.",
+      "Ticket-bound update_ticket, post_message, and set_ticket_dependencies calls use the broker-injected active ticketId; do not supply a replacement.",
+    ] : [
+      "",
+      "A planner dispatch has no active ticket. For set_ticket_dependencies, supply the target ticketId returned by list_tickets; this planner target is not broker-injected and is preserved.",
     ]),
     "",
     "### set_ticket_dependencies",

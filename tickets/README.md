@@ -1,8 +1,8 @@
 # Current tickets
 
-OrbitTrack is the authoritative execution queue. These files keep the accepted
-scope beside the code so a future agent can understand it without tracker
-access.
+OrbitFlow's PostgreSQL database is the runtime ticket authority. OrbitTrack is the
+external development work tracker. These files keep the accepted scope beside
+the code so a future agent can understand it without tracker access.
 
 * [FACT-40: Delete the SQLite tracker and use Monitoring as the ticket board](FACT-40-postgresql-only-control-plane.md)
 * [FACT-41: Make dependencies and first assignment atomic per workflow run](FACT-41-run-scoped-ticket-dispatch.md)

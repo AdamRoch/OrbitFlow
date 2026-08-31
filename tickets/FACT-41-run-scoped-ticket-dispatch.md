@@ -1,6 +1,6 @@
 # FACT-41 Make dependencies and first assignment atomic per workflow run
 
-**Priority:** High  
+**Priority:** High
 **Depends on:** None
 
 ## Outcome
