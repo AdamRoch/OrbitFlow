@@ -1406,19 +1406,21 @@ async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<
 }
 
 /**
- * Platform ticket mutations already append a durable system message. A done
- * blocker can make work ready in a fan-out node unrelated to the worker that
- * changed it, so consume that one event through the ordinary message route.
+ * Platform ticket mutations append durable system messages. A done blocker can
+ * make work ready in a fan-out node unrelated to the worker that changed it.
+ * A dependency replacement can also make a retained ticket ready. Both cases
+ * use the ordinary message route and reread current PostgreSQL state.
  */
-async function routeTicketUpdateEvent(
+async function routeTicketStreamEvent(
   transaction: PoolClient,
   message: MessageRow,
 ): Promise<boolean> {
+  const action = message.payload.action;
   if (
     message.type !== "system"
     || message.recipient !== "system:ticket-stream"
     || message.ticketId === null
-    || message.payload.action !== "update_ticket"
+    || (action !== "update_ticket" && action !== "set_ticket_dependencies")
   ) {
     return false;
   }
@@ -1440,9 +1442,23 @@ async function routeTicketUpdateEvent(
   if (!ticket.rows[0]) return true;
   // The mutation message records that an update happened, not a stale status
   // snapshot. A reopen that commits first wins over its earlier done event.
-  if (ticket.rows[0].status !== "done") return true;
+  if (action === "update_ticket" && ticket.rows[0].status !== "done") return true;
 
-  const nodes = await transaction.query<{ node_id: string }>(
+  const nodes = action === "update_ticket"
+    ? await routeTicketUpdateNodes(transaction, message)
+    : await routeTicketDependencyNodes(transaction, message);
+  for (const node of nodes.rows) {
+    await materializeFanoutCapacity(transaction, message.runId, node.node_id);
+  }
+  await finishRunIfIdle(transaction, message.runId);
+  return true;
+}
+
+async function routeTicketUpdateNodes(
+  transaction: PoolClient,
+  message: MessageRow,
+): Promise<{ rows: { node_id: string }[] }> {
+  return transaction.query<{ node_id: string }>(
     `SELECT DISTINCT fanout.node_id
      FROM workflow_fanout_members AS member
      JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
@@ -1451,11 +1467,20 @@ async function routeTicketUpdateEvent(
      ORDER BY fanout.node_id`,
     [message.runId, message.ticketId],
   );
-  for (const node of nodes.rows) {
-    await materializeFanoutCapacity(transaction, message.runId, node.node_id);
-  }
-  await finishRunIfIdle(transaction, message.runId);
-  return true;
+}
+
+async function routeTicketDependencyNodes(
+  transaction: PoolClient,
+  message: MessageRow,
+): Promise<{ rows: { node_id: string }[] }> {
+  return transaction.query<{ node_id: string }>(
+    `SELECT DISTINCT fanout.node_id
+     FROM workflow_fanout_members AS member
+     JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
+     WHERE fanout.run_id = $1 AND member.ticket_id = $2
+     ORDER BY fanout.node_id`,
+    [message.runId, message.ticketId],
+  );
 }
 
 async function handleChannelIntakeOutput(
@@ -1786,7 +1811,7 @@ export async function routeWorkflowMessage(
     return;
   }
   if (message.type === "system" && await routeChannelCompletionEvent(transaction, message)) return;
-  if (await routeTicketUpdateEvent(transaction, message)) return;
+  if (await routeTicketStreamEvent(transaction, message)) return;
   if (message.type !== "output") return;
   const runResult = await transaction.query(
     `SELECT run.*

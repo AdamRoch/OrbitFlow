@@ -127,13 +127,16 @@ one slot and materializes the next ready snapshotted ticket in stable group and
 ticket order. Unresolved members keep the run open. Each materialized ticket
 still receives one ephemeral runtime session.
 
-`update_ticket` already commits one durable `system:ticket-stream` message with
-the ticket mutation. The workflow router recognizes only that `update_ticket`
-event. Under the run lock it rereads the ticket from PostgreSQL, and only a
-currently `done` blocker wakes work. It finds every entered fan-out node holding
-a direct dependent and rematerializes each node through the normal capacity
-path, then rechecks completion. A terminal run and a stale done event after a
-reopen do nothing. There is no polling or separate wake queue.
+`update_ticket` and `set_ticket_dependencies` each commit one durable
+`system:ticket-stream` message with the ticket mutation. For an update event,
+the router wakes entered fan-out nodes that hold a direct dependent only when
+the blocker is currently `done`. For a dependency event, it wakes entered
+fan-out nodes that retain the changed ticket. Under the run lock, the normal
+materialization query rereads the current dependency rows before assigning any
+work. Removing a final blocker can therefore add one dispatch, while a blocker
+added or replaced before a stale event is consumed prevents a dispatch. The
+idempotency result reuses the original event. A terminal run and a stale done
+event after a reopen do nothing. There is no polling or separate wake queue.
 
 ## Lifecycle seams
 

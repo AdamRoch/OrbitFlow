@@ -47,15 +47,16 @@ ticket ownership directly in PostgreSQL, and uses parameterized SQL only.
 `create_ticket`. `set_ticket_dependencies` replaces a todo ticket's complete blocker
 set. The blocked ticket and every blocker must be in the calling run and project.
 It locks the workflow run before the idempotency invocation's run foreign-key lock
-and before ticket rows, rejects cycles, and touches the blocked ticket so Monitoring
-wakes after the transaction commits. Every `update_ticket` takes that same run lock
-first, so dependency replacement, ticket edits, and engine assignment have one
-per-run linearization order. `list_tickets` returns the current blocker ticket
-ids. `create_ticket` and `update_ticket` append a `system` message. `post_message`
-appends the requested message type, including `question`. All use FACT-9's
-`insertMessage` producer inside the ticket transaction, so the ticket mutation,
-durable message, enqueue, ready projection, and idempotency result commit or
-roll back together. `list_projects` and `list_tickets` are read-only;
+and before ticket rows, rejects cycles, touches the blocked ticket, and appends a
+`system:ticket-stream` dependency event. Every `update_ticket` takes that same
+run lock first, so dependency replacement, ticket edits, and engine assignment
+have one per-run linearization order. `list_tickets` returns the current blocker
+ticket ids. `create_ticket`, `update_ticket`, and `set_ticket_dependencies`
+append a `system` message. `post_message` appends the requested message type,
+including `question`. All use FACT-9's `insertMessage` producer inside the
+ticket transaction, so the ticket mutation, durable message, enqueue, ready
+projection, and idempotency result commit or roll back together. `list_projects`
+and `list_tickets` are read-only;
 `list_tickets` is scoped to the calling run, and
 records its durable idempotent invocation in the same PostgreSQL authority.
 

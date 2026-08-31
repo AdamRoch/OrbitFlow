@@ -262,6 +262,126 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
       );
     });
 
+    await t.test("routes retained fan-out work from durable dependency events", async () => {
+      async function retainedFixture(key) {
+        const run = await makeRun(2);
+        const blocker = await makeTicket(run.id, `${key} blocker`);
+        const dependent = await makeTicket(run.id, `${key} dependent`);
+        const configured = await setDependencies(
+          run.id,
+          dependent,
+          [blocker],
+          `${key}-initial-dependency`,
+        );
+        assert.equal(configured.message.payload.action, "set_ticket_dependencies");
+        await startWorkflowRun(pool, run.id);
+        await consumeThrough(configured.message.id, `${key}-initial-route`);
+        return { run, blocker, dependent };
+      }
+
+      async function dependentDispatches(runId, ticketId) {
+        return client.query(
+          `SELECT id::text AS id, status
+           FROM workflow_dispatches
+           WHERE run_id = $1 AND node_id = 'implement' AND ticket_id = $2
+           ORDER BY id`,
+          [runId, ticketId],
+        );
+      }
+
+      const released = await retainedFixture("fact54-release");
+      const release = await setDependencies(
+        released.run.id,
+        released.dependent,
+        [],
+        "fact54-remove-final-blocker",
+      );
+      const releaseReplay = await setDependencies(
+        released.run.id,
+        released.dependent,
+        [],
+        "fact54-remove-final-blocker",
+      );
+      assert.equal(release.replayed, false);
+      assert.equal(release.message.payload.action, "set_ticket_dependencies");
+      assert.equal(releaseReplay.replayed, true);
+      assert.equal(releaseReplay.message.id, release.message.id);
+      const durable = await client.query(
+        `SELECT message.ticket_id::text AS ticket_id,
+                message.payload ->> 'action' AS action,
+                EXISTS (
+                  SELECT 1 FROM message_enqueues WHERE message_id = message.id
+                ) AS enqueued
+         FROM messages AS message
+         WHERE message.id = $1`,
+        [release.message.id],
+      );
+      assert.deepEqual(durable.rows, [{
+        ticket_id: released.dependent,
+        action: "set_ticket_dependencies",
+        enqueued: true,
+      }]);
+      assert.equal(
+        (await dependentDispatches(released.run.id, released.dependent)).rowCount,
+        0,
+        "the dependency event is the only wake path",
+      );
+      await consumeThrough(release.message.id, "fact54-release-route");
+      assert.deepEqual(
+        (await dependentDispatches(released.run.id, released.dependent)).rows.map((row) => row.status),
+        ["pending"],
+        "removing the final retained blocker creates one dispatch",
+      );
+      await client.query(
+        `UPDATE workflow_runs
+         SET status = 'canceled', ended_at = clock_timestamp()
+         WHERE id = $1`,
+        [released.run.id],
+      );
+
+      const stale = await retainedFixture("fact54-stale");
+      const replacement = await makeTicket(stale.run.id, "fact54 replacement blocker");
+      const staleReady = await setDependencies(
+        stale.run.id,
+        stale.dependent,
+        [],
+        "fact54-stale-ready-event",
+      );
+      const replacementAdded = await setDependencies(
+        stale.run.id,
+        stale.dependent,
+        [replacement],
+        "fact54-replace-before-consume",
+      );
+      await consumeThrough(staleReady.message.id, "fact54-stale-ready-route");
+      await consumeThrough(replacementAdded.message.id, "fact54-replace-route");
+      assert.equal(
+        (await dependentDispatches(stale.run.id, stale.dependent)).rowCount,
+        0,
+        "current replacement blockers beat a stale ready event",
+      );
+
+      await client.query(
+        `UPDATE workflow_runs
+         SET status = 'canceled', ended_at = clock_timestamp()
+         WHERE id = $1`,
+        [stale.run.id],
+      );
+      const terminal = await setDependencies(
+        stale.run.id,
+        stale.dependent,
+        [],
+        "fact54-terminal-dependency-event",
+      );
+      await consumeThrough(terminal.message.id, "fact54-terminal-route");
+      assert.equal((await getWorkflowRun(pool, stale.run.id)).status, "canceled");
+      assert.equal(
+        (await dependentDispatches(stale.run.id, stale.dependent)).rowCount,
+        0,
+        "a terminal run ignores dependency events",
+      );
+    });
+
     await t.test("retains blocked fan-out work and wakes it after its blocker completes", async () => {
       const run = await makeRun(1);
       const blocker = await makeTicket(run.id, "fan-out blocker");

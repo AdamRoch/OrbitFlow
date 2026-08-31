@@ -581,8 +581,24 @@ async function setTicketDependencies(
     [input.ticketId],
   );
   const ticket = await loadTicket(client, String(updated!.id));
+  const value = ticketFromRow(ticket!);
+  const message = await insertMessage(client, {
+    runId: input.runId,
+    ticketId: value.id,
+    sender: `agent:${input.agentId}`,
+    recipient: "system:ticket-stream",
+    type: "system",
+    payload: {
+      action: "set_ticket_dependencies",
+      agentId: input.agentId,
+      runId: input.runId,
+      ticketId: value.id,
+      idempotencyKey: input.idempotencyKey,
+    },
+  });
   return {
-    ticket: ticketFromRow(ticket!),
+    ticket: value,
+    message: messageFromRow(message),
     replayed: false,
   };
 }
