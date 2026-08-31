@@ -21,6 +21,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const migrationDirectory = fileURLToPath(new URL("../../db/migrations/", import.meta.url));
 const STATUS_UPDATE_APPLICATION_NAME = "orbitfactory-fact48-status-update";
 const ASSIGNMENT_APPLICATION_NAME = "orbitfactory-fact48-assignment";
+const FACT51_ROUTER_APPLICATION_NAME = "orbitfactory-fact51-ticket-router";
 
 async function committedMigrationFiles() {
   return (await readdir(migrationDirectory))
@@ -39,6 +40,11 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
   const assignmentPool = new Pool({
     connectionString: databaseUrl,
     application_name: ASSIGNMENT_APPLICATION_NAME,
+    max: 1,
+  });
+  const routerPool = new Pool({
+    connectionString: databaseUrl,
+    application_name: FACT51_ROUTER_APPLICATION_NAME,
     max: 1,
   });
   await client.connect();
@@ -69,9 +75,9 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
       return createWorkflowRun(pool, { workflowId, triggerType: "ui", spec: { proof: runNumber } });
     }
 
-    async function consumeThrough(messageId, consumerId) {
+    async function consumeThrough(messageId, consumerId, consumerPool = pool) {
       for (let attempt = 0; attempt < 30; attempt += 1) {
-        const consumed = await consumeNextWorkflowMessage(pool, { consumerId });
+        const consumed = await consumeNextWorkflowMessage(consumerPool, { consumerId });
         if (consumed?.message.id === messageId) return consumed;
       }
       assert.fail(`message ${messageId} was not consumed`);
@@ -156,6 +162,20 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       assert.fail(`${applicationName} did not wait on the workflow-run lock`);
+    }
+
+    async function waitForLockWaiter(applicationName) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const activity = await client.query(
+          `SELECT wait_event_type
+           FROM pg_stat_activity
+           WHERE application_name = $1`,
+          [applicationName],
+        );
+        if (activity.rows.some((row) => row.wait_event_type === "Lock")) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.fail(`${applicationName} did not wait on its expected lock`);
     }
 
     async function assertStatusUpdateHasNoInvocationLock() {
@@ -502,6 +522,85 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
       assert.equal(messages.rows[0].count, 1);
     });
 
+    await t.test("serializes title-only updates before ticket routing can take the run lock", async () => {
+      const run = await makeRun();
+      const ticket = await makeTicket(run.id, "FACT-51 title lock order");
+      await startWorkflowRun(pool, run.id);
+      const prior = await updateTicketStatus(
+        pool,
+        run.id,
+        ticket,
+        "done",
+        "fact51-route-prior-update",
+      );
+      const advisoryHolder = new Client({
+        connectionString: databaseUrl,
+        application_name: "orbitfactory-fact51-advisory-holder",
+      });
+      await advisoryHolder.connect();
+      await advisoryHolder.query("SELECT pg_advisory_lock(51, 52)");
+      await client.query(
+        `CREATE OR REPLACE FUNCTION fact51_title_update_message_gate()
+         RETURNS trigger
+         LANGUAGE plpgsql
+         AS $$
+         BEGIN
+           IF NEW.payload ->> 'idempotencyKey' = 'fact51-title-lock-order' THEN
+             PERFORM pg_advisory_xact_lock(51, 52);
+           END IF;
+           RETURN NEW;
+         END;
+         $$`,
+      );
+      await client.query(
+        `CREATE TRIGGER fact51_title_update_message_gate
+         BEFORE INSERT ON messages
+         FOR EACH ROW
+         EXECUTE FUNCTION fact51_title_update_message_gate()`,
+      );
+
+      let released = false;
+      try {
+        const beforeTitle = await ticketState(ticket);
+        const titleUpdate = dispatchPlatformTool(statusUpdatePool, "update_ticket", {
+          agentId,
+          runId: run.id,
+          ticketId: ticket,
+          expectedUpdatedAt: beforeTitle.updated_at,
+          title: "FACT-51 lock order holds",
+          idempotencyKey: "fact51-title-lock-order",
+        });
+        await waitForLockWaiter(STATUS_UPDATE_APPLICATION_NAME);
+
+        const routed = consumeThrough(prior.message.id, "fact51-lock-order", routerPool);
+        await waitForRunLockWaiter(FACT51_ROUTER_APPLICATION_NAME);
+
+        await advisoryHolder.query("SELECT pg_advisory_unlock(51, 52)");
+        released = true;
+        const [titleResult, routeResult] = await settleWithoutDeadlock([titleUpdate, routed]);
+        assert.equal(titleResult.status, "fulfilled");
+        assert.equal(routeResult.status, "fulfilled");
+        assert.equal(routeResult.value?.message.id, prior.message.id);
+
+        const titleMessage = titleResult.value.message;
+        const consumedTitle = await consumeThrough(
+          titleMessage.id,
+          "fact51-lock-order",
+          routerPool,
+        );
+        assert.equal(consumedTitle?.message.id, titleMessage.id);
+      } finally {
+        if (!released) await advisoryHolder.query("SELECT pg_advisory_unlock(51, 52)").catch(() => {});
+        await client.query("DROP TRIGGER IF EXISTS fact51_title_update_message_gate ON messages").catch(() => {});
+        await client.query("DROP FUNCTION IF EXISTS fact51_title_update_message_gate()").catch(() => {});
+        await advisoryHolder.end();
+        await client.query(
+          "UPDATE workflow_runs SET status = 'canceled', ended_at = clock_timestamp() WHERE id = $1",
+          [run.id],
+        );
+      }
+    });
+
     await t.test("fails closed after a direct dependent completes", async () => {
       const state = await makeStatusAssignmentRace("fact48-completed-dependent");
       await startWorkflowRun(pool, state.run.id);
@@ -616,6 +715,7 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
       pool.end(),
       statusUpdatePool.end(),
       assignmentPool.end(),
+      routerPool.end(),
     ]);
   }
 });

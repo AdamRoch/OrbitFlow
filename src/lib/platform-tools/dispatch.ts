@@ -739,14 +739,11 @@ export async function dispatchPlatformTool(
       blockedActions.includes(input.command)
         ? rejectBlockedAction(client, input)
         : operation();
-    if (
-      input.command === "set_ticket_dependencies"
-      || (input.command === "update_ticket" && input.status !== undefined)
-    ) {
+    if (input.command === "set_ticket_dependencies" || input.command === "update_ticket") {
       // Take the run lock before the idempotency row's run foreign-key lock
       // and before ticket rows. Assignment, dependency replacement, and every
-      // status-changing ticket update therefore share one lock order and
-      // cannot form a lock-upgrade deadlock.
+      // ticket update therefore share one lock order and cannot form a
+      // lock-upgrade deadlock.
       await lockRun(client, input.runId);
     }
     if (input.command === "list_projects" || input.command === "list_tickets") {

@@ -17,6 +17,7 @@ import {
   resumeWorkflowRun,
   startWorkflowRun,
 } from "../../src/lib/postgres/workflow-engine.ts";
+import { dispatchPlatformTool } from "../../src/lib/platform-tools/dispatch.ts";
 
 const { Client, Pool } = pg;
 const migrationDirectory = fileURLToPath(
@@ -415,6 +416,277 @@ test("FACT-10 durable workflow engine", async (t) => {
       assert.equal(statuses.rows[0].count, 0);
     });
 
+    await t.test("wakes retained work in another fan-out node from the durable ticket event", async () => {
+      async function createCrossNodeFixture(name, blockerCount = 1) {
+        const graph = {
+          nodes: [
+            {
+              id: "blocker",
+              agentId: agents.worker,
+              config: { entry: true, fanOut: { maxConcurrency: 1 } },
+            },
+            {
+              id: "dependent",
+              agentId: agents.implement,
+              config: { fanOut: { maxConcurrency: 1 } },
+            },
+          ],
+          edges: [],
+        };
+        const workflowId = await createWorkflow(graph);
+        const pending = await createWorkflowRun(pool, {
+          workflowId,
+          triggerType: "ui",
+          spec: { objective: `FACT-51 ${name}` },
+        });
+        const blockers = [];
+        for (let index = 0; index < blockerCount; index += 1) {
+          ticketCounter += 1;
+          blockers.push((await client.query(
+            `INSERT INTO tickets (
+               number, identifier, project_id, run_id, title, status, priority
+             ) VALUES ($1, $2, $3, $4, $5, 'todo', 2) RETURNING id`,
+            [
+              ticketCounter,
+              `PROOF-${ticketCounter}`,
+              project.rows[0].id,
+              pending.id,
+              `${name} blocker ${index + 1}`,
+            ],
+          )).rows[0].id);
+        }
+        const run = await startWorkflowRun(pool, pending.id);
+
+        ticketCounter += 1;
+        const dependent = (await client.query(
+          `INSERT INTO tickets (
+             number, identifier, project_id, run_id, title, status, priority
+           ) VALUES ($1, $2, $3, $4, $5, 'todo', 1) RETURNING id`,
+          [ticketCounter, `PROOF-${ticketCounter}`, project.rows[0].id, run.id, `${name} dependent`],
+        )).rows[0].id;
+        await dispatchPlatformTool(pool, "set_ticket_dependencies", {
+          agentId: agents.worker,
+          runId: run.id,
+          ticketId: dependent,
+          blockerTicketIds: blockers,
+          idempotencyKey: `${name}-dependency`,
+        });
+        const activation = await insertMessage(pool, {
+          runId: run.id,
+          sender: "system:fact51-proof",
+          recipient: "system:fact51-proof",
+          type: "system",
+          payload: { output: { activation: name } },
+          handoffBrief: "enter dependent fan-out",
+        });
+        const group = await client.query(
+          `INSERT INTO workflow_fanout_groups (
+             run_id, source_message_id, node_id, agent_id, agent_model,
+             node_config, max_concurrency
+           ) VALUES ($1, $2, 'dependent', $3, $4, $5, 1)
+           RETURNING id`,
+          [
+            run.id,
+            activation.id,
+            agents.implement,
+            "mock/implement",
+            { fanOut: { maxConcurrency: 1 } },
+          ],
+        );
+        await client.query(
+          `INSERT INTO workflow_fanout_members (fanout_group_id, position, ticket_id)
+           VALUES ($1, 0, $2)`,
+          [group.rows[0].id, dependent],
+        );
+        return { run, blocker: blockers[0], blockers, dependent };
+      }
+
+      async function updateTicketStatus(runId, ticketId, status, idempotencyKey) {
+        const ticket = await client.query(
+          "SELECT updated_at FROM tickets WHERE id = $1",
+          [ticketId],
+        );
+        return dispatchPlatformTool(pool, "update_ticket", {
+          agentId: agents.worker,
+          runId,
+          ticketId,
+          expectedUpdatedAt: ticket.rows[0].updated_at,
+          status,
+          idempotencyKey,
+        });
+      }
+
+      const fixture = await createCrossNodeFixture("cross-node");
+      const runtime = new DeterministicRuntimeAdapter();
+      await dispatchNextWorkflowNode(pool, runtime, { workerId: "fact51-blocker" });
+      await publishOutput(
+        await dispatchFor(fixture.run.id, "blocker", fixture.blocker),
+        { artifact: "blocker finished" },
+      );
+      assert.equal((await getWorkflowRun(pool, fixture.run.id)).status, "running");
+
+      const doneInput = await client.query(
+        "SELECT updated_at FROM tickets WHERE id = $1",
+        [fixture.blocker],
+      );
+      const done = await dispatchPlatformTool(pool, "update_ticket", {
+        agentId: agents.worker,
+        runId: fixture.run.id,
+        ticketId: fixture.blocker,
+        expectedUpdatedAt: doneInput.rows[0].updated_at,
+        status: "done",
+        idempotencyKey: "fact51-cross-node-done",
+      });
+      const doneReplay = await dispatchPlatformTool(pool, "update_ticket", {
+        agentId: agents.worker,
+        runId: fixture.run.id,
+        ticketId: fixture.blocker,
+        expectedUpdatedAt: doneInput.rows[0].updated_at,
+        status: "done",
+        idempotencyKey: "fact51-cross-node-done",
+      });
+      assert.equal(doneReplay.replayed, true);
+      assert.equal(doneReplay.message.id, done.message.id);
+      const beforeWake = await client.query(
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2`,
+        [fixture.run.id, fixture.dependent],
+      );
+      assert.equal(beforeWake.rows[0].count, 0, "retained work waits for the durable mutation event");
+      await consumeThrough(done.message.id, "fact51-cross-node");
+
+      let dependentDispatches = await client.query(
+        `SELECT id, status
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2
+         ORDER BY id`,
+        [fixture.run.id, fixture.dependent],
+      );
+      assert.deepEqual(dependentDispatches.rows.map((row) => row.status), ["pending"]);
+      const receipt = await client.query(
+        "SELECT count(*)::int AS count FROM message_consumptions WHERE message_id = $1",
+        [done.message.id],
+      );
+      assert.equal(receipt.rows[0].count, 1, "the platform mutation used the durable message route");
+      assert.equal((await getWorkflowRun(pool, fixture.run.id)).status, "running");
+
+      const afterDone = await client.query(
+        "SELECT updated_at FROM tickets WHERE id = $1",
+        [fixture.blocker],
+      );
+      const redundant = await dispatchPlatformTool(pool, "update_ticket", {
+        agentId: agents.worker,
+        runId: fixture.run.id,
+        ticketId: fixture.blocker,
+        expectedUpdatedAt: afterDone.rows[0].updated_at,
+        title: "blocker title replay",
+        idempotencyKey: "fact51-cross-node-replay",
+      });
+      await consumeThrough(redundant.message.id, "fact51-cross-node");
+      dependentDispatches = await client.query(
+        `SELECT id
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2`,
+        [fixture.run.id, fixture.dependent],
+      );
+      assert.equal(dependentDispatches.rowCount, 1, "a repeated done event cannot duplicate work");
+
+      await dispatchNextWorkflowNode(pool, runtime, { workerId: "fact51-dependent" });
+      await publishOutput(
+        await dispatchFor(fixture.run.id, "dependent", fixture.dependent),
+        { artifact: "dependent finished" },
+      );
+      assert.equal((await getWorkflowRun(pool, fixture.run.id)).status, "completed");
+      const terminalTicket = await client.query(
+        "SELECT updated_at FROM tickets WHERE id = $1",
+        [fixture.blocker],
+      );
+      const terminalEvent = await dispatchPlatformTool(pool, "update_ticket", {
+        agentId: agents.worker,
+        runId: fixture.run.id,
+        ticketId: fixture.blocker,
+        expectedUpdatedAt: terminalTicket.rows[0].updated_at,
+        title: "terminal update stays terminal",
+        idempotencyKey: "fact51-terminal-noop",
+      });
+      await consumeThrough(terminalEvent.message.id, "fact51-terminal");
+      dependentDispatches = await client.query(
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2`,
+        [fixture.run.id, fixture.dependent],
+      );
+      assert.equal(dependentDispatches.rows[0].count, 1, "a terminal ticket event cannot reopen fan-out work");
+      assert.equal((await getWorkflowRun(pool, fixture.run.id)).status, "completed");
+
+      const twoBlockers = await createCrossNodeFixture("two-blockers", 2);
+      const firstBlockerDone = await updateTicketStatus(
+        twoBlockers.run.id,
+        twoBlockers.blockers[0],
+        "done",
+        "fact51-two-blockers-first-done",
+      );
+      await consumeThrough(firstBlockerDone.message.id, "fact51-two-blockers");
+      const afterFirstBlocker = await client.query(
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2`,
+        [twoBlockers.run.id, twoBlockers.dependent],
+      );
+      assert.equal(
+        afterFirstBlocker.rows[0].count,
+        0,
+        "one completed blocker cannot wake work retained behind another blocker",
+      );
+      const secondBlockerDone = await updateTicketStatus(
+        twoBlockers.run.id,
+        twoBlockers.blockers[1],
+        "done",
+        "fact51-two-blockers-second-done",
+      );
+      await consumeThrough(secondBlockerDone.message.id, "fact51-two-blockers");
+      const afterSecondBlocker = await client.query(
+        `SELECT status
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2`,
+        [twoBlockers.run.id, twoBlockers.dependent],
+      );
+      assert.deepEqual(afterSecondBlocker.rows.map((row) => row.status), ["pending"]);
+      await client.query(
+        "UPDATE workflow_runs SET status = 'canceled', ended_at = clock_timestamp() WHERE id = $1",
+        [twoBlockers.run.id],
+      );
+
+      const stale = await createCrossNodeFixture("stale-event");
+      const staleDone = await updateTicketStatus(
+        stale.run.id,
+        stale.blocker,
+        "done",
+        "fact51-stale-done",
+      );
+      const staleReopen = await updateTicketStatus(
+        stale.run.id,
+        stale.blocker,
+        "todo",
+        "fact51-stale-reopen",
+      );
+      await consumeThrough(staleDone.message.id, "fact51-stale");
+      await consumeThrough(staleReopen.message.id, "fact51-stale");
+      const staleDispatches = await client.query(
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'dependent' AND ticket_id = $2`,
+        [stale.run.id, stale.dependent],
+      );
+      assert.equal(staleDispatches.rows[0].count, 0, "the current reopened ticket state beats its stale done event");
+      assert.equal((await getWorkflowRun(pool, stale.run.id)).status, "running");
+      await client.query(
+        "UPDATE workflow_runs SET status = 'canceled', ended_at = clock_timestamp() WHERE id = $1",
+        [stale.run.id],
+      );
+    });
+
     await t.test("reconciles an ambiguous provider start without replaying it", async () => {
       const graph = {
         nodes: [{ id: "worker", agentId: agents.worker, config: { entry: true } }],
@@ -501,7 +773,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       }
     });
 
-    await t.test("does not re-enqueue in-progress tickets across overlapping fan-out activations", async () => {
+    await t.test("causally re-enters same-node work without duplicating overlapping work", async () => {
       const graph = {
         nodes: [
           {
@@ -509,9 +781,19 @@ test("FACT-10 durable workflow engine", async (t) => {
             agentId: agents.worker,
             config: { entry: true, fanOut: { maxConcurrency: 2 } },
           },
+          { id: "terminal", agentId: agents.report, config: {} },
         ],
         edges: [
-          { source: "worker", target: "worker", condition: { operator: "always" } },
+          {
+            source: "worker",
+            target: "worker",
+            condition: { operator: "equals", path: ["again"], value: true },
+          },
+          {
+            source: "worker",
+            target: "terminal",
+            condition: { operator: "equals", path: ["again"], value: false },
+          },
         ],
       };
       const { run } = await createRun(graph, 2);
@@ -523,33 +805,110 @@ test("FACT-10 durable workflow engine", async (t) => {
         [run.id],
       );
       assert.equal(firstGroup.rowCount, 2);
-      await publishOutput(firstGroup.rows[0], { verdict: "again" });
-      const groups = await client.query(
+      await publishOutput(firstGroup.rows[0], { again: true });
+      let groups = await client.query(
         "SELECT count(*)::int AS count FROM workflow_fanout_groups WHERE run_id = $1",
         [run.id],
       );
       assert.equal(groups.rows[0].count, 2);
 
-      await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-c" });
+      let dispatches = await client.query(
+        `SELECT ticket_id::text AS ticket_id, status
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'worker'
+         ORDER BY id`,
+        [run.id],
+      );
+      assert.deepEqual(
+        dispatches.rows.map((row) => row.status),
+        ["completed", "active", "pending"],
+        "the output-created group needs a second sequential dispatch",
+      );
+      assert.equal(
+        dispatches.rows.filter((row) => row.ticket_id === firstGroup.rows[0].ticket_id).length,
+        2,
+      );
+
+      await publishOutput(firstGroup.rows[0], { again: true });
+      groups = await client.query(
+        "SELECT count(*)::int AS count FROM workflow_fanout_groups WHERE run_id = $1",
+        [run.id],
+      );
+      assert.equal(groups.rows[0].count, 2, "a replayed output cannot create another activation");
+      dispatches = await client.query(
+        "SELECT count(*)::int AS count FROM workflow_dispatches WHERE run_id = $1",
+        [run.id],
+      );
+      assert.equal(dispatches.rows[0].count, 3, "a replayed output cannot create another dispatch");
+
+      await pauseWorkflowThread(
+        pool,
+        run.id,
+        firstGroup.rows[0].ticket_id,
+        "hold causal re-entry before completion check",
+      );
+      dispatches = await client.query(
+        `SELECT ticket_id::text AS ticket_id, status
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'worker'
+         ORDER BY id`,
+        [run.id],
+      );
+      assert.deepEqual(
+        dispatches.rows.map((row) => row.status),
+        ["completed", "active"],
+        "pausing the re-entry removes its pending dispatch",
+      );
+
+      await publishOutput(firstGroup.rows[1], { again: false });
+      dispatches = await client.query(
+        `SELECT ticket_id::text AS ticket_id, status
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND node_id = 'worker'
+         ORDER BY id`,
+        [run.id],
+      );
+      assert.deepEqual(
+        dispatches.rows.map((row) => row.status),
+        ["completed", "completed"],
+        "the other in-flight dispatch satisfies the overlapping group when it completes",
+      );
+      assert.equal(
+        dispatches.rows.filter((row) => row.ticket_id === firstGroup.rows[1].ticket_id).length,
+        1,
+        "the overlapping ticket keeps its original dispatch",
+      );
+      const terminalRequest = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-terminal" });
+      assert.equal(terminalRequest?.nodeId, "terminal");
+      await publishOutput(
+        await dispatchFor(run.id, "terminal", firstGroup.rows[1].ticket_id),
+        { artifact: "overlap terminal" },
+      );
+      assert.equal(
+        (await getWorkflowRun(pool, run.id)).status,
+        "running",
+        "a paused causal re-entry still prevents early completion",
+      );
+
+      await resumeWorkflowThread(pool, run.id, firstGroup.rows[0].ticket_id);
+      const sequential = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-c" });
+      assert.equal(sequential?.ticketId, firstGroup.rows[0].ticket_id);
       assert.equal(
         await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-d" }),
         null,
       );
-      const active = await client.query(
-        `SELECT count(*)::int AS count
-         FROM workflow_dispatches
-         WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'reconciling', 'active')`,
-        [run.id],
+
+      await publishOutput(
+        await dispatchFor(run.id, "worker", firstGroup.rows[0].ticket_id),
+        { again: false },
       );
-      assert.equal(
-        active.rows[0].count,
-        1,
-        "a new fan-out group skips tickets already in progress",
+      const finalTerminal = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-terminal-final" });
+      assert.equal(finalTerminal?.nodeId, "terminal");
+      await publishOutput(
+        await dispatchFor(run.id, "terminal", firstGroup.rows[0].ticket_id),
+        { artifact: "sequential terminal" },
       );
-      await client.query(
-        "UPDATE workflow_runs SET status = 'canceled', ended_at = clock_timestamp() WHERE id = $1",
-        [run.id],
-      );
+      assert.equal((await getWorkflowRun(pool, run.id)).status, "completed");
     });
 
     await t.test("accepts a fast session output before dispatch finalization", async () => {

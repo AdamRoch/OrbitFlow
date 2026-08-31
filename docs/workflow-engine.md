@@ -107,19 +107,33 @@ currently blocked. It materializes at most `maxConcurrency` ready dispatch rows
 across every overlapping activation of that node in the run. The database
 filters for completed blockers before applying the capacity limit, then the
 assignment transaction checks readiness again before moving a ticket to
-`in_progress`. Assignment, dependency replacement, and status-changing platform
-updates all lock the workflow run first, so a status update cannot race the
-assignment readiness check. If assignment already moved a dependent to
+`in_progress`. Assignment, dependency replacement, and every platform
+`update_ticket` call lock the workflow run first, so a ticket update cannot race
+the assignment readiness check or reverse the router's run-to-ticket lock order.
+If assignment already moved a dependent to
 `in_progress`, reopening one of its completed blockers fails closed. A database
 uniqueness rule gives each run, node, and ticket one
 unfinished logical dispatch across overlapping fan-out activations. Completed
 dispatches satisfy groups activated before their completion, while a group
 activated after an older completed dispatch can create a later rework dispatch.
+The completion that produced a same-node fan-out activation cannot satisfy that
+new group: its `output_message_id` equals the group's `source_message_id` and is
+excluded in both materialization and idle-completion checks. A different dispatch
+that remains in flight across the activation can still satisfy the later group
+when it completes.
 Pending rows count against the cap, so one transaction cannot build an
 unbounded runnable queue before workers start claiming it. A completion releases
 one slot and materializes the next ready snapshotted ticket in stable group and
 ticket order. Unresolved members keep the run open. Each materialized ticket
 still receives one ephemeral runtime session.
+
+`update_ticket` already commits one durable `system:ticket-stream` message with
+the ticket mutation. The workflow router recognizes only that `update_ticket`
+event. Under the run lock it rereads the ticket from PostgreSQL, and only a
+currently `done` blocker wakes work. It finds every entered fan-out node holding
+a direct dependent and rematerializes each node through the normal capacity
+path, then rechecks completion. A terminal run and a stale done event after a
+reopen do nothing. There is no polling or separate wake queue.
 
 ## Lifecycle seams
 
@@ -154,8 +168,9 @@ handles whole-run and one-ticket pause/resume, a rejection cycle, terminal
 completion, aggregate usage,
 two FACT-9 consumers racing one output, semantic duplicate output, three-ticket
 fan-out materialization and release at max two, one mock session per ticket, an
-overlapping fan-out cycle that cannot multiply max N, a start-time graph
-snapshot, ambiguous-start reconciliation without replay, stale-worker success
-and failure attacks after reclaim, fast output before finalization, malformed
-output, and confirmed runtime failure. The runtime is deterministic and
-in-memory; it does not implement FACT-11 or FACT-12.
+overlapping fan-out cycle with causal same-node rework, a cross-node durable
+ticket-update wake and stale-event check, a start-time graph snapshot,
+ambiguous-start reconciliation without replay, stale-worker success and failure
+attacks after reclaim, fast output before finalization, malformed output, and
+confirmed runtime failure. The runtime is deterministic and in-memory; it does
+not implement FACT-11 or FACT-12.

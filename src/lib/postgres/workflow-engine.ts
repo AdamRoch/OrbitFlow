@@ -538,7 +538,11 @@ async function materializeFanoutCapacity(
       AND dispatch.ticket_id = member.ticket_id
       AND (
         dispatch.status IN ('pending', 'dispatching', 'reconciling', 'active')
-        OR (dispatch.status = 'completed' AND dispatch.updated_at >= fanout.created_at)
+        OR (
+          dispatch.status = 'completed'
+          AND dispatch.updated_at >= fanout.created_at
+          AND dispatch.output_message_id IS DISTINCT FROM fanout.source_message_id
+        )
       )
      LEFT JOIN workflow_thread_states AS thread
        ON thread.run_id = fanout.run_id AND thread.ticket_id = member.ticket_id
@@ -1384,6 +1388,7 @@ async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<
              AND dispatch.ticket_id = member.ticket_id
              AND dispatch.status = 'completed'
              AND dispatch.updated_at >= fanout.created_at
+             AND dispatch.output_message_id IS DISTINCT FROM fanout.source_message_id
          )
      ) AS count`,
     [runId],
@@ -1398,6 +1403,59 @@ async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<
     );
     if (completed.rowCount === 1) await enqueueChannelCompletionEvent(transaction, runId);
   }
+}
+
+/**
+ * Platform ticket mutations already append a durable system message. A done
+ * blocker can make work ready in a fan-out node unrelated to the worker that
+ * changed it, so consume that one event through the ordinary message route.
+ */
+async function routeTicketUpdateEvent(
+  transaction: PoolClient,
+  message: MessageRow,
+): Promise<boolean> {
+  if (
+    message.type !== "system"
+    || message.recipient !== "system:ticket-stream"
+    || message.ticketId === null
+    || message.payload.action !== "update_ticket"
+  ) {
+    return false;
+  }
+
+  const run = await transaction.query<{ status: WorkflowRunStatus }>(
+    "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE",
+    [message.runId],
+  );
+  if (!run.rows[0]) return true;
+  if (!(["running", "paused"] as string[]).includes(run.rows[0].status)) return true;
+
+  const ticket = await transaction.query<{ status: string }>(
+    `SELECT status
+     FROM tickets
+     WHERE id = $1 AND run_id = $2
+     FOR KEY SHARE`,
+    [message.ticketId, message.runId],
+  );
+  if (!ticket.rows[0]) return true;
+  // The mutation message records that an update happened, not a stale status
+  // snapshot. A reopen that commits first wins over its earlier done event.
+  if (ticket.rows[0].status !== "done") return true;
+
+  const nodes = await transaction.query<{ node_id: string }>(
+    `SELECT DISTINCT fanout.node_id
+     FROM workflow_fanout_members AS member
+     JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
+     JOIN dependencies AS dependency ON dependency.blocked_ticket_id = member.ticket_id
+     WHERE fanout.run_id = $1 AND dependency.blocker_ticket_id = $2
+     ORDER BY fanout.node_id`,
+    [message.runId, message.ticketId],
+  );
+  for (const node of nodes.rows) {
+    await materializeFanoutCapacity(transaction, message.runId, node.node_id);
+  }
+  await finishRunIfIdle(transaction, message.runId);
+  return true;
 }
 
 async function handleChannelIntakeOutput(
@@ -1728,6 +1786,7 @@ export async function routeWorkflowMessage(
     return;
   }
   if (message.type === "system" && await routeChannelCompletionEvent(transaction, message)) return;
+  if (await routeTicketUpdateEvent(transaction, message)) return;
   if (message.type !== "output") return;
   const runResult = await transaction.query(
     `SELECT run.*

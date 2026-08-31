@@ -33,8 +33,8 @@ blocked ticket and every blocker must belong to the calling workflow run and the
 same project. The command is idempotent, rejects cycles, and cannot change a
 ticket after work starts.
 
-Dependency replacement, first assignment, and every `update_ticket` call that
-supplies `status` serialize on the workflow run. They take the run row `FOR
+Dependency replacement, first assignment, and every `update_ticket` call
+serialize on the workflow run. They take the run row `FOR
 UPDATE` before the idempotency invocation's run foreign-key lock and before any
 ticket row. This is the per-run linearization order. They do not lock the whole
 project, so separate runs can plan and dispatch concurrently.
