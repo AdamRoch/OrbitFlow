@@ -75,9 +75,36 @@ http.createServer(async (request, response) => {
 }).listen(port, "0.0.0.0");
 
 function proofCommand(prompt) {
+  if (prompt.includes("FACT49_BOUND_ATTRIBUTION")) {
+    return toolCommand("list_projects", {
+      runId: "999999",
+      limit: 10,
+      idempotencyKey: "fact49-bound-attribution",
+    });
+  }
+  const planner = prompt.match(/FACT49_PLANNER target=([1-9][0-9]*) blocker=([1-9][0-9]*)/);
+  if (planner) {
+    return toolCommand("set_ticket_dependencies", {
+      ticketId: planner[1],
+      blockerTicketIds: [planner[2]],
+      idempotencyKey: "fact49-planner-dependencies",
+    });
+  }
+  const bound = prompt.match(/FACT49_BOUND wrong=([1-9][0-9]*)/);
+  if (bound) {
+    return toolCommand("set_ticket_dependencies", {
+      ticketId: bound[1],
+      blockerTicketIds: [],
+      idempotencyKey: "fact49-bound-target",
+    });
+  }
   if (prompt.includes("FACT34_DENY_UNLISTED")) return "/usr/bin/id";
   if (prompt.includes("FACT34_DENY_ASSIGNMENT")) {
     return "DATABASE_URL=forbidden /app/bin/orbit-openclaw-tool.mjs list_projects '{\"limit\":10,\"idempotencyKey\":\"fact34-assignment-denied\"}'";
   }
   return "/app/bin/orbit-openclaw-tool.mjs list_projects '{\"limit\":10,\"idempotencyKey\":\"fact34-agent-side-allowed\"}'";
+}
+
+function toolCommand(command, input) {
+  return `/app/bin/orbit-openclaw-tool.mjs ${command} '${JSON.stringify(input)}'`;
 }

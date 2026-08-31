@@ -1,0 +1,4 @@
+services:
+  engine:
+    volumes:
+      - ./test/runtime/fixtures/fact-49-plan.json:/var/lib/orbitflow/runtime/state/fake-plan.json:ro

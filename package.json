@@ -33,6 +33,7 @@
     "fact10:proof": "bash scripts/fact-10-workflow-engine-proof.sh",
     "fact11:proof": "bash scripts/fact-11-runtime-adapter-proof.sh",
     "fact47:proof": "bash scripts/fact-47-openclaw-indeterminate-proof.sh",
+    "fact49:proof": "bash scripts/fact-49-production-broker-proof.sh",
     "fact14:proof": "bash scripts/fact-14-e2e-proof.sh",
     "fact22:proof": "bash scripts/fact-22-monitoring-proof.sh",
     "test:guardrails": "node --experimental-strip-types --test test/postgres/guardrails.test.mjs",

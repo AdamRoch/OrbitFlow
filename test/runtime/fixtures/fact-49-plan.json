@@ -1,0 +1,32 @@
+[
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact49-planner-release",
+    "output": {
+      "artifact": { "planner": "dependencies-set" },
+      "handoff_brief": "Planner dependency proof completed.",
+      "events": []
+    },
+    "usage": {
+      "input": 3,
+      "output": 2,
+      "total": 5,
+      "cost": { "total": "0" }
+    }
+  },
+  {
+    "mode": "success",
+    "waitForReleaseFile": "fact49-bound-release",
+    "output": {
+      "artifact": { "implementer": "bound-target-enforced" },
+      "handoff_brief": "Bound-ticket target enforcement proof completed.",
+      "events": []
+    },
+    "usage": {
+      "input": 3,
+      "output": 2,
+      "total": 5,
+      "cost": { "total": "0" }
+    }
+  }
+]

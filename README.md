@@ -203,6 +203,7 @@ single-process boundary.
 - `npm run fact42:postgres-proof` covers the PostgreSQL-only ticket and Monitoring data path.
 - `npm run fact31:proof` covers production Compose readiness, migration freshness, and restart recovery without a provider call.
 - `npm run fact34:proof` covers the deterministic Software Factory question, rejection, correction, approval, and local Telegram boundary.
+- `npm run fact49:proof` covers planner dependency targets and bound-ticket target enforcement through the real OpenClaw wrapper, Unix-socket broker, and disposable Compose topology.
 - `npm run fact15:proof`, `npm run fact21:proof`, `npm run fact23:proof`, and `npm run fact25:proof` cover Telegram, templates, guardrails, and scheduling.
 - [PostgreSQL schema](docs/postgres-schema.md), [message bus](docs/message-bus.md), [workflow engine](docs/workflow-engine.md), and [OpenClaw adapter](docs/openclaw-runtime-adapter.md) are the authoritative detailed contracts.
 

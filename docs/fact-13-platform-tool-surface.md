@@ -84,3 +84,18 @@ Run the disposable, real-PostgreSQL proof with:
 ```sh
 npm run fact13:proof
 ```
+
+FACT-49 adds the production-boundary proof for the dependency command:
+
+```sh
+npm run fact49:proof
+```
+
+That gate uses the FACT-34 Compose topology and a local provider boundary. A
+real OpenClaw gateway agent invokes the committed allowlisted wrapper over the
+Unix socket into the broker for both a ticketless planner dispatch and a
+ticket-bound implementer dispatch. PostgreSQL checks the planner's supplied
+target and blocker set, then verifies a bound implementer cannot replace its
+target or attribution. The proof is credentialless, checks database identity
+and the running allowlist, and fails if exact Compose cleanup does not remove
+every disposable resource.
