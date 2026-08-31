@@ -280,10 +280,14 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
   }
   if (command === "create_ticket") {
     knownFields(input, [...base, "projectId", "title", "description", "acceptanceCriteria", "status", "priority", "idempotencyKey"]);
+    const initialStatus = input.status === undefined ? "backlog" : status(input.status);
+    if (initialStatus === "in_progress") {
+      throw new PlatformToolError("engine_owned_status", "only the workflow engine may set ticket status to in_progress");
+    }
     return {
       command, ...attribution(input), projectId: id(input.projectId, "projectId"), title: requiredString(input.title, "title"),
       description: nullableText(input.description, "description"), acceptanceCriteria: nullableText(input.acceptanceCriteria, "acceptanceCriteria"),
-      status: input.status === undefined ? "backlog" : status(input.status), priority: priority(input.priority ?? 0, true)!,
+      status: initialStatus, priority: priority(input.priority ?? 0, true)!,
       idempotencyKey: idempotencyKey(input.idempotencyKey),
     };
   }
@@ -293,6 +297,9 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
     const description = optionalText(input.description, "description");
     const acceptanceCriteria = optionalText(input.acceptanceCriteria, "acceptanceCriteria");
     const nextStatus = optionalStatus(input.status);
+    if (nextStatus === "in_progress") {
+      throw new PlatformToolError("engine_owned_status", "only the workflow engine may set ticket status to in_progress");
+    }
     const nextPriority = priority(input.priority, false);
     if ([title, description, acceptanceCriteria, nextStatus, nextPriority].every((field) => field === undefined)) {
       throw new PlatformToolError("missing", "update_ticket requires at least one ticket field");
@@ -420,10 +427,10 @@ async function createTicket(client: PoolClient, input: CreateTicketInput): Promi
   const ticket = await one<Row>(
     client,
     `INSERT INTO tickets (
-       number, identifier, project_id, run_id, title, description, acceptance_criteria, status, priority, assignee_agent_id
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+       number, identifier, project_id, run_id, title, description, acceptance_criteria, status, priority
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
     [project.next_number, `${project.key}-${project.next_number}`, input.projectId, input.runId, input.title, input.description,
-      input.acceptanceCriteria, input.status, input.priority, input.agentId],
+      input.acceptanceCriteria, input.status, input.priority],
   );
   const value = ticketFromRow(ticket!);
   const message = await insertMessage(client, {

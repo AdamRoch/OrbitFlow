@@ -100,7 +100,7 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       assert.equal(first.stdout.result.replayed, false);
       const ticketId = first.stdout.result.ticket.id;
       assert.equal(first.stdout.result.ticket.runId, attribution.runId);
-      assert.equal(first.stdout.result.ticket.assigneeAgentId, attribution.agentId);
+      assert.equal(first.stdout.result.ticket.assigneeAgentId, null);
       assert.equal(first.stdout.result.message.ticketId, ticketId);
       assert.equal(first.stdout.result.message.type, "system");
 
@@ -205,6 +205,32 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       });
       assert.equal(changedRetry.exitCode, 1);
       assert.equal(changedRetry.stdout.error.code, "idempotency_key_reused");
+      const after = await client.query("SELECT count(*)::int AS tickets, (SELECT count(*)::int FROM messages) AS messages FROM tickets");
+      assert.deepEqual(after.rows[0], before.rows[0]);
+    });
+
+    await t.test("only the engine can mark a ticket in_progress or assign its first worker", async () => {
+      const before = await client.query("SELECT count(*)::int AS tickets, (SELECT count(*)::int FROM messages) AS messages FROM tickets");
+      const createInProgress = await callAgentTool("create_ticket", {
+        ...attribution,
+        projectId: String(project.rows[0].id),
+        title: "Self-assigned ticket",
+        status: "in_progress",
+        idempotencyKey: "agent-turn-engine-owned-create",
+      });
+      assert.equal(createInProgress.exitCode, 1);
+      assert.equal(createInProgress.stdout.error.code, "engine_owned_status");
+
+      const current = await client.query("SELECT * FROM tickets LIMIT 1");
+      const updateInProgress = await callAgentTool("update_ticket", {
+        ...attribution,
+        ticketId: String(current.rows[0].id),
+        expectedUpdatedAt: String(current.rows[0].updated_at).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"),
+        status: "in_progress",
+        idempotencyKey: "agent-turn-engine-owned-update",
+      });
+      assert.equal(updateInProgress.exitCode, 1);
+      assert.equal(updateInProgress.stdout.error.code, "engine_owned_status");
       const after = await client.query("SELECT count(*)::int AS tickets, (SELECT count(*)::int FROM messages) AS messages FROM tickets");
       assert.deepEqual(after.rows[0], before.rows[0]);
     });

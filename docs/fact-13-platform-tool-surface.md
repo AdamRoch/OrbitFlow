@@ -45,6 +45,11 @@ roll back together. `list_projects` and `list_tickets` are read-only;
 `list_tickets` is scoped to the calling run, and
 records its durable idempotent invocation in the same PostgreSQL authority.
 
+Agents may create `backlog`, `todo`, `done`, or `canceled` tickets, but they cannot
+create or update a ticket to `in_progress`. Created tickets have no assignee. The
+workflow engine makes the first assignment when it atomically creates the ready
+ticket's first dispatch.
+
 Migration `0012-platform-tool-idempotency.sql` is required because a retry after
 the agent loses a successful response must replay its first durable result,
 rather than making another ticket or message. The key is unique per agent and
