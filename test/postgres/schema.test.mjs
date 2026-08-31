@@ -379,6 +379,7 @@ const requiredIndexes = [
   "idx_workflow_dispatches_claim",
   "idx_workflow_dispatches_fanout_status",
   "idx_workflow_dispatches_run_status",
+  "workflow_dispatches_run_node_ticket_active_unique",
   "idx_workflow_questions_pending",
   "idx_workflow_questions_ticket_history",
 ];

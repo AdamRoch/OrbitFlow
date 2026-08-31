@@ -37,19 +37,24 @@ export function createProductionWorkspaceTools(
       priority: 1,
       idempotencyKey: "create-<unique-suffix>",
     })}'`,
+    ...(ticketId ? [] : [
+      "",
+      "A planner dispatch has no active ticket. Include the target ticketId from list_tickets when setting dependencies.",
+    ]),
+    "",
+    "### set_ticket_dependencies",
+    `${tool} set_ticket_dependencies '${JSON.stringify({
+      ...(ticketId ? {} : { ticketId: "<ticketId from list_tickets>" }),
+      blockerTicketIds: ["<ticketId from list_tickets>"],
+      idempotencyKey: "dependencies-<unique-suffix>",
+    })}'`,
     ...(ticketId ? [
       "",
       "### update_ticket",
       `${tool} update_ticket '${JSON.stringify({
         expectedUpdatedAt: "<updatedAt from list_tickets>",
-        status: "<backlog|todo|in_progress|done|canceled>",
+        status: "<backlog|todo|done|canceled>",
         idempotencyKey: "update-<unique-suffix>",
-      })}'`,
-      "",
-      "### set_ticket_dependencies",
-      `${tool} set_ticket_dependencies '${JSON.stringify({
-        blockerTicketIds: ["<ticketId from list_tickets>"],
-        idempotencyKey: "dependencies-<unique-suffix>",
       })}'`,
       "",
       "### post_message",

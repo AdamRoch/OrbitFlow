@@ -493,10 +493,10 @@ test("FACT-23 guardrails enforcement", async (t) => {
         runId: String(run.id),
         ticketId: created.ticket.id,
         expectedUpdatedAt: ticket.rows[0].updated_at,
-        status: "in_progress",
+        title: "Updated by an unblocked agent",
         idempotencyKey: "messenger-update-1",
       });
-      assert.equal(updated.ticket.status, "in_progress", "unblocked mutations still commit");
+      assert.equal(updated.ticket.title, "Updated by an unblocked agent", "unblocked mutations still commit");
     });
   } finally {
     await pool.end();

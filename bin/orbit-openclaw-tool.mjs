@@ -4,6 +4,7 @@ import http from "node:http";
 import {
   loadOpenClawToolContext,
 } from "../src/lib/runtime/openclaw-tool-context.mjs";
+import { validateOpenClawToolInput } from "../src/lib/runtime/openclaw-tool-input.mjs";
 
 const PLATFORM_COMMANDS = new Set([
   "list_projects",
@@ -14,7 +15,6 @@ const PLATFORM_COMMANDS = new Set([
   "list_tickets",
 ]);
 const CODING_COMMANDS = new Set(["start_run_workspace", "delegate_coding_task"]);
-const RESERVED_FIELDS = new Set(["agentId", "runId", "ticketId", "workspace", "command"]);
 const BROKER_SOCKET = process.env.ORBITFLOW_TOOL_BROKER_SOCKET ?? "/run/orbitflow-broker/tool.sock";
 const AGENT_WORKSPACE_ROOT = process.env.ORBITFLOW_AGENT_WORKSPACE_ROOT
   ?? "/var/lib/orbitflow/runtime/workspaces";
@@ -36,11 +36,7 @@ try {
   if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) {
     throw new Error("json-input must be one JSON object");
   }
-  for (const field of Object.keys(supplied)) {
-    if (RESERVED_FIELDS.has(field)) {
-      throw new Error(`${field} is bound by the active dispatch`);
-    }
-  }
+  validateOpenClawToolInput(command, supplied);
 
   const { context, workspace } = await loadOpenClawToolContext({
     agentWorkspaceRoot: AGENT_WORKSPACE_ROOT,

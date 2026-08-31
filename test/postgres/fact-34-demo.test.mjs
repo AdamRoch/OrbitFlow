@@ -277,6 +277,17 @@ test("FACT-34 production tools expose the ordinary coding surface", () => {
   assert.doesNotMatch(tools, /projectId from the run spec or an existing ticket/);
 });
 
+test("FACT-43 planner tools expose an explicit dependency target", () => {
+  const tools = createProductionWorkspaceTools({
+    tool: "/app/bin/orbit-openclaw-tool.mjs",
+  })("7", "plan", null, "13");
+  assert.match(tools, /### set_ticket_dependencies/);
+  assert.match(tools, /"ticketId":"<ticketId from list_tickets>"/);
+  assert.doesNotMatch(tools, /### update_ticket/);
+  assert.doesNotMatch(tools, /### post_message/);
+  assert.doesNotMatch(tools, /in_progress/);
+});
+
 async function until(description, action, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

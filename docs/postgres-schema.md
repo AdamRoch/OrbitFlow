@@ -59,6 +59,11 @@ reserved. The runner therefore permits exactly one late-reservation shape:
 already recorded `0025-factory-project.sql`. Every other migration gap still
 fails closed.
 
+FACT-46 adds `0027-workflow-dispatch-ticket-ownership.sql`. Its partial unique
+index allows only one unfinished dispatch for a run, node, and ticket across
+overlapping fan-out activations while permitting a later activation to create
+sequential rework after the earlier dispatch completes.
+
 ## Run the FACT-6 proof
 
 ```sh

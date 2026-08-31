@@ -405,12 +405,18 @@ async function insertDispatch(
       : null,
     ticket,
   };
+  // Ticket dispatches have two intentional uniqueness boundaries: the
+  // historical activation key handles replay, while the partial index added
+  // by FACT-46 fences only unfinished overlapping work. Any conflict means a
+  // durable logical dispatch already owns this assignment.
   const result = await transaction.query(
     `INSERT INTO workflow_dispatches (
        run_id, node_id, agent_id, agent_model, ticket_id, source_message_id,
        fanout_group_id, input, idempotency_key
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     ON CONFLICT ON CONSTRAINT workflow_dispatches_activation_unique DO NOTHING
+     ${input.ticketId === null
+       ? "ON CONFLICT ON CONSTRAINT workflow_dispatches_activation_unique DO NOTHING"
+       : "ON CONFLICT DO NOTHING"}
      RETURNING id`,
     [
       input.runId,
@@ -524,14 +530,28 @@ async function materializeFanoutCapacity(
      FROM workflow_fanout_members AS member
      JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
      JOIN workflow_runs AS run ON run.id = fanout.run_id
+     JOIN tickets AS ticket ON ticket.id = member.ticket_id
      LEFT JOIN messages AS message ON message.id = fanout.source_message_id
      LEFT JOIN workflow_dispatches AS dispatch
-       ON dispatch.fanout_group_id = member.fanout_group_id
+       ON dispatch.run_id = fanout.run_id
+      AND dispatch.node_id = fanout.node_id
       AND dispatch.ticket_id = member.ticket_id
+      AND (
+        dispatch.status IN ('pending', 'dispatching', 'reconciling', 'active')
+        OR (dispatch.status = 'completed' AND dispatch.updated_at >= fanout.created_at)
+      )
      LEFT JOIN workflow_thread_states AS thread
        ON thread.run_id = fanout.run_id AND thread.ticket_id = member.ticket_id
      WHERE fanout.run_id = $1 AND fanout.node_id = $2
        AND dispatch.id IS NULL
+       AND ticket.status IN ('todo', 'in_progress')
+       AND NOT EXISTS (
+         SELECT 1
+         FROM dependencies AS dependency
+         JOIN tickets AS blocker ON blocker.id = dependency.blocker_ticket_id
+         WHERE dependency.blocked_ticket_id = ticket.id
+           AND blocker.status <> 'done'
+       )
        AND COALESCE(thread.status::text, 'running') = 'running'
      ORDER BY fanout.id, member.position
      LIMIT $3
@@ -631,14 +651,7 @@ async function enqueueNode(
     `INSERT INTO workflow_fanout_members (fanout_group_id, position, ticket_id)
      SELECT $2, row_number() OVER (ORDER BY priority DESC, created_at, id)::integer - 1, id
      FROM tickets
-     WHERE run_id = $1 AND status = 'todo'
-       AND NOT EXISTS (
-         SELECT 1
-         FROM dependencies AS dependency
-         JOIN tickets AS blocker ON blocker.id = dependency.blocker_ticket_id
-         WHERE dependency.blocked_ticket_id = tickets.id
-           AND blocker.status <> 'done'
-       )
+     WHERE run_id = $1 AND status IN ('todo', 'in_progress')
      ON CONFLICT ON CONSTRAINT workflow_fanout_members_ticket_unique DO NOTHING`,
     [input.runId, group.rows[0].id],
   );
@@ -731,13 +744,7 @@ async function startWorkflowRunInTransaction(
         inheritedTicketId: null,
       });
       if (inserted === 0) {
-        await transaction.query(
-          `UPDATE workflow_runs
-           SET status = 'completed', ended_at = clock_timestamp(),
-               updated_at = clock_timestamp()
-           WHERE id = $1`,
-          [runId],
-        );
+        await finishRunIfIdle(transaction, runId);
       }
     } catch (error) {
       if (!(error instanceof WorkflowGraphError)) throw error;
@@ -1372,9 +1379,11 @@ async function finishRunIfIdle(transaction: PoolClient, runId: string): Promise<
          AND NOT EXISTS (
            SELECT 1
            FROM workflow_dispatches AS dispatch
-           WHERE dispatch.fanout_group_id = member.fanout_group_id
+           WHERE dispatch.run_id = fanout.run_id
+             AND dispatch.node_id = fanout.node_id
              AND dispatch.ticket_id = member.ticket_id
              AND dispatch.status = 'completed'
+             AND dispatch.updated_at >= fanout.created_at
          )
      ) AS count`,
     [runId],
@@ -1994,13 +2003,7 @@ async function routeChannelInbound(
       inheritedTicketId: null,
     });
     if (inserted === 0) {
-      const completed = await transaction.query(
-        `UPDATE workflow_runs
-         SET status = 'completed', ended_at = clock_timestamp(), updated_at = clock_timestamp()
-         WHERE id = $1 AND status IN ('running', 'paused')`,
-        [message.runId],
-      );
-      if (completed.rowCount === 1) await enqueueChannelCompletionEvent(transaction, message.runId);
+      await finishRunIfIdle(transaction, message.runId);
     }
   } catch (error) {
     if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;

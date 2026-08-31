@@ -96,7 +96,10 @@ test("FACT-42 upgrades retained PostgreSQL tickets while removing labels", async
     );
 
     const upgrade = await migratePostgres({ databaseUrl, log: () => {} });
-    assert.deepEqual(upgrade.applied, ["0026-remove-ticket-labels.sql"]);
+    assert.deepEqual(upgrade.applied, [
+      "0026-remove-ticket-labels.sql",
+      "0027-workflow-dispatch-ticket-ownership.sql",
+    ]);
     const retained = await client.query(
       "SELECT identifier, title, run_id::text FROM tickets WHERE id = $1",
       [ticket.rows[0].id],

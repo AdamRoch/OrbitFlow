@@ -27,6 +27,14 @@ PostgreSQL dispatch, and invokes this CLI with the bound agent, run, and ticket
 ids. Neither the OpenClaw gateway nor the allowlisted wrapper receives a
 PostgreSQL credential.
 
+`update_ticket` and `post_message` require a ticket-bound dispatch and the
+broker always replaces their ticket id with the active ticket. A planner
+dispatch has no active ticket, so its `set_ticket_dependencies` call includes
+an explicit target ticket id from `list_tickets`; PostgreSQL then validates its
+run, project, todo state, dependency graph, and idempotency. If a ticket-bound
+dispatch calls `set_ticket_dependencies`, the broker replaces any supplied
+target with the active ticket before invoking the CLI.
+
 Every CLI invocation enters `dispatchPlatformTool`. That typed dispatcher is the
 one future enforcement point for P5-1 blocked-action policy. It validates the
 closed input schema before opening a transaction, checks the agent, run, and

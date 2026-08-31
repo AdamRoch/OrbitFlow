@@ -713,6 +713,11 @@ export async function dispatchPlatformTool(
       blockedActions.includes(input.command)
         ? rejectBlockedAction(client, input)
         : operation();
+    if (input.command === "set_ticket_dependencies") {
+      // Take the run lock before the idempotency row's foreign-key lock so
+      // opposing dependency writes serialize without a lock-upgrade deadlock.
+      await lockRun(client, input.runId);
+    }
     if (input.command === "list_projects" || input.command === "list_tickets") {
       return invoke(client, input, () => guarded(() => input.command === "list_projects"
         ? listProjects(client, input)

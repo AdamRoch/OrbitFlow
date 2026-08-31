@@ -25,6 +25,7 @@ import {
   immutableDispatchContext,
   loadOpenClawToolContext,
 } from "../src/lib/runtime/openclaw-tool-context.mjs";
+import { buildPlatformCommandInput } from "../src/lib/runtime/platform-tool-broker-input.mjs";
 
 const { Pool } = pg;
 const PLATFORM_COMMANDS = new Set([
@@ -231,20 +232,7 @@ function monitorActiveDispatch(context, callerSignal) {
 }
 
 function invokePlatformCommand(command, supplied, context, fullContext) {
-  const ticketBound = command === "update_ticket"
-    || command === "set_ticket_dependencies"
-    || command === "post_message";
-  if (ticketBound && context.ticketId === null) {
-    throw new Error(`${command} requires a ticket-bound dispatch`);
-  }
-  const input = {
-    ...supplied,
-    agentId: context.agentId,
-    runId: context.runId,
-    ...(ticketBound
-      ? { ticketId: fullContext.ticketId }
-      : {}),
-  };
+  const input = buildPlatformCommandInput(command, supplied, context, fullContext);
   const child = spawnSync("/app/bin/orbit-agent-tools.mjs", [command, JSON.stringify(input)], {
     env: boundedEnvironment({ DATABASE_URL }),
     encoding: "utf8",

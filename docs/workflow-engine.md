@@ -102,13 +102,20 @@ exactly-once routing and fenced ownership, not magic exactly-once I/O from a
 provider that cannot reconcile an idempotency key.
 
 Fan-out snapshots the run's `todo` and `in_progress` tickets into durable
-`workflow_fanout_members` when the node is entered. It materializes at most
-`maxConcurrency` runnable dispatch rows across every overlapping activation of
-that node in the run. Pending rows count against the cap, so one transaction
-cannot build an unbounded runnable queue before workers start claiming it. A
-completion releases one slot and materializes the next snapshotted ticket in
-stable group and ticket order. Each materialized ticket still receives one
-ephemeral runtime session.
+`workflow_fanout_members` when the node is entered, including tickets that are
+currently blocked. It materializes at most `maxConcurrency` ready dispatch rows
+across every overlapping activation of that node in the run. The database
+filters for completed blockers before applying the capacity limit, then the
+assignment transaction checks readiness again before moving a ticket to
+`in_progress`. A database uniqueness rule gives each run, node, and ticket one
+unfinished logical dispatch across overlapping fan-out activations. Completed
+dispatches satisfy groups activated before their completion, while a group
+activated after an older completed dispatch can create a later rework dispatch.
+Pending rows count against the cap, so one transaction cannot build an
+unbounded runnable queue before workers start claiming it. A completion releases
+one slot and materializes the next ready snapshotted ticket in stable group and
+ticket order. Unresolved members keep the run open. Each materialized ticket
+still receives one ephemeral runtime session.
 
 ## Lifecycle seams
 
