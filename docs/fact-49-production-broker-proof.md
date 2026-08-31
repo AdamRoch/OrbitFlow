@@ -24,5 +24,7 @@ The Compose project uses a non-provider API-key value and a local HTTP provider;
 no paid model call is made. The script checks database identity, readiness,
 OpenClaw security and allowlist state, wrapper and broker results, durable
 PostgreSQL rows, and exact Compose container, network, volume, and image
-cleanup. Any service, command, assertion, database, or cleanup failure exits
-nonzero.
+cleanup. Docker chooses loopback host ports for the app and engine, and the
+script asks Compose for those ports only after services start. Concurrent runs
+therefore do not rely on PID-derived port numbers. Any service, command,
+assertion, database, or cleanup failure exits nonzero.

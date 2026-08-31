@@ -23,6 +23,21 @@ that has been applied; add the next numbered, forward-only file instead. The
 runner fails closed when an applied file disappears, a checksum changes, or a
 new migration is inserted below the applied high-water mark.
 
+When `0027-workflow-dispatch-ticket-ownership.sql` is pending, the runner first
+opens a repeatable-read, read-only transaction before it can commit `0026` or
+any other pending file. The check stops on duplicate unfinished
+`(run_id, node_id, ticket_id)` ownership, and on an unfinished ticket-bound
+dispatch whose ticket belongs to another run or is not `in_progress`. Its error
+contains at most 20 duplicate ownership groups with at most four dispatches per
+group, plus at most 20 inconsistent dispatches.
+
+Stop or quiesce workflow-engine and dispatcher writers before running that
+cutover. The check is a read-only snapshot. It cannot prove that another writer
+will stay stopped after the check. If it finds retained ambiguity, it leaves
+labels and migration history intact. An operator must manually reconcile or
+quarantine every affected dispatch before retrying. The migrator never deletes,
+deduplicates, replays, or guesses about external effects.
+
 `GET /api/health` and the engine's `GET /readyz` read the full committed
 `schema_migrations` history before reporting ready. They require every filename
 and SHA-256 checksum through the current head. A database with a missing, stale,
@@ -62,7 +77,9 @@ fails closed.
 FACT-46 adds `0027-workflow-dispatch-ticket-ownership.sql`. Its partial unique
 index allows only one unfinished dispatch for a run, node, and ticket across
 overlapping fan-out activations while permitting a later activation to create
-sequential rework after the earlier dispatch completes.
+sequential rework after the earlier dispatch completes. FACT-53 adds the
+precondition above because `0027` must never discover retained ambiguity after
+`0026` has already dropped labels.
 
 ## Run the FACT-6 proof
 
@@ -109,6 +126,12 @@ decision. A connection or file error also stops the cutover.
 
 The 2026-08-31 preflight found one project, zero issues, and zero dependencies.
 That permits the no-import cutover for the current production deployment.
+
+Before applying the PostgreSQL migration chain to a database that can still
+need `0027`, stop or quiesce the workflow engine and dispatcher. If the
+precondition reports unfinished duplicate ownership or inconsistent active
+ticket activity, manually reconcile or quarantine it and rerun the command.
+Do not treat the migrator as a repair tool.
 
 Run the local integration gates before redeploying:
 

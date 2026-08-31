@@ -34,7 +34,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
     ports:
-      - "127.0.0.1:${ORBITFACTORY_APP_PORT:?set ORBITFACTORY_APP_PORT in .env}:3000"
+      - "127.0.0.1:${ORBITFACTORY_APP_PORT:-}:3000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -133,7 +133,7 @@ services:
       - run-workspaces:/var/lib/orbitflow/run-workspaces
       - openclaw-state:/run/openclaw-state:ro
     ports:
-      - "127.0.0.1:${ORBITFACTORY_ENGINE_HOST_PORT:?set ORBITFACTORY_ENGINE_HOST_PORT in .env}:3001"
+      - "127.0.0.1:${ORBITFACTORY_ENGINE_HOST_PORT:-}:3001"
     depends_on:
       app:
         condition: service_healthy

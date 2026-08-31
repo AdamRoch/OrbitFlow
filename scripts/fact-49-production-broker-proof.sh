@@ -4,8 +4,6 @@ set -Eeuo pipefail
 trap 'printf "FACT-49 production broker proof failed at line %s\n" "$LINENO" >&2' ERR
 
 project="orbitfactory-fact49-proof-$$"
-app_port="$((45000 + ($$ % 1000)))"
-engine_port="$((46000 + ($$ % 1000)))"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact49-env.XXXXXX")"
 started=false
 
@@ -92,9 +90,7 @@ printf '%s\n' \
   'POSTGRES_DB=orbitfactory_fact49_compose' \
   'POSTGRES_USER=orbitfactory' \
   'POSTGRES_PASSWORD=local' \
-  'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' \
-  "ORBITFACTORY_APP_PORT=$app_port" \
-  "ORBITFACTORY_ENGINE_HOST_PORT=$engine_port" >"$env_file"
+  'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' >"$env_file"
 
 compose() {
   env -i PATH="$PATH" HOME="${HOME:?HOME is required}" COMPOSE_PROGRESS=plain \
@@ -102,6 +98,25 @@ compose() {
       -f compose.yaml \
       -f docker/fact34-compose-proof.compose.yaml \
       -f docker/fact49-compose-proof.compose.yaml "$@"
+}
+
+assigned_loopback_port() {
+  local service="$1"
+  local container_port="$2"
+  local binding port
+  binding="$(compose port "$service" "$container_port")"
+  if [[ ! "$binding" =~ ^127\.0\.0\.1:([1-9][0-9]{0,4})$ ]]; then
+    printf 'FACT-49 proof expected one loopback port for %s:%s, got %s\n' \
+      "$service" "$container_port" "$binding" >&2
+    return 1
+  fi
+  port="${binding##*:}"
+  if (( port > 65535 )); then
+    printf 'FACT-49 proof received an invalid host port for %s:%s: %s\n' \
+      "$service" "$container_port" "$port" >&2
+    return 1
+  fi
+  printf '%s' "$port"
 }
 
 wait_for_snapshot() {
@@ -133,6 +148,10 @@ agent_proof() {
 started=true
 compose up --detach --build --wait --wait-timeout 300
 
+app_port="$(assigned_loopback_port app 3000)"
+engine_port="$(assigned_loopback_port engine 3001)"
+
+node -e "fetch('http://127.0.0.1:$app_port/api/health').then((response)=>{if(!response.ok)process.exit(1)})"
 readiness="$(node -e "fetch('http://127.0.0.1:$engine_port/readyz').then(async r=>{const b=await r.json();if(!r.ok)process.exit(1);process.stdout.write(JSON.stringify(b))})")"
 node -e 'const value=JSON.parse(process.argv[1]);if(value.status!=="ready"||value.workflowEngine!=="operational")process.exit(1)' "$readiness"
 

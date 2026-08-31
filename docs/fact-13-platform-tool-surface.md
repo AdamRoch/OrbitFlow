@@ -14,8 +14,11 @@ node bin/orbit-agent-tools.mjs list_tickets '{"agentId":"1","runId":"1","idempot
 
 The CLI emits one bounded JSON response to stdout and does not require an API
 credential. `DATABASE_URL` is its only configuration. Every command requires
-an idempotency key and complete agent/run/ticket attribution; ticket creation
-derives the new ticket attribution in the same PostgreSQL transaction.
+an idempotency key and agent/run attribution. A ticket-bound broker invocation
+injects the active dispatch's ticket id. A planner has no active ticket, so its
+dependency command supplies a target ticket id that PostgreSQL validates
+separately. Ticket creation derives the new ticket attribution in the same
+PostgreSQL transaction.
 
 OpenClaw does not invoke this attribution-bearing CLI directly. Its only
 allowlisted executable is `bin/orbit-openclaw-tool.mjs`, which reads the
