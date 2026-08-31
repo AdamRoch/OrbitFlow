@@ -33,8 +33,18 @@ blocked ticket and every blocker must belong to the calling workflow run and the
 same project. The command is idempotent, rejects cycles, and cannot change a
 ticket after work starts.
 
-Dependency replacement and first assignment serialize on the workflow run. They
-do not lock the whole project. Separate runs can plan and dispatch concurrently.
+Dependency replacement, first assignment, and every `update_ticket` call that
+supplies `status` serialize on the workflow run. They take the run row `FOR
+UPDATE` before the idempotency invocation's run foreign-key lock and before any
+ticket row. This is the per-run linearization order. They do not lock the whole
+project, so separate runs can plan and dispatch concurrently.
+
+A `done` blocker may change to a non-`done` status unless a direct dependent is
+`in_progress` or `done`. Those are the two statuses that prove assigned or
+completed work. A planned `backlog`, an unstarted `todo`, and a `canceled`
+ticket do not prove that work consumed the blocker. If an `in_progress` or
+`done` dependent exists, the update fails with `ticket_reopen_conflict` and
+rolls back. Sequential rework remains `in_progress`, so it stays protected.
 
 The workflow engine owns assignment. In one PostgreSQL transaction it verifies
 that a `todo` ticket is ready, creates its first dispatch, moves it to
@@ -60,8 +70,11 @@ Reusing Monitoring deletes more code than rebuilding the inherited board. It
 also matches the product model: tickets belong to a workflow run, and the demo
 operator watches one run at a time.
 
-The run lock protects the graph and assignment boundary while allowing unrelated
-runs to proceed. This is the useful scaling boundary for a software factory.
+The run lock protects the graph, status, and assignment boundary while allowing
+unrelated runs to proceed. One lock order avoids the PostgreSQL lock upgrade
+cycle that can occur when an idempotency invocation takes its run foreign-key
+lock before a later `FOR UPDATE` request. The reopen check uses only durable
+ticket statuses and does not grow into a general ticket state machine.
 
 One complete-set dependency command is smaller than separate edge creation and
 deletion commands. It also gives retries one clear result.

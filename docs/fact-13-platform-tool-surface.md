@@ -43,9 +43,12 @@ ticket ownership directly in PostgreSQL, and uses parameterized SQL only.
 `list_projects` gives a fresh run the durable project ids accepted by
 `create_ticket`. `set_ticket_dependencies` replaces a todo ticket's complete blocker
 set. The blocked ticket and every blocker must be in the calling run and project.
-It locks the workflow run before ticket rows, rejects cycles, and touches the blocked
-ticket so Monitoring wakes after the transaction commits. `list_tickets` returns the
-current blocker ticket ids. `create_ticket` and `update_ticket` append a `system` message. `post_message`
+It locks the workflow run before the idempotency invocation's run foreign-key lock
+and before ticket rows, rejects cycles, and touches the blocked ticket so Monitoring
+wakes after the transaction commits. A status-changing `update_ticket` takes that
+same run lock first, so dependency replacement, status changes, and engine assignment
+have one per-run linearization order. `list_tickets` returns the current blocker ticket
+ids. `create_ticket` and `update_ticket` append a `system` message. `post_message`
 appends the requested message type, including `question`. All use FACT-9's
 `insertMessage` producer inside the ticket transaction, so the ticket mutation,
 durable message, enqueue, ready projection, and idempotency result commit or
@@ -56,7 +59,12 @@ records its durable idempotent invocation in the same PostgreSQL authority.
 Agents may create `backlog`, `todo`, `done`, or `canceled` tickets, but they cannot
 create or update a ticket to `in_progress`. Created tickets have no assignee. The
 workflow engine makes the first assignment when it atomically creates the ready
-ticket's first dispatch.
+ticket's first dispatch. A `done` blocker cannot move to a non-`done` status when a
+direct dependent is `in_progress` or `done`; the update fails with
+`ticket_reopen_conflict` and rolls back. `backlog`, `todo`, and `canceled` do not
+prove that a dependent consumed the blocker. This preserves the readiness snapshot
+behind already-started work, including sequential rework that remains `in_progress`.
+A non-status `update_ticket` keeps the ordinary ticket and idempotency behavior.
 
 Migration `0012-platform-tool-idempotency.sql` is required because a retry after
 the agent loses a successful response must replay its first durable result,

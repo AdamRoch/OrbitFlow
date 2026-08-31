@@ -107,7 +107,11 @@ currently blocked. It materializes at most `maxConcurrency` ready dispatch rows
 across every overlapping activation of that node in the run. The database
 filters for completed blockers before applying the capacity limit, then the
 assignment transaction checks readiness again before moving a ticket to
-`in_progress`. A database uniqueness rule gives each run, node, and ticket one
+`in_progress`. Assignment, dependency replacement, and status-changing platform
+updates all lock the workflow run first, so a status update cannot race the
+assignment readiness check. If assignment already moved a dependent to
+`in_progress`, reopening one of its completed blockers fails closed. A database
+uniqueness rule gives each run, node, and ticket one
 unfinished logical dispatch across overlapping fan-out activations. Completed
 dispatches satisfy groups activated before their completion, while a group
 activated after an older completed dispatch can create a later rework dispatch.

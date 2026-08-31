@@ -19,6 +19,8 @@ import { PlatformToolError, dispatchPlatformTool } from "../../src/lib/platform-
 const { Client, Pool } = pg;
 const databaseUrl = process.env.DATABASE_URL;
 const migrationDirectory = fileURLToPath(new URL("../../db/migrations/", import.meta.url));
+const STATUS_UPDATE_APPLICATION_NAME = "orbitfactory-fact48-status-update";
+const ASSIGNMENT_APPLICATION_NAME = "orbitfactory-fact48-assignment";
 
 async function committedMigrationFiles() {
   return (await readdir(migrationDirectory))
@@ -29,6 +31,16 @@ async function committedMigrationFiles() {
 test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, async (t) => {
   const client = new Client({ connectionString: databaseUrl });
   const pool = new Pool({ connectionString: databaseUrl, max: 8 });
+  const statusUpdatePool = new Pool({
+    connectionString: databaseUrl,
+    application_name: STATUS_UPDATE_APPLICATION_NAME,
+    max: 1,
+  });
+  const assignmentPool = new Pool({
+    connectionString: databaseUrl,
+    application_name: ASSIGNMENT_APPLICATION_NAME,
+    max: 1,
+  });
   await client.connect();
   try {
     assert.equal((await client.query("SELECT current_database() AS name")).rows[0].name, process.env.ORBITFACTORY_FACT41_PROOF_DATABASE);
@@ -100,6 +112,108 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
         blockerTicketIds,
         idempotencyKey,
       });
+    }
+
+    async function ticketState(ticketId) {
+      const result = await client.query(
+        "SELECT status, updated_at FROM tickets WHERE id = $1",
+        [ticketId],
+      );
+      assert.ok(result.rows[0], `ticket ${ticketId} must exist`);
+      return result.rows[0];
+    }
+
+    async function updateTicketStatus(toolPool, runId, ticketId, nextStatus, idempotencyKey) {
+      const current = await ticketState(ticketId);
+      return dispatchPlatformTool(toolPool, "update_ticket", {
+        agentId,
+        runId,
+        ticketId,
+        expectedUpdatedAt: current.updated_at,
+        status: nextStatus,
+        idempotencyKey,
+      });
+    }
+
+    async function makeStatusAssignmentRace(key) {
+      const run = await makeRun();
+      const blocker = await makeTicket(run.id, `${key} blocker`);
+      const dependent = await makeTicket(run.id, `${key} dependent`);
+      await setDependencies(run.id, dependent, [blocker], `${key}-dependency`);
+      await updateTicketStatus(pool, run.id, blocker, "done", `${key}-blocker-done`);
+      return { run, blocker, dependent };
+    }
+
+    async function waitForRunLockWaiter(applicationName) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const activity = await client.query(
+          `SELECT wait_event_type
+           FROM pg_stat_activity
+           WHERE application_name = $1`,
+          [applicationName],
+        );
+        if (activity.rows.some((row) => row.wait_event_type === "Lock")) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.fail(`${applicationName} did not wait on the workflow-run lock`);
+    }
+
+    async function assertStatusUpdateHasNoInvocationLock() {
+      const locks = await client.query(
+        `SELECT count(*)::int AS count
+         FROM pg_locks AS lock
+         JOIN pg_stat_activity AS activity ON activity.pid = lock.pid
+         WHERE activity.application_name = $1
+           AND lock.relation = 'agent_tool_invocations'::regclass
+           AND lock.mode = 'RowExclusiveLock'`,
+        [STATUS_UPDATE_APPLICATION_NAME],
+      );
+      assert.equal(
+        locks.rows[0].count,
+        0,
+        "a waiting status update must not take its idempotency invocation lock before the run lock",
+      );
+    }
+
+    async function lockRunForInterleaving(runId) {
+      const holder = new Client({
+        connectionString: databaseUrl,
+        application_name: "orbitfactory-fact48-holder",
+      });
+      await holder.connect();
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM workflow_runs WHERE id = $1 FOR UPDATE", [runId]);
+      return holder;
+    }
+
+    function settleWithoutDeadlock(promises) {
+      let deadline;
+      const timeout = new Promise((_, reject) => {
+        deadline = setTimeout(
+          () => reject(new Error("FACT-48 lock interleaving did not settle")),
+          5_000,
+        );
+      });
+      return Promise.race([Promise.allSettled(promises), timeout])
+        .finally(() => clearTimeout(deadline));
+    }
+
+    async function runInLockOrder(runId, first, firstApplicationName, second, secondApplicationName) {
+      const holder = await lockRunForInterleaving(runId);
+      let committed = false;
+      try {
+        const firstResult = first();
+        await waitForRunLockWaiter(firstApplicationName);
+        const secondResult = second();
+        await waitForRunLockWaiter(secondApplicationName);
+        await assertStatusUpdateHasNoInvocationLock();
+        await holder.query("COMMIT");
+        committed = true;
+        return await settleWithoutDeadlock([firstResult, secondResult]);
+      } finally {
+        if (!committed) await holder.query("ROLLBACK").catch(() => {});
+        await holder.end();
+      }
     }
 
     await t.test("replaces the complete blocker set and replays retries", async () => {
@@ -347,6 +461,119 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
       assert.equal(statusById.get(blocker).assignee_agent_id, agentId);
     });
 
+    await t.test("allows a completed blocker to reopen when a dependent is only planned", async () => {
+      const run = await makeRun();
+      const blocker = await makeTicket(run.id, "planned blocker");
+      const planned = await makeTicket(run.id, "planned dependent");
+      await setDependencies(run.id, planned, [blocker], "fact48-planned-dependency");
+      await updateTicketStatus(pool, run.id, blocker, "done", "fact48-planned-blocker-done");
+      await updateTicketStatus(pool, run.id, planned, "backlog", "fact48-planned-dependent-backlog");
+
+      const reopened = await updateTicketStatus(pool, run.id, blocker, "todo", "fact48-planned-reopen");
+      assert.equal(reopened.replayed, false);
+      assert.equal(reopened.ticket.status, "todo");
+      assert.equal((await ticketState(planned)).status, "backlog");
+    });
+
+    await t.test("keeps non-status edits idempotent after a dependent starts", async () => {
+      const state = await makeStatusAssignmentRace("fact48-non-status");
+      await startWorkflowRun(pool, state.run.id);
+      assert.equal((await ticketState(state.dependent)).status, "in_progress");
+
+      const before = await ticketState(state.blocker);
+      const input = {
+        agentId,
+        runId: state.run.id,
+        ticketId: state.blocker,
+        expectedUpdatedAt: before.updated_at,
+        title: "renamed without reopening",
+        idempotencyKey: "fact48-non-status-title",
+      };
+      const first = await dispatchPlatformTool(pool, "update_ticket", input);
+      const replay = await dispatchPlatformTool(pool, "update_ticket", input);
+      assert.equal(first.replayed, false);
+      assert.equal(replay.replayed, true);
+      assert.equal(first.ticket.status, "done");
+      assert.equal(replay.ticket.title, "renamed without reopening");
+      const messages = await client.query(
+        "SELECT count(*)::int AS count FROM messages WHERE payload ->> 'idempotencyKey' = $1",
+        [input.idempotencyKey],
+      );
+      assert.equal(messages.rows[0].count, 1);
+    });
+
+    await t.test("fails closed after a direct dependent completes", async () => {
+      const state = await makeStatusAssignmentRace("fact48-completed-dependent");
+      await startWorkflowRun(pool, state.run.id);
+      await updateTicketStatus(pool, state.run.id, state.dependent, "done", "fact48-dependent-done");
+
+      await assert.rejects(
+        () => updateTicketStatus(pool, state.run.id, state.blocker, "todo", "fact48-completed-reopen"),
+        (error) => error instanceof PlatformToolError && error.code === "ticket_reopen_conflict",
+      );
+      assert.equal((await ticketState(state.blocker)).status, "done");
+      assert.equal((await ticketState(state.dependent)).status, "done");
+    });
+
+    await t.test("serializes blocker reopening and assignment in both winner orders", async () => {
+      const statusFirst = await makeStatusAssignmentRace("fact48-status-first");
+      const statusFirstResults = await runInLockOrder(
+        statusFirst.run.id,
+        () => updateTicketStatus(
+          statusUpdatePool,
+          statusFirst.run.id,
+          statusFirst.blocker,
+          "todo",
+          "fact48-status-first-reopen",
+        ),
+        STATUS_UPDATE_APPLICATION_NAME,
+        () => startWorkflowRun(assignmentPool, statusFirst.run.id),
+        ASSIGNMENT_APPLICATION_NAME,
+      );
+      assert.equal(statusFirstResults[0].status, "fulfilled");
+      assert.equal(statusFirstResults[1].status, "fulfilled");
+      const statusFirstDependent = await ticketState(statusFirst.dependent);
+      assert.equal(statusFirstDependent.status, "todo", "assignment must see the reopened blocker");
+      const statusFirstDispatches = await client.query(
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND ticket_id = $2`,
+        [statusFirst.run.id, statusFirst.dependent],
+      );
+      assert.equal(statusFirstDispatches.rows[0].count, 0, "a stale readiness read must not dispatch the dependent");
+
+      const assignmentFirst = await makeStatusAssignmentRace("fact48-assignment-first");
+      const assignmentFirstResults = await runInLockOrder(
+        assignmentFirst.run.id,
+        () => startWorkflowRun(assignmentPool, assignmentFirst.run.id),
+        ASSIGNMENT_APPLICATION_NAME,
+        () => updateTicketStatus(
+          statusUpdatePool,
+          assignmentFirst.run.id,
+          assignmentFirst.blocker,
+          "todo",
+          "fact48-assignment-first-reopen",
+        ),
+        STATUS_UPDATE_APPLICATION_NAME,
+      );
+      assert.equal(assignmentFirstResults[0].status, "fulfilled");
+      assert.equal(assignmentFirstResults[1].status, "rejected");
+      assert.ok(assignmentFirstResults[1].reason instanceof PlatformToolError);
+      assert.equal(assignmentFirstResults[1].reason.code, "ticket_reopen_conflict");
+
+      const assignmentFirstBlocker = await ticketState(assignmentFirst.blocker);
+      const assignmentFirstDependent = await ticketState(assignmentFirst.dependent);
+      assert.equal(assignmentFirstBlocker.status, "done");
+      assert.equal(assignmentFirstDependent.status, "in_progress");
+      const assignmentFirstDispatches = await client.query(
+        `SELECT count(*)::int AS count
+         FROM workflow_dispatches
+         WHERE run_id = $1 AND ticket_id = $2`,
+        [assignmentFirst.run.id, assignmentFirst.dependent],
+      );
+      assert.equal(assignmentFirstDispatches.rows[0].count, 1);
+    });
+
     await t.test("dependency replacement racing first dispatch leaves either valid state and no orphan dispatch", async () => {
       const run = await makeRun();
       const blocker = await makeTicket(run.id, "race blocker");
@@ -384,6 +611,11 @@ test("FACT-41 run-scoped dependencies and dispatch", { skip: !databaseUrl }, asy
       assert.ok(results.every((result) => result.replayed === false));
     });
   } finally {
-    await Promise.all([client.end(), pool.end()]);
+    await Promise.all([
+      client.end(),
+      pool.end(),
+      statusUpdatePool.end(),
+      assignmentPool.end(),
+    ]);
   }
 });

@@ -459,7 +459,7 @@ async function createTicket(client: PoolClient, input: CreateTicketInput): Promi
 }
 
 async function updateTicket(client: PoolClient, input: UpdateTicketInput): Promise<PlatformToolResult> {
-  await requireTicketForRun(client, input.ticketId, input.runId);
+  const current = await requireTicketForRun(client, input.ticketId, input.runId);
   const assignments: string[] = [];
   const values: unknown[] = [];
   const add = (column: string, value: unknown) => {
@@ -479,6 +479,32 @@ async function updateTicket(client: PoolClient, input: UpdateTicketInput): Promi
     values,
   );
   if (!updated) throw new PlatformToolError("stale_update", "ticket changed since expectedUpdatedAt");
+
+  // A completed blocker is part of the readiness snapshot that allowed a
+  // dependent to start. Once a direct dependent is in_progress or done,
+  // reopening the blocker would contradict that durable ticket state. The run
+  // lock taken by dispatchPlatformTool before the idempotency insert puts this
+  // check in the same per-run order as assignment and graph changes.
+  if (current.status === "done" && input.status !== undefined && input.status !== "done") {
+    const dependent = await one<Row>(
+      client,
+      `SELECT blocked.id
+       FROM dependencies AS dependency
+       JOIN tickets AS blocked ON blocked.id = dependency.blocked_ticket_id
+       WHERE dependency.blocker_ticket_id = $1
+         AND blocked.run_id = $2
+         AND blocked.status IN ('in_progress', 'done')
+       LIMIT 1`,
+      [input.ticketId, input.runId],
+    );
+    if (dependent) {
+      throw new PlatformToolError(
+        "ticket_reopen_conflict",
+        "cannot reopen a completed blocker after a dependent starts or completes",
+      );
+    }
+  }
+
   const ticket = await loadTicket(client, String(updated.id));
   const value = ticketFromRow(ticket!);
   const message = await insertMessage(client, {
@@ -713,9 +739,14 @@ export async function dispatchPlatformTool(
       blockedActions.includes(input.command)
         ? rejectBlockedAction(client, input)
         : operation();
-    if (input.command === "set_ticket_dependencies") {
-      // Take the run lock before the idempotency row's foreign-key lock so
-      // opposing dependency writes serialize without a lock-upgrade deadlock.
+    if (
+      input.command === "set_ticket_dependencies"
+      || (input.command === "update_ticket" && input.status !== undefined)
+    ) {
+      // Take the run lock before the idempotency row's run foreign-key lock
+      // and before ticket rows. Assignment, dependency replacement, and every
+      // status-changing ticket update therefore share one lock order and
+      // cannot form a lock-upgrade deadlock.
       await lockRun(client, input.runId);
     }
     if (input.command === "list_projects" || input.command === "list_tickets") {
