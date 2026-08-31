@@ -149,6 +149,52 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       assert.equal(audit.rows[0].messages, 2);
     });
 
+    await t.test("update_ticket returns the durable blocker set", async () => {
+      const proofWorkflow = await client.query(
+        "INSERT INTO workflows (name, description, graph) VALUES ('FACT-44 response proof', 'Ticket response proof', '{}') RETURNING id",
+      );
+      const proofRun = await client.query(
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
+         VALUES ($1, 'running', 'ui', '{"proof":"fact-44"}'::jsonb) RETURNING id`,
+        [proofWorkflow.rows[0].id],
+      );
+      const proofAttribution = { ...attribution, runId: String(proofRun.rows[0].id) };
+      const blockerProject = await client.query(
+        "INSERT INTO projects (key, name) VALUES ('FRT', 'FACT-44 response proof') RETURNING id",
+      );
+      const tickets = await client.query(
+        `INSERT INTO tickets (number, identifier, project_id, run_id, title, status, priority)
+         VALUES (1, 'FRT-1', $1, $2, 'first blocker', 'todo', 1),
+                (2, 'FRT-2', $1, $2, 'second blocker', 'todo', 1),
+                (3, 'FRT-3', $1, $2, 'blocked ticket', 'todo', 1)
+         RETURNING id`,
+        [blockerProject.rows[0].id, proofAttribution.runId],
+      );
+      tickets.rows.sort((left, right) => Number(left.id) - Number(right.id));
+      const firstBlockerId = String(tickets.rows[0].id);
+      const secondBlockerId = String(tickets.rows[1].id);
+      const blockedTicketId = String(tickets.rows[2].id);
+      const dependencyResult = await callAgentTool("set_ticket_dependencies", {
+        ...proofAttribution,
+        ticketId: blockedTicketId,
+        blockerTicketIds: [secondBlockerId, firstBlockerId],
+        idempotencyKey: "agent-turn-1-fact44-dependencies",
+      });
+      assert.equal(dependencyResult.exitCode, 0);
+      assert.deepEqual(dependencyResult.stdout.result.ticket.blockerTicketIds, [firstBlockerId, secondBlockerId]);
+
+      const updated = await callAgentTool("update_ticket", {
+        ...proofAttribution,
+        ticketId: blockedTicketId,
+        expectedUpdatedAt: dependencyResult.stdout.result.ticket.updatedAt,
+        title: "blocked ticket renamed",
+        idempotencyKey: "agent-turn-1-fact44-update",
+      });
+      assert.equal(updated.exitCode, 0);
+      assert.deepEqual(updated.stdout.result.ticket.blockerTicketIds, [firstBlockerId, secondBlockerId]);
+      assert.ok(updated.stdout.result.ticket.blockerTicketIds.every((id) => typeof id === "string"));
+    });
+
     await t.test("post_message accepts question and list_tickets returns the run-scoped record", async () => {
       const ticket = await client.query("SELECT id FROM tickets LIMIT 1");
       const question = await callAgentTool("post_message", {

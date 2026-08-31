@@ -10,6 +10,7 @@ import {
   migratePostgres,
   requiredMigrationHistory,
 } from "../../scripts/migrate-postgres.mjs";
+import { assertProofDatabase } from "./proof-database.mjs";
 
 const { Client } = pg;
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -33,6 +34,7 @@ test("FACT-42 readiness requires every committed migration checksum", async () =
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    await assertProofDatabase(client, "ORBITFLOW_FACT42_PROOF_DATABASE");
     await migratePostgres({ databaseUrl, log: () => {} });
     const expected = await requiredMigrationHistory();
     assert.deepEqual(await assertRequiredMigrationHistory(client), expected.at(-1));
@@ -58,8 +60,7 @@ test("FACT-42 upgrades retained PostgreSQL tickets while removing labels", async
   const client = new Client({ connectionString: databaseUrl });
   try {
     await client.connect();
-    const identity = await client.query("SELECT current_database() AS name");
-    assert.equal(identity.rows[0].name, process.env.ORBITFLOW_FACT42_PROOF_DATABASE);
+    await assertProofDatabase(client, "ORBITFLOW_FACT42_PROOF_DATABASE");
     await client.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const beforeNames = await preLabelRemovalMigrations(snapshotDirectory);
     const before = await migratePostgres({

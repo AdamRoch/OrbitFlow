@@ -371,6 +371,19 @@ function ticketFromRow(row: Row): TicketDTO {
   };
 }
 
+const TICKET_SELECT = `
+  SELECT ticket.*,
+         COALESCE(
+           (
+             SELECT array_agg(dependency.blocker_ticket_id ORDER BY dependency.blocker_ticket_id)
+             FROM dependencies AS dependency
+             WHERE dependency.blocked_ticket_id = ticket.id
+           ),
+           '{}'::bigint[]
+         ) AS blocker_ticket_ids
+  FROM tickets AS ticket
+`;
+
 function projectFromRow(row: Row): ProjectDTO {
   return {
     id: String(row.id),
@@ -394,6 +407,10 @@ async function one<R extends QueryResultRow>(client: PoolClient, sql: string, va
   return result.rows[0] ?? null;
 }
 
+async function loadTicket(client: PoolClient, ticketId: string, lock = false): Promise<Row | null> {
+  return one<Row>(client, `${TICKET_SELECT} WHERE ticket.id = $1${lock ? " FOR UPDATE" : ""}`, [ticketId]);
+}
+
 async function requireAttribution(client: PoolClient, input: Attribution): Promise<Row> {
   const actor = await one<Row>(client, "SELECT id, guardrails FROM agents WHERE id = $1", [input.agentId]);
   if (!actor) throw new PlatformToolError("agent_not_found", "agentId does not identify an agent");
@@ -403,7 +420,7 @@ async function requireAttribution(client: PoolClient, input: Attribution): Promi
 }
 
 async function requireTicketForRun(client: PoolClient, ticketId: string, runId: string): Promise<Row> {
-  const ticket = await one<Row>(client, "SELECT * FROM tickets WHERE id = $1 FOR UPDATE", [ticketId]);
+  const ticket = await loadTicket(client, ticketId, true);
   if (!ticket) throw new PlatformToolError("ticket_not_found", "ticketId does not identify a ticket");
   if (String(ticket.run_id) !== runId) {
     throw new PlatformToolError("ticket_run_mismatch", "ticketId is not attributed to runId");
@@ -424,14 +441,15 @@ async function createTicket(client: PoolClient, input: CreateTicketInput): Promi
     [input.projectId],
   );
   if (!project) throw new PlatformToolError("project_not_found", "projectId does not identify a project");
-  const ticket = await one<Row>(
+  const inserted = await one<Row>(
     client,
     `INSERT INTO tickets (
        number, identifier, project_id, run_id, title, description, acceptance_criteria, status, priority
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
     [project.next_number, `${project.key}-${project.next_number}`, input.projectId, input.runId, input.title, input.description,
       input.acceptanceCriteria, input.status, input.priority],
   );
+  const ticket = await loadTicket(client, String(inserted!.id));
   const value = ticketFromRow(ticket!);
   const message = await insertMessage(client, {
     runId: input.runId, ticketId: value.id, sender: `agent:${input.agentId}`, recipient: "system:ticket-stream", type: "system",
@@ -454,14 +472,15 @@ async function updateTicket(client: PoolClient, input: UpdateTicketInput): Promi
   if (input.status !== undefined) add("status", input.status);
   if (input.priority !== undefined) add("priority", input.priority);
   values.push(input.ticketId, input.expectedUpdatedAt);
-  const ticket = await one<Row>(
+  const updated = await one<Row>(
     client,
     `UPDATE tickets SET ${assignments.join(", ")}, updated_at = now()
-     WHERE id = $${values.length - 1} AND updated_at = $${values.length}::timestamptz RETURNING *`,
+     WHERE id = $${values.length - 1} AND updated_at = $${values.length}::timestamptz RETURNING id`,
     values,
   );
-  if (!ticket) throw new PlatformToolError("stale_update", "ticket changed since expectedUpdatedAt");
-  const value = ticketFromRow(ticket);
+  if (!updated) throw new PlatformToolError("stale_update", "ticket changed since expectedUpdatedAt");
+  const ticket = await loadTicket(client, String(updated.id));
+  const value = ticketFromRow(ticket!);
   const message = await insertMessage(client, {
     runId: input.runId, ticketId: value.id, sender: `agent:${input.agentId}`, recipient: "system:ticket-stream", type: "system",
     payload: { action: "update_ticket", agentId: input.agentId, runId: input.runId, ticketId: value.id, idempotencyKey: input.idempotencyKey },
@@ -530,16 +549,14 @@ async function setTicketDependencies(
       [blocked.project_id, blocker.id, input.ticketId],
     );
   }
-  const ticket = await one<Row>(
+  const updated = await one<Row>(
     client,
     `UPDATE tickets SET updated_at = clock_timestamp() WHERE id = $1 RETURNING *`,
     [input.ticketId],
   );
+  const ticket = await loadTicket(client, String(updated!.id));
   return {
-    ticket: ticketFromRow({
-      ...ticket!,
-      blocker_ticket_ids: blockers.map((blocker) => blocker.id),
-    }),
+    ticket: ticketFromRow(ticket!),
     replayed: false,
   };
 }

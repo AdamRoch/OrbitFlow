@@ -3,6 +3,7 @@ import test from "node:test";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import { ControlPlaneRepository } from "../../src/lib/control-plane/repository.ts";
+import { assertProofDatabase } from "./proof-database.mjs";
 
 const { Pool } = pg;
 
@@ -11,6 +12,7 @@ test("FACT-42 Monitoring Board reads the selected PostgreSQL workflow run", asyn
   assert.ok(databaseUrl, "DATABASE_URL must point to the disposable proof database");
   const pool = new Pool({ connectionString: databaseUrl });
   try {
+    await assertProofDatabase(pool, "ORBITFLOW_FACT42_PROOF_DATABASE");
     await migratePostgres({ databaseUrl, log: () => {} });
     const project = await pool.query(
       "INSERT INTO projects (key, name) VALUES ('FCT', 'FACT-42 proof') RETURNING id::text",

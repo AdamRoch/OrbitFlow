@@ -9,12 +9,25 @@ created_container="false"
 
 cleanup() {
   status=$?
+  cleanup_failed="false"
   trap - EXIT
   if [[ "$created_container" == "true" ]]; then
-    docker rm --force "$container_name" >/dev/null
-    docker container inspect "$container_name" >/dev/null 2>&1 && status=1
+    if ! docker rm --force "$container_name" >/dev/null; then
+      echo "Failed to remove disposable container: $container_name" >&2
+      cleanup_failed="true"
+    fi
+    if docker container inspect "$container_name" >/dev/null 2>&1; then
+      echo "Disposable container still exists after cleanup: $container_name" >&2
+      cleanup_failed="true"
+    fi
   fi
-  exit "$status"
+  if [[ "$status" -ne 0 ]]; then
+    exit "$status"
+  fi
+  if [[ "$cleanup_failed" == "true" ]]; then
+    exit 1
+  fi
+  exit 0
 }
 trap cleanup EXIT
 

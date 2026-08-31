@@ -27,6 +27,7 @@
     "fact13:proof": "bash scripts/fact-13-platform-tool-proof.sh",
     "fact41:proof": "bash scripts/fact-41-ticket-dispatch-proof.sh",
     "fact42:postgres-proof": "bash scripts/fact-42-postgres-cutover-proof.sh",
+    "fact45:proof": "node --test test/postgres/fact-45-proof-safety.test.mjs",
     "fact42:preflight": "bash scripts/fact-42-deployed-sqlite-preflight.sh",
     "fact42:proof": "npm run fact42:postgres-proof && npm run fact31:proof",
     "fact10:proof": "bash scripts/fact-10-workflow-engine-proof.sh",
