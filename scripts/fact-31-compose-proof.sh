@@ -69,6 +69,13 @@ compose up --detach --build --wait --wait-timeout 300
 readiness="$(node -e "fetch('http://127.0.0.1:$engine_port/readyz').then(async r=>{const b=await r.json();if(!r.ok)process.exit(1);process.stdout.write(JSON.stringify(b))})")"
 node -e 'const value=JSON.parse(process.argv[1]); if(value.status!=="ready"||value.workflowEngine!=="operational")process.exit(1)' "$readiness"
 
+required_migration="$(compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -Atc "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")"
+required_checksum="$(compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -Atc "SELECT checksum FROM schema_migrations WHERE version = '$required_migration'")"
+compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -c "UPDATE schema_migrations SET checksum = 'stale-proof-checksum' WHERE version = '$required_migration'" >/dev/null
+node -e "Promise.all([fetch('http://127.0.0.1:$app_port/api/health'), fetch('http://127.0.0.1:$engine_port/readyz')]).then((responses) => { if (responses.some((response) => response.status !== 503)) process.exit(1); })"
+compose exec -T postgres psql -U orbitfactory -d orbitfactory_fact31_proof -c "UPDATE schema_migrations SET checksum = '$required_checksum' WHERE version = '$required_migration'" >/dev/null
+node -e "Promise.all([fetch('http://127.0.0.1:$app_port/api/health'), fetch('http://127.0.0.1:$engine_port/readyz')]).then((responses) => { if (responses.some((response) => !response.ok)) process.exit(1); })"
+
 compose exec -T engine node --experimental-strip-types scripts/fact-31-compose-fixture.mjs seed >/dev/null
 manual="$(wait_for_snapshot 'value.completed_runs === 1 && value.completed_dispatches === 1 && value.materialized_tickets === 1 && value.pending_messages === 0')"
 node -e 'const value=JSON.parse(process.argv[1]); if(value.invocations!==1)process.exit(1)' "$manual"

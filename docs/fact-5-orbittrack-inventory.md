@@ -6,21 +6,19 @@ OrbitFactory's ticket foundation is adapted from
 in `LICENSE`. Existing OrbitFlow Phase 0 proof packages were retained without
 replacement.
 
-## Kept and adapted
+## Historical foundation
 
 | Slice | Routes and code | PRD reason |
 | --- | --- | --- |
-| Ticket board | `/`, filters, issue rows, live refresh | PRD sections 1 and 9 require the inherited board as the live run view. |
-| Ticket workflow | `/new`, `/issues/[identifier]`, issue CRUD API and server actions | PRD sections 4 and 9 retain tickets as the work unit. |
-| Labels | `/labels`, label API, label assignment | Labels are required by FACT-5 and remain useful for workflow triage. |
-| Blockers | Blocker API, dependency editing, ready derivation | Blocking edges drive deterministic frontier eligibility. |
-| Frontier and claim | `/frontier`, frontier API, atomic claim API | FACT-5 explicitly requires frontier behavior after the strip. |
-| Supporting application code | SQLite repository, internal default project, validation, markdown, shared UI | The default project is retained only to provide stable `FACT-N` identifiers until FACT-6 owns the PostgreSQL schema. |
+| Ticket board | Monitoring Board, run filter, PostgreSQL reads, stream wakeups | The Board is the live run view. |
+| Ticket workflow | Platform tools and workflow engine | Agents create tickets and the engine assigns ready work. |
+| Blockers | `set_ticket_dependencies` | Same-run PostgreSQL edges drive frontier eligibility. |
 
 ## Deleted
 
 | Removed slice | Deleted routes and code | Ownership or reason |
 | --- | --- | --- |
+| Inherited tracker | Root board, issue CRUD, labels, claim, old database repository and tests | FACT-40 removed duplicate ticket authority. |
 | Dependency map | `/map`, React Flow graph component, graph layout helper, `@xyflow/react`, `@dagrejs/dagre`, map smoke coverage | The map duplicates ticket dependency data and is not the workflow builder specified by P4-3. |
 | OrbitTrack Q&A | `/api/questions`, issue question and response routes, transcript component, question schema/domain code, Q&A tests | P5-2 owns questions through the message bus and workflow engine, not OrbitTrack's separate issue Q&A model. |
 | Multi-project management | `/api/projects`, project switcher, project creation popover, project CRUD domain code and tests | OrbitFactory is the application scope. FACT-5 needs one internal identifier scope, not user-facing project administration. |

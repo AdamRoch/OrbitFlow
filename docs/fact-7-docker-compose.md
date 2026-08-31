@@ -12,10 +12,9 @@
    docker compose up --build
    ```
 
-3. Open `http://127.0.0.1:${ORBITFACTORY_APP_PORT}`. The current inherited
-   board UI is reachable there. `GET /api/health` reports its explicit
-   `sqlite-foundation` persistence state, while `GET /api/agents` exercises
-   the current PostgreSQL-backed control plane.
+3. Open `http://127.0.0.1:${ORBITFACTORY_APP_PORT}`. The root route redirects
+   to the run-filtered Monitoring Board. `GET /api/health` reports ready only
+   when PostgreSQL has the exact committed migration history.
 
 `postgres` must pass `pg_isready` before `migrate` runs. `app` starts only
 after `migrate` exits successfully. `engine` starts only after the app,
@@ -76,8 +75,8 @@ package declares Linux `arm64` and `x64` support.
 
 ## State, restart, teardown
 
-Compose names and deliberately reuses `postgres-data`, `app-data`,
-`openclaw-state`, `engine-data`, and `run-workspaces`. OpenClaw and the engine
+Compose names and deliberately reuses `postgres-data`, `openclaw-state`,
+`engine-data`, and `run-workspaces`. OpenClaw and the engine
 share `engine-data` only for runtime and agent workspace state. The gateway's
 one explicitly allowlisted wrapper has no database credential and sends the
 active dispatch context to `tool-broker` over a root-owned socket. The broker
@@ -106,7 +105,8 @@ FACT-31's focused production proof is `npm run fact31:proof`. It uses the
 production Compose entrypoint with the deterministic fake OpenClaw request
 path, so it spends no provider credit. It proves operational readiness, a
 ticket-backed UI run, adapter completion, scheduler consumption, duplicate tick
-resistance, two engine restarts, and project-scoped cleanup.
+resistance, two engine restarts, exact migration readiness, and project-scoped
+cleanup.
 
 ## Retained proof command
 

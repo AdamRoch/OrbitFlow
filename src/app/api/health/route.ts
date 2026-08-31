@@ -1,9 +1,14 @@
 import { getControlPlanePool } from "@/lib/control-plane";
+import { assertRequiredMigrationHistory } from "../../../../scripts/migrate-postgres.mjs";
 
 export async function GET() {
   try {
-    await getControlPlanePool().query("SELECT 1");
-    return Response.json({ status: "ready", persistence: "postgresql" });
+    const migration = await assertRequiredMigrationHistory(getControlPlanePool());
+    return Response.json({
+      status: "ready",
+      persistence: "postgresql",
+      migration: migration.version,
+    });
   } catch {
     return Response.json(
       { status: "error", persistence: "postgresql" },

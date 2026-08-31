@@ -9,6 +9,7 @@ import {
   loadOpenClawModelCatalog,
   validateConfiguredAgentModels,
 } from "../lib/runtime/openclaw-model-catalog.mjs";
+import { assertRequiredMigrationHistory } from "../../scripts/migrate-postgres.mjs";
 
 const { Pool } = pg;
 
@@ -104,7 +105,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     try {
-      await pool.query("SELECT 1");
+      await assertRequiredMigrationHistory(pool);
       response.writeHead(200);
       response.end(`${JSON.stringify({ status: "ready", workflowEngine: "operational" })}\n`);
     } catch {

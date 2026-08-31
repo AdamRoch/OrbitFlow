@@ -2,8 +2,7 @@
 
 OrbitFlow is a TypeScript application for defining agents and workflows, retaining
 their execution trail in PostgreSQL, and connecting an OpenClaw agent runtime to
-the workflow engine. It includes an adapted OrbitTrack board as the current UI
-foundation.
+the workflow engine. Monitoring is the run-filtered ticket board.
 
 Accepted Factory workspaces can be copied from the Compose volume with the
 single operator command documented in
@@ -96,7 +95,6 @@ runbook](docs/fact-7-docker-compose.md).
 | --- | --- | --- | --- |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Required | Compose PostgreSQL, migrator, app, engine, tool broker | Set all three in `.env`; `POSTGRES_PASSWORD` must be a local secret. |
 | `ORBITFACTORY_APP_PORT`, `ORBITFACTORY_ENGINE_HOST_PORT` | Required | Compose host port bindings | Select localhost ports for the app and readiness endpoint. |
-| `ORBITFACTORY_DB_PATH` | Required | Adapted board/API | Path for the inherited SQLite board foundation; it is not the PostgreSQL workflow authority. |
 | `OPENROUTER_API_KEY` | Provider credential, required by default Compose | OpenClaw gateway, coding executor; opt-in coding adapter | The only evaluator provider credential in the shipped Compose topology. It is not passed to the engine or tool broker. |
 | `TELEGRAM_BOT_TOKEN` | Optional provider credential | `telegram` profile | Required only when enabling the grammY long-poll adapter. |
 | `ORBITFACTORY_CODING_ADAPTER_BINARY` | Optional / proof override | `coding-adapter` profile | Defaults to `opencode`; the proof selects its committed fake binary with this setting. |
@@ -140,9 +138,9 @@ and adapter contracts in one typed codebase. Next.js supplies the retained
 board and editor surfaces. PostgreSQL is used where atomic workflow transitions,
 durable messages, receipts, leases, and cost records matter. Compose makes the
 local PostgreSQL, app, engine, gateway, broker, executor, and profile boundaries
-repeatable without requiring host-installed database or gateway state. The
-inherited board still uses a small SQLite foundation, so it should not be
-mistaken for the workflow engine's PostgreSQL authority.
+repeatable without requiring host-installed database or gateway state.
+PostgreSQL is also the only ticket authority. The root route redirects to the
+run-filtered Monitoring Board, and agents write through platform tools.
 
 ## Extend safely
 
@@ -201,7 +199,8 @@ single-process boundary.
 - `npm test` runs the app, Phase 0, and coding-adapter suites without a provider call.
 - `bash scripts/fact-7-compose-proof.sh` is the disposable clean-Compose gate.
 - `npm run fact9:proof`, `npm run fact10:proof`, and `npm run fact11:proof` cover the bus, engine, and runtime adapter.
-- `npm run fact31:proof` covers the production Compose worker and restart path without a provider call.
+- `npm run fact42:postgres-proof` covers the PostgreSQL-only ticket and Monitoring data path.
+- `npm run fact31:proof` covers production Compose readiness, migration freshness, and restart recovery without a provider call.
 - `npm run fact34:proof` covers the deterministic Software Factory question, rejection, correction, approval, and local Telegram boundary.
 - `npm run fact15:proof`, `npm run fact21:proof`, `npm run fact23:proof`, and `npm run fact25:proof` cover Telegram, templates, guardrails, and scheduling.
 - [PostgreSQL schema](docs/postgres-schema.md), [message bus](docs/message-bus.md), [workflow engine](docs/workflow-engine.md), and [OpenClaw adapter](docs/openclaw-runtime-adapter.md) are the authoritative detailed contracts.

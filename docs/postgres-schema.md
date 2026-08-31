@@ -1,8 +1,8 @@
 # PostgreSQL schema and migration runbook
 
-FACT-6 defines the durable PostgreSQL contract in `db/migrations`. The retained
-board still uses SQLite until its CRUD layer moves in FACT-8; the two schemas are
-intentionally not wired together here.
+PostgreSQL is OrbitFlow's only durable ticket, control-plane, message, and
+execution database. The accepted ticket authority rules live in
+[`ADR/0001-postgresql-ticket-authority.md`](../ADR/0001-postgresql-ticket-authority.md).
 
 FACT-12 extends `cost_events` in migration `0010` with cache-token attribution
 and nullable usage fields. A null means the coding CLI omitted the value; zero
@@ -22,6 +22,11 @@ advisory lock. It records each filename and SHA-256 checksum in
 that has been applied; add the next numbered, forward-only file instead. The
 runner fails closed when an applied file disappears, a checksum changes, or a
 new migration is inserted below the applied high-water mark.
+
+`GET /api/health` and the engine's `GET /readyz` read the full committed
+`schema_migrations` history before reporting ready. They require every filename
+and SHA-256 checksum through the current head. A database with a missing, stale,
+or edited migration reports 503 even if it accepts queries.
 
 FACT-18 reserves `0009-state-stream-notify.sql`. It adds no state table: AFTER
 triggers call `pg_notify` only after a committed change to agents, runs,
@@ -45,8 +50,8 @@ FACT-36 reserves `0025-factory-project.sql`. It seeds the stable `FACT` project
 in PostgreSQL on fresh installations and forward upgrades. The insert is
 conflict-safe and preserves an existing `FACT` row. Factory agents must still
 discover its database-generated id through `list_projects`; neither planner
-prompts nor runtime code own or hard-code that id. This PostgreSQL project is
-separate from the retained SQLite board.
+prompts nor runtime code own or hard-code that id. Monitoring reads the same
+PostgreSQL project and workflow-run tickets.
 
 FACT-35 and FACT-36 merged concurrently after their migration numbers were
 reserved. The runner therefore permits exactly one late-reservation shape:
@@ -81,3 +86,34 @@ Appends for one run are serialized by a transaction-scoped PostgreSQL advisory
 lock, so a later message cannot commit ahead of an earlier sequence. A rolled
 back append does not consume a sequence number. The bigint `id` remains only the
 message entity identifier and must not be used as a live-consumption cursor.
+
+## PostgreSQL-only cutover
+
+Before replacing the deployed legacy application, run:
+
+```sh
+npm run fact42:preflight
+```
+
+The command connects to the deployed Railway app through explicit project,
+service, and production-environment selectors. It opens only
+`/app/data/orbitfactory.db` in read-only mode and prints project, issue, and
+dependency counts. Exit status 2 means issues or dependencies remain. Stop
+there. Importing, archiving, or discarding retained work needs Adam's separate
+decision. A connection or file error also stops the cutover.
+
+The 2026-08-31 preflight found one project, zero issues, and zero dependencies.
+That permits the no-import cutover for the current production deployment.
+
+Run the local integration gates before redeploying:
+
+```sh
+npm run fact42:postgres-proof
+npm run fact31:proof
+```
+
+The PostgreSQL proof uses one disposable container for clean install, upgrade
+validation, committed stream wakeups, run-scoped dependency and assignment
+races, and the run-filtered Monitoring board. The Compose proof checks app and
+engine readiness, rejects a stale migration checksum, and proves restart
+recovery.

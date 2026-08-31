@@ -20,7 +20,7 @@ export const MIGRATION_LOCK_NAME = "orbitfactory-schema-migrations-v1";
 const LATE_RESERVED_MIGRATION = "0024-factory-agent-model-catalog.sql";
 const MERGED_SUCCESSOR_MIGRATION = "0025-factory-project.sql";
 
-async function loadMigrations(migrationDirectory) {
+export async function loadMigrations(migrationDirectory) {
   const names = (await readdir(migrationDirectory))
     .filter((name) => MIGRATION_FILE.test(name))
     .sort();
@@ -52,6 +52,31 @@ async function loadMigrations(migrationDirectory) {
   return migrations.sort(
     (left, right) => left.ordinal - right.ordinal || left.version.localeCompare(right.version),
   );
+}
+
+export async function requiredMigrationHistory({
+  migrationDirectory = DEFAULT_MIGRATION_DIRECTORY,
+} = {}) {
+  const migrations = await loadMigrations(migrationDirectory);
+  return migrations.map(({ version, checksum }) => ({ version, checksum }));
+}
+
+/** A reachable database is not ready until its migration history is exact. */
+export async function assertRequiredMigrationHistory(queryable, options = {}) {
+  const expected = await requiredMigrationHistory(options);
+  const result = await queryable.query(
+    "SELECT version, checksum FROM schema_migrations ORDER BY version",
+  );
+  const actual = result.rows.map((row) => ({
+    version: String(row.version),
+    checksum: String(row.checksum),
+  }));
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error("PostgreSQL schema is not at the required migration head");
+  }
+  const head = expected.at(-1);
+  if (!head) throw new Error("no committed PostgreSQL migrations exist");
+  return head;
 }
 
 function validateAppliedHistory(migrations, applied) {
