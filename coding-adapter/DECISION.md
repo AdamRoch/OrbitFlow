@@ -3,7 +3,7 @@
 ## What was tested
 
 Three headless coding CLIs were already installed and evaluated live against
-this ticket's constraints (`orbitflow-prd.md` §5, `tickets/P0-3-spike-coding-cli-wrapper.md`):
+the adapter constraints in `orbitflow-prd.md` §5:
 must run with no TTY/prompts, must authenticate via a single evaluator env
 var (not a builder's OAuth/subscription session), must produce a usable
 diff/log/usage from an isolated git workspace.
