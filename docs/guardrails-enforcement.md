@@ -55,8 +55,8 @@ dispatch workers cannot overshoot the window or the agent ceiling.
 ## Blocked actions
 
 `agents.guardrails.blockedActions` is a list of action names. The enforceable
-boundary at the FACT-13 surface is exactly its five commands: `create_ticket`,
-`update_ticket`, `post_message`, `list_projects`, `list_tickets`. `dispatchPlatformTool` remains
+boundary at the FACT-13 surface is exactly its six commands: `create_ticket`,
+`update_ticket`, `set_ticket_dependencies`, `post_message`, `list_projects`, `list_tickets`. `dispatchPlatformTool` remains
 the single enforcement point: a listed command is rejected before any mutation
 inside the same transaction that records the attempt, the rejection appends one
 durable `system` message from `system:guardrails` with payload code

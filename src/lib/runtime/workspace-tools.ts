@@ -46,6 +46,12 @@ export function createProductionWorkspaceTools(
         idempotencyKey: "update-<unique-suffix>",
       })}'`,
       "",
+      "### set_ticket_dependencies",
+      `${tool} set_ticket_dependencies '${JSON.stringify({
+        blockerTicketIds: ["<ticketId from list_tickets>"],
+        idempotencyKey: "dependencies-<unique-suffix>",
+      })}'`,
+      "",
       "### post_message",
       `${tool} post_message '${JSON.stringify({
         recipient: "<recipient>",

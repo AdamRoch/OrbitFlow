@@ -8,6 +8,7 @@ export const PLATFORM_TOOL_COMMANDS = [
   "list_projects",
   "create_ticket",
   "update_ticket",
+  "set_ticket_dependencies",
   "post_message",
   "list_tickets",
 ] as const;
@@ -32,6 +33,7 @@ interface TicketDTO {
   status: TicketStatus;
   priority: number;
   assigneeAgentId: string | null;
+  blockerTicketIds: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -67,6 +69,7 @@ export interface BlockedToolResult {
 export type PlatformToolResult =
   | { projects: ProjectDTO[]; nextCursor: string | null }
   | { ticket: TicketDTO; message: MessageDTO; replayed: boolean }
+  | { ticket: TicketDTO; replayed: boolean }
   | { message: MessageDTO; replayed: boolean }
   | { tickets: TicketDTO[]; nextCursor: string | null }
   | BlockedToolResult;
@@ -117,6 +120,13 @@ type PostMessageInput = Attribution & {
   idempotencyKey: string;
 };
 
+type SetTicketDependenciesInput = Attribution & {
+  command: "set_ticket_dependencies";
+  ticketId: string;
+  blockerTicketIds: string[];
+  idempotencyKey: string;
+};
+
 type ListTicketsInput = Attribution & {
   command: "list_tickets";
   projectId?: string;
@@ -133,8 +143,8 @@ type ListProjectsInput = Attribution & {
   idempotencyKey: string;
 };
 
-type ParsedInput = CreateTicketInput | UpdateTicketInput | PostMessageInput | ListTicketsInput | ListProjectsInput;
-type MutationInput = CreateTicketInput | UpdateTicketInput | PostMessageInput;
+type ParsedInput = CreateTicketInput | UpdateTicketInput | SetTicketDependenciesInput | PostMessageInput | ListTicketsInput | ListProjectsInput;
+type MutationInput = CreateTicketInput | UpdateTicketInput | SetTicketDependenciesInput | PostMessageInput;
 type InvocationInput = MutationInput | ListTicketsInput | ListProjectsInput;
 type Row = Record<string, unknown>;
 
@@ -169,6 +179,15 @@ function id(value: unknown, field: string): string {
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
   if (typeof value === "string" && /^[1-9][0-9]*$/.test(value)) return value;
   throw new PlatformToolError("invalid_id", `${field} must be a positive integer`);
+}
+
+function ids(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) throw new PlatformToolError("invalid_type", `${field} must be an array`);
+  const parsed = value.map((item, index) => id(item, `${field}[${index}]`));
+  if (new Set(parsed).size !== parsed.length) {
+    throw new PlatformToolError("duplicate_blocker", `${field} must not contain duplicates`);
+  }
+  return parsed;
 }
 
 function requiredString(value: unknown, field: string, maxLength = MAX_TEXT_LENGTH): string {
@@ -296,6 +315,16 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
       idempotencyKey: idempotencyKey(input.idempotencyKey),
     };
   }
+  if (command === "set_ticket_dependencies") {
+    knownFields(input, [...base, "ticketId", "blockerTicketIds", "idempotencyKey"]);
+    return {
+      command,
+      ...attribution(input),
+      ticketId: id(input.ticketId, "ticketId"),
+      blockerTicketIds: ids(input.blockerTicketIds, "blockerTicketIds"),
+      idempotencyKey: idempotencyKey(input.idempotencyKey),
+    };
+  }
   knownFields(input, [...base, "projectId", "status", "limit", "afterId", "idempotencyKey"]);
   const limit = input.limit === undefined ? 50 : input.limit;
   if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -330,6 +359,7 @@ function ticketFromRow(row: Row): TicketDTO {
     runId: row.run_id === null ? null : String(row.run_id), title: String(row.title), description: row.description === null ? null : String(row.description),
     acceptanceCriteria: row.acceptance_criteria === null ? null : String(row.acceptance_criteria), status: row.status as TicketStatus,
     priority: Number(row.priority), assigneeAgentId: row.assignee_agent_id === null ? null : String(row.assignee_agent_id),
+    blockerTicketIds: Array.isArray(row.blocker_ticket_ids) ? row.blocker_ticket_ids.map(String) : [],
     createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
   };
 }
@@ -372,6 +402,11 @@ async function requireTicketForRun(client: PoolClient, ticketId: string, runId: 
     throw new PlatformToolError("ticket_run_mismatch", "ticketId is not attributed to runId");
   }
   return ticket;
+}
+
+async function lockRun(client: PoolClient, runId: string): Promise<void> {
+  const run = await one<Row>(client, "SELECT id FROM workflow_runs WHERE id = $1 FOR UPDATE", [runId]);
+  if (!run) throw new PlatformToolError("run_not_found", "runId does not identify a workflow run");
 }
 
 async function createTicket(client: PoolClient, input: CreateTicketInput): Promise<PlatformToolResult> {
@@ -436,6 +471,72 @@ async function postMessage(client: PoolClient, input: PostMessageInput): Promise
   return { message: messageFromRow(message), replayed: false };
 }
 
+async function setTicketDependencies(
+  client: PoolClient,
+  input: SetTicketDependenciesInput,
+): Promise<PlatformToolResult> {
+  await lockRun(client, input.runId);
+  const blocked = await requireTicketForRun(client, input.ticketId, input.runId);
+  if (blocked.status !== "todo") {
+    throw new PlatformToolError("ticket_not_todo", "ticket dependencies cannot change after work starts");
+  }
+  if (input.blockerTicketIds.includes(input.ticketId)) {
+    throw new PlatformToolError("self_dependency", "ticket cannot depend on itself");
+  }
+
+  const blockers = input.blockerTicketIds.length === 0
+    ? []
+    : (await client.query<Row>(
+      `SELECT * FROM tickets WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE`,
+      [input.blockerTicketIds],
+    )).rows;
+  if (blockers.length !== input.blockerTicketIds.length) {
+    throw new PlatformToolError("ticket_not_found", "blockerTicketIds includes a missing ticket");
+  }
+  for (const blocker of blockers) {
+    if (String(blocker.run_id) !== input.runId) {
+      throw new PlatformToolError("ticket_run_mismatch", "blockerTicketIds must belong to runId");
+    }
+    if (String(blocker.project_id) !== String(blocked.project_id)) {
+      throw new PlatformToolError("ticket_project_mismatch", "blockerTicketIds must belong to the blocked ticket project");
+    }
+  }
+
+  await client.query("DELETE FROM dependencies WHERE blocked_ticket_id = $1", [input.ticketId]);
+  for (const blocker of blockers) {
+    const cycle = await one<Row>(
+      client,
+      `WITH RECURSIVE reachable(ticket_id) AS (
+         SELECT $1::bigint
+         UNION
+         SELECT dependency.blocked_ticket_id
+         FROM dependencies AS dependency
+         JOIN reachable ON dependency.blocker_ticket_id = reachable.ticket_id
+       )
+       SELECT ticket_id FROM reachable WHERE ticket_id = $2::bigint LIMIT 1`,
+      [input.ticketId, blocker.id],
+    );
+    if (cycle) throw new PlatformToolError("dependency_cycle", "blockerTicketIds would create a dependency cycle");
+    await client.query(
+      `INSERT INTO dependencies (project_id, blocker_ticket_id, blocked_ticket_id)
+       VALUES ($1, $2, $3)`,
+      [blocked.project_id, blocker.id, input.ticketId],
+    );
+  }
+  const ticket = await one<Row>(
+    client,
+    `UPDATE tickets SET updated_at = clock_timestamp() WHERE id = $1 RETURNING *`,
+    [input.ticketId],
+  );
+  return {
+    ticket: ticketFromRow({
+      ...ticket!,
+      blocker_ticket_ids: blockers.map((blocker) => blocker.id),
+    }),
+    replayed: false,
+  };
+}
+
 async function invoke<T extends PlatformToolResult>(
   client: PoolClient,
   input: InvocationInput,
@@ -470,23 +571,31 @@ async function invoke<T extends PlatformToolResult>(
 }
 
 async function listTickets(client: PoolClient, input: ListTicketsInput): Promise<PlatformToolResult> {
-  const clauses = ["run_id = $1"];
+  const clauses = ["ticket.run_id = $1"];
   const values: unknown[] = [input.runId];
   if (input.projectId) {
     values.push(input.projectId);
-    clauses.push(`project_id = $${values.length}`);
+    clauses.push(`ticket.project_id = $${values.length}`);
   }
   if (input.status) {
     values.push(input.status);
-    clauses.push(`status = $${values.length}`);
+    clauses.push(`ticket.status = $${values.length}`);
   }
   if (input.afterId) {
     values.push(input.afterId);
-    clauses.push(`id > $${values.length}`);
+    clauses.push(`ticket.id > $${values.length}`);
   }
   values.push(input.limit + 1);
   const result = await client.query<Row>(
-    `SELECT * FROM tickets WHERE ${clauses.join(" AND ")} ORDER BY id ASC LIMIT $${values.length}`,
+    `SELECT ticket.*, COALESCE(
+       array_agg(dependency.blocker_ticket_id ORDER BY dependency.blocker_ticket_id)
+         FILTER (WHERE dependency.blocker_ticket_id IS NOT NULL),
+       '{}'
+     ) AS blocker_ticket_ids
+     FROM tickets AS ticket
+     LEFT JOIN dependencies AS dependency ON dependency.blocked_ticket_id = ticket.id
+     WHERE ${clauses.join(" AND ")}
+     GROUP BY ticket.id ORDER BY ticket.id ASC LIMIT $${values.length}`,
     values,
   );
   const rows = result.rows.slice(0, input.limit).map(ticketFromRow);
@@ -589,7 +698,9 @@ export async function dispatchPlatformTool(
       ? createTicket(client, input)
       : input.command === "update_ticket"
         ? updateTicket(client, input)
-        : postMessage(client, input)));
+        : input.command === "set_ticket_dependencies"
+          ? setTicketDependencies(client, input)
+          : postMessage(client, input)));
   });
   if (isBlockedToolResult(result)) {
     throw new PlatformToolError(

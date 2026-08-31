@@ -501,7 +501,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       }
     });
 
-    await t.test("shares one hard cap across overlapping fan-out cycle activations", async () => {
+    await t.test("does not re-enqueue in-progress tickets across overlapping fan-out activations", async () => {
       const graph = {
         nodes: [
           {
@@ -543,8 +543,8 @@ test("FACT-10 durable workflow engine", async (t) => {
       );
       assert.equal(
         active.rows[0].count,
-        2,
-        "overlapping groups cannot multiply materialized or active work beyond max N",
+        1,
+        "a new fan-out group skips tickets already in progress",
       );
       await client.query(
         "UPDATE workflow_runs SET status = 'canceled', ended_at = clock_timestamp() WHERE id = $1",

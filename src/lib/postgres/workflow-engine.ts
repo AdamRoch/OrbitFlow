@@ -444,11 +444,46 @@ async function insertDispatch(
   return inserted;
 }
 
+async function lockWorkflowRun(transaction: PoolClient, runId: string): Promise<void> {
+  const run = await transaction.query("SELECT id FROM workflow_runs WHERE id = $1 FOR UPDATE", [runId]);
+  if (!run.rows[0]) throw new WorkflowStateError(`workflow run ${runId} disappeared`);
+}
+
+async function claimReadyFanoutTicket(
+  transaction: PoolClient,
+  runId: string,
+  ticketId: string,
+  agentId: string,
+): Promise<"claimed" | "resumed" | "not_ready"> {
+  const claimed = await transaction.query(
+    `UPDATE tickets AS ticket
+     SET status = 'in_progress', assignee_agent_id = $3, updated_at = clock_timestamp()
+     WHERE ticket.id = $1 AND ticket.run_id = $2 AND ticket.status = 'todo'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM dependencies AS dependency
+         JOIN tickets AS blocker ON blocker.id = dependency.blocker_ticket_id
+         WHERE dependency.blocked_ticket_id = ticket.id
+           AND blocker.status <> 'done'
+       )
+     RETURNING ticket.id`,
+    [ticketId, runId, agentId],
+  );
+  if (claimed.rowCount === 1) return "claimed";
+
+  const existing = await transaction.query<{ status: string }>(
+    "SELECT status FROM tickets WHERE id = $1 AND run_id = $2 FOR KEY SHARE",
+    [ticketId, runId],
+  );
+  return existing.rows[0]?.status === "in_progress" ? "resumed" : "not_ready";
+}
+
 async function materializeFanoutCapacity(
   transaction: PoolClient,
   runId: string,
   nodeId: string,
 ): Promise<number> {
+  await lockWorkflowRun(transaction, runId);
   const groups = await transaction.query(
     `SELECT fanout.*, run.spec,
             message.payload -> 'output' AS source_output,
@@ -506,7 +541,14 @@ async function materializeFanoutCapacity(
 
   let inserted = 0;
   for (const member of members.rows) {
-    inserted += await insertDispatch(transaction, {
+    const claim = await claimReadyFanoutTicket(
+      transaction,
+      runId,
+      member.ticket_id,
+      member.agent_id,
+    );
+    if (claim === "not_ready") continue;
+    const added = await insertDispatch(transaction, {
       runId,
       spec: asJsonObject(member.spec, "workflow run spec"),
       node: {
@@ -524,6 +566,10 @@ async function materializeFanoutCapacity(
       ticketId: member.ticket_id,
       fanoutGroupId: member.fanout_group_id,
     });
+    if (claim === "claimed" && added !== 1) {
+      throw new WorkflowStateError(`ready ticket ${member.ticket_id} lost its first dispatch`);
+    }
+    inserted += added;
   }
   return inserted;
 }
@@ -561,6 +607,8 @@ async function enqueueNode(
     });
   }
 
+  await lockWorkflowRun(transaction, input.runId);
+
   const group = await transaction.query<{ id: string }>(
     `INSERT INTO workflow_fanout_groups (
        run_id, source_message_id, node_id, agent_id, agent_model,
@@ -583,7 +631,14 @@ async function enqueueNode(
     `INSERT INTO workflow_fanout_members (fanout_group_id, position, ticket_id)
      SELECT $2, row_number() OVER (ORDER BY priority DESC, created_at, id)::integer - 1, id
      FROM tickets
-     WHERE run_id = $1 AND status IN ('todo', 'in_progress')
+     WHERE run_id = $1 AND status = 'todo'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM dependencies AS dependency
+         JOIN tickets AS blocker ON blocker.id = dependency.blocker_ticket_id
+         WHERE dependency.blocked_ticket_id = tickets.id
+           AND blocker.status <> 'done'
+       )
      ON CONFLICT ON CONSTRAINT workflow_fanout_members_ticket_unique DO NOTHING`,
     [input.runId, group.rows[0].id],
   );

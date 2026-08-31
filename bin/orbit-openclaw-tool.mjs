@@ -9,6 +9,7 @@ const PLATFORM_COMMANDS = new Set([
   "list_projects",
   "create_ticket",
   "update_ticket",
+  "set_ticket_dependencies",
   "post_message",
   "list_tickets",
 ]);

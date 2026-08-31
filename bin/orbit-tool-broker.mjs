@@ -31,6 +31,7 @@ const PLATFORM_COMMANDS = new Set([
   "list_projects",
   "create_ticket",
   "update_ticket",
+  "set_ticket_dependencies",
   "post_message",
   "list_tickets",
 ]);
@@ -230,14 +231,17 @@ function monitorActiveDispatch(context, callerSignal) {
 }
 
 function invokePlatformCommand(command, supplied, context, fullContext) {
-  if ((command === "update_ticket" || command === "post_message") && context.ticketId === null) {
+  const ticketBound = command === "update_ticket"
+    || command === "set_ticket_dependencies"
+    || command === "post_message";
+  if (ticketBound && context.ticketId === null) {
     throw new Error(`${command} requires a ticket-bound dispatch`);
   }
   const input = {
     ...supplied,
     agentId: context.agentId,
     runId: context.runId,
-    ...((command === "update_ticket" || command === "post_message")
+    ...(ticketBound
       ? { ticketId: fullContext.ticketId }
       : {}),
   };

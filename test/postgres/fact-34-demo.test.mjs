@@ -267,6 +267,7 @@ test("FACT-34 production tools expose the ordinary coding surface", () => {
   assert.match(tools, /create_ticket/);
   assert.match(tools, /list_tickets/);
   assert.match(tools, /update_ticket/);
+  assert.match(tools, /set_ticket_dependencies/);
   assert.match(tools, /post_message/);
   assert.match(tools, /start_run_workspace/);
   assert.match(tools, /delegate_coding_task/);
