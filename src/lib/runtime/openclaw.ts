@@ -74,8 +74,8 @@ export class RuntimeAdapterError extends Error {
 }
 
 class MalformedOutputError extends RuntimeAdapterError {
-  constructor(message: string) {
-    super("openclaw_malformed_output", message);
+  constructor(message: string, safeDetails: JsonObject = {}) {
+    super("openclaw_malformed_output", message, safeDetails);
     this.name = "MalformedOutputError";
   }
 }
@@ -856,6 +856,7 @@ export class OpenClawRuntimeAdapter {
               tickets: context.tickets,
               upstreamHandoffBrief: input.upstreamHandoffBrief ?? null,
             });
+            let preservePriorWorkOnRetry = false;
             for (;;) {
               attempts += 1;
               // End-to-end deadline: each attempt, including the one retry,
@@ -871,7 +872,9 @@ export class OpenClawRuntimeAdapter {
               const deliveredPrompt =
                 attempts === 1
                   ? prompt
-                  : `${prompt}\n\n# Result-submission retry\nYour previous turn ended without a valid submit_result call. This is the only retry. Do not repeat other platform actions already completed in this session. Call submit_result exactly once with the required artifact, handoff_brief, and events object.`;
+                  : preservePriorWorkOnRetry
+                    ? `${prompt}\n\n# Result-submission retry\nYour prior work and platform actions are preserved. This is the only retry. Do not repeat any other action. Only call submit_result exactly once with the required artifact, handoff_brief, and events object.`
+                    : `${prompt}\n\n# Result-submission retry\nYour previous turn ended without a valid submit_result call. This is the only retry. Do not repeat other platform actions already completed in this session. Call submit_result exactly once with the required artifact, handoff_brief, and events object.`;
               const gatewayRunId = gatewayTurnIdempotencyKey(
                 invocation.invocationKey,
                 attempts,
@@ -922,7 +925,10 @@ export class OpenClawRuntimeAdapter {
                   error instanceof MalformedOutputError &&
                   attempts === 1 &&
                   this.retryMalformedOutput
-                ) continue;
+                ) {
+                  preservePriorWorkOnRetry = error.safeDetails.metaReplayInvalid === true;
+                  continue;
+                }
                 throw error;
               }
             }
@@ -1603,15 +1609,11 @@ export class OpenClawRuntimeAdapter {
     );
     const output = submitted.rows[0]?.output;
     if (!output) {
-      if (input.replayInvalid) {
-        throw new RuntimeAdapterError(
-          "openclaw_turn_failed",
-          "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without a result submission",
-          { diagnostics: { hasResultSubmission: false, metaReplayInvalid: true } },
-        );
-      }
       throw new MalformedOutputError(
         "Agent completed its turn without calling submit_result",
+        input.replayInvalid
+          ? { hasResultSubmission: false, metaReplayInvalid: true }
+          : { hasResultSubmission: false },
       );
     }
     try {
