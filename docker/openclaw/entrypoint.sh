@@ -10,8 +10,7 @@ chown -R node:node "$runtime_root"
 
 node /opt/orbitflow/apply-config.mjs "$state_dir/openclaw.json" /opt/orbitflow/openclaw.json
 chown node:node "$state_dir/openclaw.json"
-install -d -o node -g node -m 700 /home/node/.openclaw
-install -o node -g node -m 600 /opt/orbitflow/exec-approvals.json /home/node/.openclaw/exec-approvals.json
+install -o node -g node -m 600 /opt/orbitflow/exec-approvals.json "$state_dir/exec-approvals.json"
 
 token_file="$state_dir/gateway-token"
 if [ ! -s "$token_file" ]; then
