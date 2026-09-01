@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "buildCommand": "npm run build",
+  "startCommand": "npm start",
+  "healthPath": "/health",
+  "port": {
+    "environmentVariable": "PORT",
+    "default": 3000
+  },
+  "requiredEnvironmentVariables": [],
+  "publishIntent": "none"
+}

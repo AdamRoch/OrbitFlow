@@ -1551,11 +1551,25 @@ async function handleChannelIntakeOutput(
     return { kind: "waiting" };
   }
 
+  const workflow = await transaction.query<{ name: string }>(
+    "SELECT name FROM workflows WHERE id = $1",
+    [run.workflow_id],
+  );
+  const softwareFactory = workflow.rows[0]?.name === "Software Factory";
+  if (softwareFactory !== (decision.spec.factory !== undefined)) {
+    throw new WorkflowGraphError(
+      softwareFactory
+        ? "Software Factory intake requires spec.factory.outputMode"
+        : "spec.factory.outputMode is reserved for Software Factory runs",
+    );
+  }
+
   const spec: JsonObject = {
     schemaVersion: 1,
     objective: decision.spec.objective,
     acceptanceCriteria: decision.spec.acceptanceCriteria,
     constraints: decision.spec.constraints,
+    ...(decision.spec.factory ? { factory: decision.spec.factory } : {}),
     channelContext,
   };
   const changed = await transaction.query(

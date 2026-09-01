@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import { createRunWorkspaceService } from "./runWorkspaceService.js";
 import { WorkspaceError } from "./errors.js";
+import { requireDeploymentManifest } from "./deploymentManifest.js";
 
 const EXPORT_DIRECTORY_PREFIX = "factory-run-";
 
@@ -39,10 +40,11 @@ export async function exportAcceptedFactoryWorkspace({
       [runId],
     );
     locked = true;
-    await requireAcceptedFactoryRun(client, runId);
+    const outputMode = await requireAcceptedFactoryRun(client, runId);
 
     const workspace = path.join(await service.configuredRoot(), `run-${runId}`);
     const handle = await service.resolveWorkspace(runId, workspace);
+    await requireDeploymentManifest(handle.workspace, outputMode);
     const manifest = await inspectWorkspace(handle.workspace);
     output = path.join(destination, `${EXPORT_DIRECTORY_PREFIX}${runId}`);
     assertDirectChild(destination, output);
@@ -84,7 +86,7 @@ export async function exportAcceptedFactoryWorkspace({
 
 async function requireAcceptedFactoryRun(client, runId) {
   const runResult = await client.query(
-    `SELECT run.status::text AS status, workflow.name AS workflow_name
+    `SELECT run.status::text AS status, run.spec, workflow.name AS workflow_name
        FROM workflow_runs AS run
        JOIN workflows AS workflow ON workflow.id = run.workflow_id
       WHERE run.id = $1`,
@@ -99,6 +101,10 @@ async function requireAcceptedFactoryRun(client, runId) {
   }
   if (run.status !== "completed") {
     throw new WorkspaceError(`run ${runId} is unfinished and cannot be exported`);
+  }
+  const outputMode = run.spec?.factory?.outputMode ?? "downloadable";
+  if (!["downloadable", "web_service", "railway_app"].includes(outputMode)) {
+    throw new WorkspaceError(`run ${runId} has no valid Software Factory output mode`);
   }
 
   const tickets = await client.query(
@@ -140,6 +146,7 @@ async function requireAcceptedFactoryRun(client, runId) {
   if (verdicts.rows.some((row) => row.verdict !== "approved")) {
     throw new WorkspaceError(`run ${runId} was rejected and cannot be exported`);
   }
+  return outputMode;
 }
 
 async function requireDestinationRoot(value) {

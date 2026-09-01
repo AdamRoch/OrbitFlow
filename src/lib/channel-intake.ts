@@ -7,10 +7,13 @@ export type ChannelIntakeDecision =
   | { kind: "needs_clarification"; question: string }
   | { kind: "ready"; spec: ChannelRunSpecInput };
 
+export type FactoryOutputMode = "downloadable" | "web_service" | "railway_app";
+
 export interface ChannelRunSpecInput {
   objective: string;
   acceptanceCriteria: string[];
   constraints: string[];
+  factory?: { outputMode: FactoryOutputMode };
 }
 
 function object(value: unknown, field: string): Record<string, JsonValue> {
@@ -35,6 +38,24 @@ function stringList(value: unknown, field: string, required: boolean): string[] 
   return value.map((item, index) => nonBlank(item, `${field}[${index}]`));
 }
 
+function outputMode(value: unknown): FactoryOutputMode {
+  if (value === "downloadable" || value === "web_service" || value === "railway_app") {
+    return value;
+  }
+  throw new TypeError(
+    "channel intake spec.factory.outputMode must be downloadable, web_service, or railway_app",
+  );
+}
+
+function optionalFactorySpec(value: unknown): ChannelRunSpecInput["factory"] {
+  if (value === undefined) return undefined;
+  const factory = object(value, "channel intake spec.factory");
+  if (Object.keys(factory).length !== 1 || !("outputMode" in factory)) {
+    throw new TypeError("channel intake spec.factory must contain only outputMode");
+  }
+  return { outputMode: outputMode(factory.outputMode) };
+}
+
 export function parseChannelIntakeDecision(output: JsonObject): ChannelIntakeDecision {
   const artifact = object(output.artifact, "channel intake artifact");
   const intake = object(artifact.intake, "channel intake artifact.intake");
@@ -49,6 +70,7 @@ export function parseChannelIntakeDecision(output: JsonObject): ChannelIntakeDec
     throw new TypeError("channel intake status must be needs_clarification or ready");
   }
   const spec = object(intake.spec, "channel intake spec");
+  const factory = optionalFactorySpec(spec.factory);
   return {
     kind: "ready",
     spec: {
@@ -59,6 +81,7 @@ export function parseChannelIntakeDecision(output: JsonObject): ChannelIntakeDec
         true,
       ),
       constraints: stringList(spec.constraints, "channel intake spec.constraints", false),
+      ...(factory ? { factory } : {}),
     },
   };
 }
