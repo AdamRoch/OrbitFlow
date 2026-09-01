@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-state_dir=/home/node/.openclaw
+state_dir=${OPENCLAW_STATE_DIR:-/home/node/.openclaw}
 mkdir -p "$state_dir"
 chown -R node:node "$state_dir"
 runtime_root=${ORBITFLOW_RUNTIME_ROOT:-/var/lib/orbitflow/runtime}

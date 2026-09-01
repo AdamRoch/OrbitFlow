@@ -1,4 +1,4 @@
-FROM ghcr.io/openclaw/openclaw:2026.4.15 AS openclaw-runtime
+FROM ghcr.io/openclaw/openclaw:2026.4.15 AS openclaw-base
 
 FROM node:22.22.2-bookworm-slim AS build
 
@@ -24,8 +24,9 @@ COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitf
 COPY --chown=root:root docker/engine-entrypoint.sh /usr/local/bin/orbitflow-engine-entrypoint
 COPY --chown=root:root docker/tool-broker-entrypoint.sh /usr/local/bin/orbitflow-tool-broker-entrypoint
 COPY --chown=root:root docker/coding-executor-entrypoint.sh /usr/local/bin/orbitflow-coding-executor-entrypoint
+COPY --chown=root:root docker/platform-entrypoint.sh /usr/local/bin/orbitflow-platform-entrypoint
 
-RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint /usr/local/bin/orbitflow-tool-broker-entrypoint /usr/local/bin/orbitflow-coding-executor-entrypoint
+RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint /usr/local/bin/orbitflow-tool-broker-entrypoint /usr/local/bin/orbitflow-coding-executor-entrypoint /usr/local/bin/orbitflow-platform-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-app-entrypoint"]
 CMD ["npm", "run", "start"]
@@ -43,7 +44,7 @@ RUN groupadd --gid 19000 orbitflow-broker-client \
 
 RUN npm ci --prefix coding-adapter --omit=dev
 
-COPY --from=openclaw-runtime /app /opt/openclaw
+COPY --from=openclaw-base /app /opt/openclaw
 
 RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
 RUN chmod 755 /app/scripts/fact-34-isolation-opencode.mjs
@@ -85,3 +86,25 @@ FROM engine AS coding-executor
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-coding-executor-entrypoint"]
 CMD []
+
+FROM app AS web
+
+FROM engine AS platform
+
+ENTRYPOINT ["/usr/local/bin/orbitflow-platform-entrypoint"]
+CMD []
+
+FROM openclaw-gateway AS openclaw-runtime
+
+FROM app AS telegram
+
+CMD ["node", "--experimental-strip-types", "src/runtime/telegram.ts"]
+
+FROM app AS migrate
+
+CMD ["npm", "run", "db:migrate"]
+
+# Railway passes its service name as a Docker build argument. Matching service
+# and stage names lets every service build from this one reviewed Dockerfile.
+ARG RAILWAY_SERVICE_NAME=web
+FROM ${RAILWAY_SERVICE_NAME} AS railway-service
