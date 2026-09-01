@@ -23,11 +23,11 @@ class FakeEventSource extends EventTarget {
 const snapshot: MonitoringSnapshot = {
   filters: { runId: null, agentId: null, messageType: null },
   readAt: "2026-08-10T12:00:00.000Z",
-  runs: [{ id: "9", workflowName: "Release", status: "running", triggerType: "ui", createdAt: "2026-08-10T12:00:00.000Z" }],
+  runs: [{ id: "9", workflowName: "Release", status: "running", triggerType: "ui", workflowVersion: "2026-08-10T12:00:00.000Z", retryOfRunId: null, retryBlockedReason: null, createdAt: "2026-08-10T12:00:00.000Z" }],
   board: [{ id: "11", runId: "9", identifier: "FACT-11", title: "Observe the release", status: "in_progress", priority: 3, assigneeAgentId: "2", assigneeName: "Scout", updatedAt: "2026-08-10T12:00:00.000Z" }],
   trail: [{ id: "14", runId: "9", ticketId: "11", sequenceNumber: "1", sender: "agent:2", recipient: "telegram:adam", type: "question", payload: { body: "Ship?" }, handoffBrief: "Need approval", createdAt: "2026-08-10T12:00:00.000Z" }],
   runsTruncated: false, boardTruncated: false, trailTruncated: false, agentsTruncated: false, runCostsTruncated: false, agentCostsTruncated: false, agentOptionsTruncated: false,
-  agents: [{ id: "2", name: "Scout", role: "worker", status: "waiting-on-question", currentTask: { id: "11", identifier: "FACT-11", title: "Observe the release", runId: "9" }, logs: [], logsTruncated: false }],
+  agents: [{ id: "2", name: "Scout", role: "worker", channel: null, status: "waiting-on-question", currentTask: { id: "11", identifier: "FACT-11", title: "Observe the release", runId: "9" }, logs: [], logsTruncated: false }],
   agentOptions: [{ id: "2", name: "Scout" }, { id: "3", name: "Operator" }],
   runCosts: [{ runId: "9", workflowName: "Release", tokensIn: "100", tokensOut: "10", totalTokens: "110", totalCost: "0.10000001" }],
   agentCosts: [{ runId: "9", workflowName: "Release", agentId: "2", agentName: "Scout", tokensIn: "100", tokensOut: "10", totalTokens: "110", totalCost: "0.10000001", costLimit: "0.2", overCostLimit: false }],

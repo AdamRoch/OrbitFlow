@@ -44,6 +44,15 @@ interface CanonicalWakeInput extends WakeAgentInput {
   toolContext: DispatchToolContext;
 }
 
+function providerEffectUncertain(error: RuntimeAdapterError): boolean {
+  if (error.code === "openclaw_invocation_indeterminate") return true;
+  const diagnostics = error.safeDetails.diagnostics;
+  return typeof diagnostics === "object"
+    && diagnostics !== null
+    && !Array.isArray(diagnostics)
+    && (diagnostics as Record<string, unknown>).metaReplayInvalid === true;
+}
+
 function workerQuestionEvent(output: RuntimeOutput): WorkerQuestionEvent | null {
   const questions = output.events.filter((event) => event.type === "question");
   if (questions.length === 0) return null;
@@ -182,7 +191,11 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
         if (error.code === "openclaw_invocation_indeterminate") {
           throw error;
         }
-        return { kind: "confirmed_failure", reason: bounded(error.message) };
+        return {
+          kind: "confirmed_failure",
+          reason: bounded(error.message),
+          retrySafe: !providerEffectUncertain(error),
+        };
       }
       if (error instanceof Error && error.name === "WorkflowStateError") {
         return { kind: "confirmed_failure", reason: bounded(error.message) };
@@ -224,6 +237,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
             reason: bounded(
               `${error.code}: external effect is uncertain; the provider will not be called again. ${error.message}`,
             ),
+            retrySafe: false,
           };
         }
         if (error.code === "openclaw_invocation_conflict") {

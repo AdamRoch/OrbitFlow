@@ -33,6 +33,8 @@ services:
       target: app
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      ORBITFLOW_OPERATOR_USERNAME: ${ORBITFLOW_OPERATOR_USERNAME:?set ORBITFLOW_OPERATOR_USERNAME in .env}
+      ORBITFLOW_OPERATOR_PASSWORD: ${ORBITFLOW_OPERATOR_PASSWORD:?set ORBITFLOW_OPERATOR_PASSWORD in .env}
     ports:
       - "127.0.0.1:${ORBITFACTORY_APP_PORT:-}:3000"
     depends_on:
@@ -151,6 +153,7 @@ services:
 
   telegram:
     profiles: ["telegram"]
+    restart: unless-stopped
     build:
       context: .
       target: app

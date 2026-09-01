@@ -164,12 +164,20 @@ function monitoringMessageFromRow(row: Row): MonitoringMessageDTO {
   };
 }
 
+function monitoringChannelFromBinding(binding: unknown): MonitoringAgentDTO["channel"] {
+  if (binding === null || typeof binding !== "object" || Array.isArray(binding)) return null;
+  const { provider, chatId } = object(binding);
+  if (typeof provider !== "string" || provider === "") return null;
+  return { provider, chatId: typeof chatId === "string" && chatId !== "" ? chatId : null };
+}
+
 function monitoringAgentFromRow(row: Row): MonitoringAgentDTO {
   const logs = (row.logs as Row[]).slice(0, LOG_LIMIT).map(monitoringMessageFromRow);
   return {
     id: String(row.id),
     name: String(row.name),
     role: String(row.role),
+    channel: monitoringChannelFromBinding(row.channel_binding),
     status: String(row.status) as MonitoringAgentDTO["status"],
     currentTask: row.task_id === null
       ? null
@@ -462,7 +470,9 @@ export class ControlPlaneRepository {
     try {
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
       const runs = await client.query<Row>(
-        `SELECT run.id, workflow.name AS workflow_name, run.status, run.trigger_type, run.created_at
+        `SELECT run.id, workflow.name AS workflow_name, run.status, run.trigger_type,
+                run.created_at, run.workflow_version, run.retry_of_run_id,
+                run.retry_blocked_reason
          FROM workflow_runs AS run JOIN workflows AS workflow ON workflow.id = run.workflow_id
          WHERE ($1::bigint IS NULL OR run.id = $1::bigint)
          ORDER BY run.created_at DESC, run.id DESC LIMIT $2`,
@@ -491,8 +501,10 @@ export class ControlPlaneRepository {
       const pendingQuestions = await client.query<Row>(
         `SELECT question.*, ticket.identifier AS ticket_identifier
          FROM workflow_questions AS question
+         JOIN workflow_runs AS run ON run.id = question.run_id
          LEFT JOIN tickets AS ticket ON ticket.id = question.ticket_id
          WHERE question.run_id = ANY($1::bigint[]) AND question.status = 'pending'
+           AND run.status IN ('running', 'paused')
            AND ($2::bigint IS NULL OR question.target_agent_id = $2::bigint
              OR ticket.assignee_agent_id = $2::bigint)
          ORDER BY question.created_at, question.id LIMIT $3`,
@@ -517,7 +529,7 @@ export class ControlPlaneRepository {
            UNION
            SELECT DISTINCT cost.agent_id FROM cost_events AS cost WHERE cost.run_id = ANY($1::bigint[])
          )
-         SELECT agent.id, agent.name, agent.role, task.id AS task_id, task.identifier AS task_identifier,
+         SELECT agent.id, agent.name, agent.role, agent.channel_binding, task.id AS task_id, task.identifier AS task_identifier,
                 task.title AS task_title, task.run_id AS task_run_id,
                 CASE WHEN unanswered_question.id IS NOT NULL THEN 'waiting-on-question'
                      WHEN task.id IS NOT NULL AND task.status = 'in_progress' AND task.run_status = 'running' THEN 'working'
@@ -602,6 +614,9 @@ export class ControlPlaneRepository {
       runs: retainedRuns.map((row) => ({
         id: String(row.id), workflowName: String(row.workflow_name), status: String(row.status),
         triggerType: String(row.trigger_type), createdAt: iso(row.created_at),
+        workflowVersion: iso(row.workflow_version),
+        retryOfRunId: row.retry_of_run_id === null ? null : String(row.retry_of_run_id),
+        retryBlockedReason: row.retry_blocked_reason === null ? null : String(row.retry_blocked_reason),
       })),
       board: board.rows.slice(0, MONITORING_LIMIT).map((row) => ({
         id: String(row.id), runId: row.run_id === null ? null : String(row.run_id),

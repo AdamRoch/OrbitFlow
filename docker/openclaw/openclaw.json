@@ -12,6 +12,20 @@
         "api": "openai-completions",
         "models": [
           {
+            "id": "z-ai/glm-5.3",
+            "name": "Z.ai GLM 5.3",
+            "reasoning": true,
+            "input": ["text"],
+            "cost": {
+              "input": 1.4,
+              "output": 4.4,
+              "cacheRead": 0.26,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 131072
+          },
+          {
             "id": "z-ai/glm-5.3-flash",
             "name": "Z.ai GLM 5.3 Flash",
             "reasoning": true,
@@ -35,6 +49,7 @@
         "primary": "openrouter/z-ai/glm-5.3-flash"
       },
       "models": {
+        "openrouter/z-ai/glm-5.3": {},
         "openrouter/z-ai/glm-5.3-flash": {}
       }
     }

@@ -94,9 +94,11 @@ runbook](docs/fact-7-docker-compose.md).
 | Variable | Class | Used by | Notes |
 | --- | --- | --- | --- |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Required | Compose PostgreSQL, migrator, app, engine, tool broker | Set all three in `.env`; `POSTGRES_PASSWORD` must be a local secret. |
+| `ORBITFLOW_OPERATOR_USERNAME`, `ORBITFLOW_OPERATOR_PASSWORD` | Required | Web app | HTTP Basic credentials for every web page and API except `/api/health`. If either variable is unset, the web app responds with 503. |
 | `ORBITFACTORY_APP_PORT`, `ORBITFACTORY_ENGINE_HOST_PORT` | Required | Compose host port bindings | Select localhost ports for the app and readiness endpoint. |
 | `OPENROUTER_API_KEY` | Provider credential, required by default Compose | OpenClaw gateway, coding executor; opt-in coding adapter | The only evaluator provider credential in the shipped Compose topology. It is not passed to the engine or tool broker. |
 | `TELEGRAM_BOT_TOKEN` | Optional provider credential | `telegram` profile | Required only when enabling the grammY long-poll adapter. |
+| `ORBITFLOW_TELEGRAM_ALLOWED_CHAT_IDS` | Optional access control | `telegram` profile | Comma-separated Telegram chat ids allowed to start runs. Unset or blank allows every chat. |
 | `ORBITFACTORY_CODING_ADAPTER_BINARY` | Optional / proof override | `coding-adapter` profile | Defaults to `opencode`; the proof selects its committed fake binary with this setting. |
 | `ORBITFLOW_WORKSPACE_ROOT`, `ORBITFLOW_RUNTIME_ROOT` | Compose-supplied | Engine, tool broker, coding executor | Internal mounted paths, not values to put in the normal `.env`. Dispatch attribution is persisted by the engine and verified by the broker. |
 | `ORBITFLOW_OPENCODE_MODEL`, `ORBITFLOW_CODING_TIMEOUT_MS` | Optional runtime tuning | Tool broker, coding executor | Configuration of the pinned coding CLI boundary. |

@@ -28,7 +28,7 @@ dependencies.
 | `postgres` | FACT-6 PostgreSQL authority | `pg_isready` |
 | `migrate` | One-shot ordered FACT-6 migration runner | exits successfully |
 | `app` | Current OrbitTrack-derived board UI plus control-plane API | `GET /api/health`; proof also requires PostgreSQL-backed `GET /api/agents` |
-| `openclaw` | Dedicated FACT-1 gateway container | `GET /readyz` on its internal port |
+| `openclaw` | Dedicated FACT-1 gateway container | one authenticated loopback gateway health RPC establishes the paired CLI identity; later probes use internal `GET /readyz` liveness |
 | `tool-broker` | Privileged dispatch validation and PostgreSQL mutation broker | root-owned Unix socket exists |
 | `coding-executor` | Database-isolated OpenCode execution plane | root-owned Unix socket exists |
 | `engine` | FACT-31 production consumer, dispatcher, scheduler, and runtime adapter | `GET /readyz` after successful consumer and dispatcher polls |
@@ -47,10 +47,28 @@ in its named state volume; it is neither an evaluator-provided credential nor
 baked into an image. The gateway has no host port and accepts only the
 Compose-internal network. Do not publish port `18789`.
 
+The derived gateway image installs `python3`. OpenClaw 2026.4.15 uses
+that executable for its pinned, path-safe workspace writer during
+`agents.create` and `agents.update`. The official image includes Python, but
+OrbitFlow copies only its `/app` tree into the smaller production base, so the
+Dockerfile must restore that runtime and standard-library dependency. The
+`python3-minimal` package is insufficient because the writer imports
+`secrets`. Removing or minimizing it makes gateway agent registration fail
+closed as an unsafe workspace-file error.
+
 The engine image installs Git and the pinned OpenClaw 2026.4.15 CLI used by the
-production runtime adapter. The gateway token is mounted read-only from the
-gateway state volume. Engine runtime state and run workspaces use their own
-durable volume. The engine and tool broker receive no provider credential.
+production runtime adapter. After its authenticated loopback health call, the
+gateway publishes only its token and paired device identity to the dedicated
+`openclaw-client-bootstrap` volume. The engine mounts that volume read-only.
+At startup, it copies only `identity/device.json` and
+`identity/device-auth.json` into its private, writable client state and proves
+that exact client can complete an authenticated gateway health RPC before the
+engine process starts. It cannot read the gateway's full state volume or treat
+that client state as an agent registry.
+Engine runtime state and run workspaces use their own durable volume. This
+identity copy is a Compose bootstrap bridge. ADR 0002 replaces it with the
+`openclaw-runtime` service's authenticated private RPC on Railway, where
+services cannot share volumes. The engine and tool broker receive no provider credential.
 OpenClaw receives `OPENROUTER_API_KEY` for gateway model calls. Production
 OpenCode execution and its scoped child environment are separately owned by
 `coding-executor`, which also receives the provider key. Neither service has a
@@ -76,7 +94,7 @@ package declares Linux `arm64` and `x64` support.
 ## State, restart, teardown
 
 Compose names and deliberately reuses `postgres-data`, `openclaw-state`,
-`engine-data`, and `run-workspaces`. OpenClaw and the engine
+`openclaw-client-bootstrap`, `engine-data`, and `run-workspaces`. OpenClaw and the engine
 share `engine-data` only for runtime and agent workspace state. The gateway's
 one explicitly allowlisted wrapper has no database credential and sends the
 active dispatch context to `tool-broker` over a root-owned socket. The broker
@@ -102,14 +120,18 @@ configuration. It never copies a host home directory, credentials, interactive
 login artifact, or subscription state into an image or volume.
 
 FACT-31's focused production proof is `npm run fact31:proof`. It uses the
-production Compose entrypoint with the deterministic fake OpenClaw request
-path, so it spends no provider credit. It proves operational readiness, a
-ticket-backed UI run, adapter completion, scheduler consumption, duplicate tick
-resistance, two engine restarts, exact migration readiness, and project-scoped
-cleanup. The proof leaves its app and engine host-port variables unset. Docker
-assigns separate `127.0.0.1` ports after startup, and the proof resolves them
-with `docker compose port` before issuing host-side readiness requests. It
-rejects malformed, non-loopback, and out-of-range results.
+production Compose entrypoint with the pinned OpenClaw gateway and a local
+OpenRouter-compatible HTTP provider, so it spends no provider credit. The
+engine has no `OPENROUTER_API_KEY`; the gateway owns the fake key and makes the
+local provider request. The proof confirms that the normal engine dispatch
+creates `orbitflow-<agent-id>` through gateway RPC, returns the fixed strict
+JSON result, consumes a scheduled wake, rejects a duplicate tick, and survives
+two engine restarts. It also proves operational readiness, exact migration
+readiness, and project-scoped cleanup. The proof leaves its app and engine
+host-port variables unset. Docker assigns separate `127.0.0.1` ports after
+startup, and the proof resolves them with `docker compose port` before issuing
+host-side readiness requests. It rejects malformed, non-loopback, and
+out-of-range results.
 
 ## Retained proof command
 

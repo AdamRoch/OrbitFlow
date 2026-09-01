@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SignalIcon } from "@/components/icons";
-import type { MonitoringFilters, MonitoringSnapshot } from "@/lib/control-plane/types";
+import type {
+  MonitoringFilters,
+  MonitoringRunDTO,
+  MonitoringSnapshot,
+} from "@/lib/control-plane/types";
 import { MESSAGE_TYPES } from "@/lib/message-types";
 import { parseStateEvent } from "@/lib/state-events";
 
@@ -182,6 +186,9 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
     chooseTab(next.id);
     tabRefs.current[nextIndex]?.focus();
   };
+  const selectedRun = filters.runId
+    ? snapshot.runs.find((run) => run.id === filters.runId) ?? null
+    : null;
 
   return (
     <div className="space-y-5" aria-busy={loading}>
@@ -239,6 +246,10 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
 
       {snapshot.runsTruncated && <p className="text-xs text-[--foreground-subtle]">Run selector shows the newest 100 retained runs.</p>}
       {snapshot.agentOptionsTruncated && <p className="text-xs text-[--foreground-subtle]">Agent selector shows the first 200 selected-run participants.</p>}
+      {selectedRun && <RunControls run={selectedRun} onChanged={(runId) => {
+        if (runId) applyFilters({ runId });
+        else void refreshSnapshotRef.current(filtersRef.current, true);
+      }} />}
 
       <div role="tabpanel" id={`monitoring-panel-${tab}`} aria-labelledby={`monitoring-tab-${tab}`} tabIndex={0}>
         {tab === "board" && <Board snapshot={snapshot} />}
@@ -248,6 +259,63 @@ export function MonitoringDashboard({ initialSnapshot, initialTab, initialDegrad
       </div>
     </div>
   );
+}
+
+function RunControls({ run, onChanged }: {
+  run: MonitoringRunDTO;
+  onChanged: (runId?: string) => void;
+}) {
+  const [working, setWorking] = useState<"cancel" | "retry" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const retryKey = useRef<string | null>(null);
+  const canCancel = ["pending", "running", "paused"].includes(run.status);
+  const canRetry = ["failed", "canceled"].includes(run.status) && run.retryBlockedReason === null;
+
+  const post = async (action: "cancel" | "retry") => {
+    if (working) return;
+    if (action === "cancel" && !window.confirm("Cancel this run? New workflow work will stop.")) return;
+    if (action === "retry" && !window.confirm("Create a new run from this exact workflow snapshot?")) return;
+    setWorking(action);
+    setNotice(null);
+    try {
+      if (action === "retry" && retryKey.current === null) retryKey.current = crypto.randomUUID();
+      const response = await fetch(`/api/runs/${run.id}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: action === "retry"
+          ? JSON.stringify({ idempotencyKey: retryKey.current })
+          : undefined,
+      });
+      const payload = await response.json() as {
+        id?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok) throw new Error(payload.error?.message ?? `${action} failed`);
+      if (action === "retry" && payload.id) onChanged(payload.id);
+      else onChanged();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : `${action} failed`);
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  return <section aria-label="Run controls" className="rounded-2xl border border-[--border] bg-[--surface-2]/30 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-[--foreground]">Run #{run.id} uses workflow version {formatTime(run.workflowVersion)}</p>
+        <p className="mt-1 text-xs text-[--foreground-subtle]">
+          {run.retryOfRunId ? `Retry of run #${run.retryOfRunId}. ` : ""}Edits to the workflow do not change this run.
+        </p>
+        {run.retryBlockedReason && <p className="mt-2 max-w-3xl text-xs text-[--danger]">Retry blocked. {run.retryBlockedReason}</p>}
+        {notice && <p role="alert" className="mt-2 max-w-3xl text-xs text-[--danger]">{notice}</p>}
+      </div>
+      <div className="flex shrink-0 gap-2">
+        {canCancel && <button type="button" disabled={working !== null} onClick={() => void post("cancel")} className="rounded-lg border border-[--danger]/50 px-3 py-2 text-xs font-medium text-[--danger] disabled:opacity-50">{working === "cancel" ? "Canceling..." : "Cancel run"}</button>}
+        {["failed", "canceled"].includes(run.status) && <button type="button" disabled={!canRetry || working !== null} onClick={() => void post("retry")} className="rounded-lg bg-[--accent] px-3 py-2 text-xs font-semibold text-[#04121a] disabled:opacity-40">{working === "retry" ? "Starting..." : "Retry as new run"}</button>}
+      </div>
+    </div>
+  </section>;
 }
 
 function Board({ snapshot }: { snapshot: MonitoringSnapshot }) {
@@ -310,7 +378,7 @@ function Trail({ snapshot }: { snapshot: MonitoringSnapshot }) {
 function Agents({ snapshot }: { snapshot: MonitoringSnapshot }) {
   return <section aria-label="Agents" className="grid min-w-0 gap-3 sm:grid-cols-2">
     {snapshot.agents.length === 0 ? <div className="sm:col-span-2 glass rounded-2xl"><Empty label="No durable agents match this filter." /></div> : snapshot.agents.map((agent) => <article key={agent.id} className="min-w-0 rounded-2xl glass p-4">
-      <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><h2 className="truncate text-sm font-medium text-[--foreground]">{agent.name}</h2><p className="truncate text-xs text-[--foreground-subtle]">{agent.role}</p></div><span className={`shrink-0 text-xs font-medium ${statusClass(agent.status)}`}>{agent.status.replaceAll("-", " ")}</span></div>
+      <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><h2 className="truncate text-sm font-medium text-[--foreground]">{agent.name}</h2><p className="truncate text-xs text-[--foreground-subtle]">{agent.role}</p><p className="mt-1 truncate text-xs">{agent.channel ? <span className="text-[--accent]">{agent.channel.provider}{agent.channel.chatId ? ` · chat ${agent.channel.chatId}` : ""}</span> : <span className="text-[--foreground-subtle]">No channel</span>}</p></div><span className={`shrink-0 text-xs font-medium ${statusClass(agent.status)}`}>{agent.status.replaceAll("-", " ")}</span></div>
       <p className="mt-4 text-xs text-[--foreground-muted]">Current task</p><p className="mt-1 min-h-5 break-words text-sm text-[--foreground]">{agent.currentTask ? `${agent.currentTask.identifier} · ${agent.currentTask.title}` : "No active assigned ticket"}</p>
       <div className="mt-4 border-t border-[--border] pt-3"><p className="text-xs text-[--foreground-muted]">Task log</p>{agent.logs.length === 0 ? <p className="mt-1 text-xs text-[--foreground-subtle]">No messages attached to the current task.</p> : agent.logs.map((message) => <p key={message.id} className="mt-2 break-words text-xs text-[--foreground-muted]"><span className="text-[--accent]">{message.type}</span> · {message.handoffBrief ?? JSON.stringify(message.payload)}</p>)}{agent.logsTruncated && <p className="mt-2 text-[11px] text-[--foreground-subtle]">Showing the latest three task messages.</p>}</div>
     </article>)}

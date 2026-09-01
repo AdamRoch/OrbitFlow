@@ -23,6 +23,16 @@ retained Telegram chat, sender, and inbound transcript, then stored in
 `workflow_runs.spec`. Only then does the existing workflow-engine edge routing
 enqueue the planner. Invalid specs fail the run before any downstream dispatch.
 
+Any central run-failure transition also changes a still-collecting intake to
+`failed` and clears its pending question in the same transaction. A terminal
+run can therefore never capture later Telegram work. The next message for that
+chat and workflow creates a fresh run and collecting intake.
+
+Inbound processing also repairs retained inconsistent rows under the same
+per-conversation advisory lock: a `collecting` intake whose run is already
+`completed`, `failed`, or `canceled` is closed before active-intake selection.
+This lets the failed FACT-39 row recover without a manual database edit.
+
 The Telegram update receipt prevents duplicate inbound delivery from creating
 another message or run. The partial unique index on collecting conversations
 also serializes distinct updates that race for the same chat and workflow.
@@ -52,8 +62,9 @@ npm run fact16:proof
 
 The proof uses disposable PostgreSQL plus fake runtime and Telegram provider
 boundaries. It covers direct sufficient intake, clarification and restart,
-duplicate delivery, exactly one channel run, strict spec validation, and normal
-engine dispatch to the planner. No Telegram token or model call is used.
+duplicate delivery, exactly one active collecting run, strict spec validation,
+normal engine dispatch to the planner, and recovery from a confirmed runtime
+failure into a fresh run. No Telegram token or model call is used.
 
 For the FACT-17 reporting proof, run:
 

@@ -429,8 +429,11 @@ async function requireTicketForRun(client: PoolClient, ticketId: string, runId: 
 }
 
 async function lockRun(client: PoolClient, runId: string): Promise<void> {
-  const run = await one<Row>(client, "SELECT id FROM workflow_runs WHERE id = $1 FOR UPDATE", [runId]);
+  const run = await one<Row>(client, "SELECT id, status FROM workflow_runs WHERE id = $1 FOR UPDATE", [runId]);
   if (!run) throw new PlatformToolError("run_not_found", "runId does not identify a workflow run");
+  if (run.status !== "running" && run.status !== "paused") {
+    throw new PlatformToolError("run_not_active", `run ${runId} is ${run.status}`);
+  }
 }
 
 async function createTicket(client: PoolClient, input: CreateTicketInput): Promise<PlatformToolResult> {
@@ -527,7 +530,6 @@ async function setTicketDependencies(
   client: PoolClient,
   input: SetTicketDependenciesInput,
 ): Promise<PlatformToolResult> {
-  await lockRun(client, input.runId);
   const blocked = await requireTicketForRun(client, input.ticketId, input.runId);
   if (blocked.status !== "todo") {
     throw new PlatformToolError("ticket_not_todo", "ticket dependencies cannot change after work starts");
@@ -755,11 +757,10 @@ export async function dispatchPlatformTool(
       blockedActions.includes(input.command)
         ? rejectBlockedAction(client, input)
         : operation();
-    if (input.command === "set_ticket_dependencies" || input.command === "update_ticket") {
+    if (input.command !== "list_projects" && input.command !== "list_tickets") {
       // Take the run lock before the idempotency row's run foreign-key lock
-      // and before ticket rows. Assignment, dependency replacement, and every
-      // ticket update therefore share one lock order and cannot form a
-      // lock-upgrade deadlock.
+      // and before ticket rows. Cancel, assignment, and agent mutations therefore
+      // serialize on the same run state.
       await lockRun(client, input.runId);
     }
     if (input.command === "list_projects" || input.command === "list_tickets") {

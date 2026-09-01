@@ -23,6 +23,8 @@ export default defineRailway((ctx) => {
     env: {
       DATABASE_URL: database.env.DATABASE_URL,
       NODE_ENV: "production",
+      ORBITFLOW_OPERATOR_PASSWORD: preserve(),
+      ORBITFLOW_OPERATOR_USERNAME: preserve(),
       PORT: "3000",
       RAILWAY_DOCKERFILE_PATH: "Dockerfile",
     },
@@ -93,6 +95,7 @@ export default defineRailway((ctx) => {
     healthcheckTimeout: 120,
     env: {
       DATABASE_URL: database.env.DATABASE_URL,
+      ORBITFLOW_TELEGRAM_ALLOWED_CHAT_IDS: preserve(),
       ORBITFLOW_TELEGRAM_HEALTH_PORT: "3002",
       PORT: "3002",
       RAILWAY_DOCKERFILE_PATH: "Dockerfile",

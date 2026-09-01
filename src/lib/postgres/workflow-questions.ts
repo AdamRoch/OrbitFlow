@@ -122,3 +122,26 @@ export async function telegramQuestionForReply(
   );
   return result.rows[0] ?? null;
 }
+
+/** Resolve an unthreaded Telegram message only when its chat has one unambiguous active question. */
+export async function uniquePendingTelegramQuestion(
+  transaction: PoolClient,
+  chatId: string,
+): Promise<QueryResultRow | null> {
+  const result = await transaction.query(
+    `SELECT question.*
+     FROM workflow_questions AS question
+     JOIN workflow_runs AS run ON run.id = question.run_id
+     JOIN messages AS outbound ON outbound.id = question.outbound_message_id
+     JOIN telegram_outbound_deliveries AS delivery ON delivery.message_id = outbound.id
+     WHERE question.status = 'pending' AND question.route = 'human-via-channel'
+       AND run.status IN ('running', 'paused')
+       AND outbound.payload ->> 'chatId' = $1
+       AND delivery.status = 'sent'
+     ORDER BY question.created_at, question.id
+     LIMIT 2
+     FOR UPDATE OF question`,
+    [chatId],
+  );
+  return result.rowCount === 1 ? result.rows[0]! : null;
+}

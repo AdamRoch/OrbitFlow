@@ -24,13 +24,20 @@ import {
 } from "../workflow/graph.ts";
 import { telegramInboundForEngine } from "../telegram/adapter.ts";
 import { cronTickForEngine, startScheduleWorker, type ScheduleWorker } from "./scheduling.ts";
-import { parseChannelIntakeDecision } from "../channel-intake.ts";
+import {
+  parseChannelIntakeDecision,
+  type ChannelIntakeDecision,
+} from "../channel-intake.ts";
 import {
   channelStatusRequestForEngine,
   enqueueChannelCompletionEvent,
   routeChannelCompletionEvent,
   routeChannelStatusRequest,
 } from "../channel-reporting.ts";
+import {
+  insertValidatedWorkflowRun,
+  insertWorkflowRetry,
+} from "./workflow-run-launch.ts";
 
 export type WorkflowRunStatus =
   | "pending"
@@ -52,6 +59,9 @@ export interface WorkflowRunRecord {
   totalCost: string;
   failureReason: string | null;
   graphSnapshot: JsonObject | null;
+  workflowVersion: Date | string;
+  retryOfRunId: string | null;
+  retryBlockedReason: string | null;
 }
 
 export interface WorkflowThreadState {
@@ -77,7 +87,7 @@ export interface RuntimeDispatchRequest {
 
 export type RuntimeStartResult =
   | { kind: "started"; sessionId: string }
-  | { kind: "confirmed_failure"; reason: string };
+  | { kind: "confirmed_failure"; reason: string; retrySafe?: boolean };
 
 export type RuntimeReconciliationResult =
   | RuntimeStartResult
@@ -160,6 +170,9 @@ function runFromRow(row: QueryResultRow): WorkflowRunRecord {
     totalCost: row.total_cost,
     failureReason: row.failure_reason,
     graphSnapshot: row.graph_snapshot,
+    workflowVersion: row.workflow_version,
+    retryOfRunId: row.retry_of_run_id,
+    retryBlockedReason: row.retry_blocked_reason,
   };
 }
 
@@ -191,13 +204,13 @@ export async function createWorkflowRun(
     throw new TypeError("triggerType must be channel, ui, or cron");
   }
   const spec = asJsonObject(input.spec, "spec");
-  const result = await pool.query(
-    `INSERT INTO workflow_runs (workflow_id, trigger_type, spec)
-     VALUES ($1, $2, $3)
-     RETURNING *`,
-    [workflowId, input.triggerType, spec],
-  );
-  return runFromRow(result.rows[0]);
+  return inTransaction(pool, async (transaction) => runFromRow(
+    await insertValidatedWorkflowRun(transaction, {
+      workflowId,
+      triggerType: input.triggerType,
+      spec,
+    }),
+  ));
 }
 
 export async function getWorkflowRun(
@@ -672,8 +685,15 @@ async function failRun(
   runId: string,
   code: string,
   reason: string,
+  retryBlockedReason: string | null = null,
 ): Promise<void> {
   const bounded = boundedReason(reason);
+  await transaction.query(
+    `UPDATE tickets
+     SET status = 'canceled', assignee_agent_id = NULL, updated_at = clock_timestamp()
+     WHERE run_id = $1 AND status IN ('todo', 'in_progress')`,
+    [runId],
+  );
   await transaction.query(
     `UPDATE workflow_dispatches
      SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
@@ -682,15 +702,26 @@ async function failRun(
      WHERE run_id = $1 AND status IN ('pending', 'dispatching', 'reconciling', 'active')`,
     [runId, bounded],
   );
-  const changed = await transaction.query(
+  const changed = await transaction.query<{
+    channel_provider: string | null;
+    chat_id: string | null;
+  }>(
     `UPDATE workflow_runs
      SET status = 'failed', failure_reason = $2,
+         retry_blocked_reason = COALESCE(retry_blocked_reason, $3),
          ended_at = clock_timestamp(), updated_at = clock_timestamp()
      WHERE id = $1 AND status IN ('pending', 'running', 'paused')
-     RETURNING id`,
-    [runId, bounded],
+     RETURNING spec #>> '{channelContext,provider}' AS channel_provider,
+               spec #>> '{channelContext,chat,id}' AS chat_id`,
+    [runId, bounded, retryBlockedReason],
   );
   if (changed.rowCount === 1) {
+    await transaction.query(
+      `UPDATE channel_intakes
+       SET status = 'failed', last_question = NULL, updated_at = clock_timestamp()
+       WHERE run_id = $1 AND status = 'collecting'`,
+      [runId],
+    );
     await insertMessage(transaction, {
       runId,
       sender: "system:workflow-engine",
@@ -698,6 +729,18 @@ async function failRun(
       type: "system",
       payload: { code, message: bounded },
     });
+    const channel = changed.rows[0]!;
+    if (channel.channel_provider === "telegram" && channel.chat_id) {
+      const text = `Your request could not be completed: ${bounded}. Send a new message to start again.`;
+      await insertMessage(transaction, {
+        runId,
+        sender: "system:workflow-engine",
+        recipient: `telegram:chat:${channel.chat_id}`,
+        type: "channel_outbound",
+        payload: { provider: "telegram", chatId: channel.chat_id, text },
+        handoffBrief: text,
+      });
+    }
   }
 }
 
@@ -706,11 +749,9 @@ async function startWorkflowRunInTransaction(
   runId: string,
 ): Promise<WorkflowRunRecord> {
     const result = await transaction.query(
-      `SELECT run.*, workflow.graph
-       FROM workflow_runs AS run
-       JOIN workflows AS workflow ON workflow.id = run.workflow_id
-       WHERE run.id = $1
-       FOR UPDATE OF run, workflow`,
+      `SELECT * FROM workflow_runs
+       WHERE id = $1
+       FOR UPDATE`,
       [runId],
     );
     if (!result.rows[0]) throw new WorkflowStateError(`workflow run ${runId} not found`);
@@ -718,11 +759,7 @@ async function startWorkflowRunInTransaction(
     if (row.status !== "pending") return runFromRow(row);
 
     try {
-      const graph = parseWorkflowGraph(row.graph);
-      await transaction.query(
-        "UPDATE workflow_runs SET graph_snapshot = $2 WHERE id = $1",
-        [runId, row.graph],
-      );
+      const graph = parseWorkflowGraph(row.graph_snapshot);
       const agentIds = [...new Set(graph.nodes.map((node) => node.agentId))];
       const lockedAgents = await transaction.query(
         "SELECT id FROM agents WHERE id = ANY($1::bigint[]) FOR KEY SHARE",
@@ -798,6 +835,129 @@ export async function pauseWorkflowRun(pool: Pool, runId: DatabaseId) {
 
 export async function resumeWorkflowRun(pool: Pool, runId: DatabaseId) {
   return transitionRun(pool, runId, "paused", "running");
+}
+
+export async function cancelWorkflowRun(
+  pool: Pool,
+  runIdValue: DatabaseId,
+): Promise<WorkflowRunRecord> {
+  const runId = positiveId(runIdValue, "runId");
+  return inTransaction(pool, async (transaction) => {
+    const result = await transaction.query(
+      "SELECT * FROM workflow_runs WHERE id = $1 FOR UPDATE",
+      [runId],
+    );
+    if (!result.rows[0]) throw new WorkflowStateError(`workflow run ${runId} not found`);
+    if (result.rows[0].status === "canceled") return runFromRow(result.rows[0]);
+    if (!["pending", "running", "paused"].includes(result.rows[0].status)) {
+      throw new WorkflowStateError(
+        `workflow run ${runId} cannot be canceled while ${result.rows[0].status}`,
+      );
+    }
+
+    const uncertain = await transaction.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM workflow_dispatches
+       WHERE run_id = $1
+         AND status IN ('dispatching', 'reconciling', 'active')
+         AND output_message_id IS NULL`,
+      [runId],
+    );
+    const retryBlockedReason = uncertain.rows[0]!.count === "0"
+      ? null
+      : "A provider invocation was in flight when the run was canceled. Its external effects may have completed.";
+
+    await transaction.query(
+      `UPDATE tickets
+       SET status = 'canceled', assignee_agent_id = NULL,
+           updated_at = clock_timestamp()
+       WHERE run_id = $1 AND status IN ('backlog', 'todo', 'in_progress')`,
+      [runId],
+    );
+    await transaction.query(
+      `UPDATE channel_intakes
+       SET status = 'failed', last_question = NULL, updated_at = clock_timestamp()
+       WHERE run_id = $1 AND status = 'collecting'`,
+      [runId],
+    );
+    const changed = await transaction.query(
+      `UPDATE workflow_runs
+       SET status = 'canceled', ended_at = clock_timestamp(),
+           retry_blocked_reason = $2, updated_at = clock_timestamp()
+       WHERE id = $1
+       RETURNING *`,
+      [runId, retryBlockedReason],
+    );
+    await insertMessage(transaction, {
+      runId,
+      sender: "human:ui",
+      recipient: "system:workflow-engine",
+      type: "system",
+      payload: {
+        code: "workflow_run_canceled",
+        message: retryBlockedReason
+          ? "Run canceled. No new work will start. Retry is blocked because a provider effect is uncertain."
+          : "Run canceled. No new work will start.",
+      },
+    });
+    return runFromRow(changed.rows[0]);
+  });
+}
+
+export async function retryWorkflowRun(
+  pool: Pool,
+  runIdValue: DatabaseId,
+  retryRequestKeyValue: string,
+): Promise<WorkflowRunRecord> {
+  const runId = positiveId(runIdValue, "runId");
+  const retryRequestKey = nonBlank(retryRequestKeyValue, "retryRequestKey");
+  return inTransaction(pool, async (transaction) => {
+    const source = await transaction.query(
+      "SELECT * FROM workflow_runs WHERE id = $1 FOR UPDATE",
+      [runId],
+    );
+    if (!source.rows[0]) throw new WorkflowStateError(`workflow run ${runId} not found`);
+    if (!["failed", "canceled"].includes(source.rows[0].status)) {
+      throw new WorkflowStateError(
+        `workflow run ${runId} cannot be retried while ${source.rows[0].status}`,
+      );
+    }
+    if (source.rows[0].retry_blocked_reason) {
+      throw new WorkflowStateError(String(source.rows[0].retry_blocked_reason));
+    }
+
+    const existing = await transaction.query(
+      `SELECT * FROM workflow_runs
+       WHERE retry_of_run_id = $1 AND retry_request_key = $2`,
+      [runId, retryRequestKey],
+    );
+    if (existing.rows[0]) return runFromRow(existing.rows[0]);
+
+    const inserted = await insertWorkflowRetry(transaction, source.rows[0], retryRequestKey);
+    await insertMessage(transaction, {
+      runId,
+      sender: "human:ui",
+      recipient: "system:workflow-engine",
+      type: "system",
+      payload: {
+        code: "workflow_run_retried",
+        message: `Created retry run ${inserted.id} from the original workflow snapshot.`,
+        retryRunId: String(inserted.id),
+      },
+    });
+    await insertMessage(transaction, {
+      runId: String(inserted.id),
+      sender: "system:workflow-engine",
+      recipient: "system:operators",
+      type: "system",
+      payload: {
+        code: "workflow_run_retry_created",
+        message: `Retry of run ${runId} using its original workflow snapshot.`,
+        originalRunId: runId,
+      },
+    });
+    return startWorkflowRunInTransaction(transaction, String(inserted.id));
+  });
 }
 
 function threadFromRow(row: QueryResultRow): WorkflowThreadState {
@@ -1253,7 +1413,7 @@ export async function dispatchNextWorkflowNode(
       [claimed.id, claimed.leaseOwner, claimed.leaseGeneration, sessionId],
     );
   };
-  const persistConfirmedFailure = async (reasonValue: unknown) => {
+  const persistConfirmedFailure = async (reasonValue: unknown, retrySafe = true) => {
     const reason = boundedReason(nonBlank(reasonValue, "runtime failure reason"));
     await inTransaction(pool, async (transaction) => {
       await transaction.query("SELECT id FROM workflow_runs WHERE id = $1 FOR UPDATE", [
@@ -1270,7 +1430,13 @@ export async function dispatchNextWorkflowNode(
         [claimed.id, claimed.leaseOwner, claimed.leaseGeneration, reason],
       );
       if (failed.rows[0]) {
-        await failRun(transaction, failed.rows[0].run_id, "runtime_dispatch_failed", reason);
+        await failRun(
+          transaction,
+          failed.rows[0].run_id,
+          "runtime_dispatch_failed",
+          reason,
+          retrySafe ? null : "The provider reported possible external effects without a trustworthy output.",
+        );
       }
     });
   };
@@ -1281,7 +1447,7 @@ export async function dispatchNextWorkflowNode(
       if (result?.kind === "started") {
         await persistStarted(result.sessionId);
       } else if (result?.kind === "confirmed_failure") {
-        await persistConfirmedFailure(result.reason);
+        await persistConfirmedFailure(result.reason, result.retrySafe !== false);
       } else {
         throw new TypeError("runtime start returned an invalid result");
       }
@@ -1308,7 +1474,7 @@ export async function dispatchNextWorkflowNode(
     } else if (result?.kind === "pending") {
       await persistUncertainty(nonBlank(result.reason, "runtime reconciliation reason"));
     } else if (result?.kind === "confirmed_failure") {
-      await persistConfirmedFailure(result.reason);
+      await persistConfirmedFailure(result.reason, result.retrySafe !== false);
     } else {
       throw new TypeError("runtime reconciliation returned an invalid result");
     }
@@ -1492,6 +1658,7 @@ async function handleChannelIntakeOutput(
   | { kind: "not_intake" }
   | { kind: "waiting" }
   | { kind: "already_ready" }
+  | { kind: "contract_violation"; error: string }
   | { kind: "ready"; spec: JsonObject }
 > {
   if (run.trigger_type !== "channel") return { kind: "not_intake" };
@@ -1509,7 +1676,13 @@ async function handleChannelIntakeOutput(
     throw new WorkflowGraphError(`channel intake is ${intake.status}`);
   }
 
-  const decision = parseChannelIntakeDecision(output);
+  let decision: ChannelIntakeDecision;
+  try {
+    decision = parseChannelIntakeDecision(output);
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    return { kind: "contract_violation", error: boundedReason(error) };
+  }
   const existingSpec = asJsonObject(run.spec, "workflow run spec");
   const channelContext = asJsonObject(
     existingSpec.channelContext,
@@ -1556,7 +1729,8 @@ async function handleChannelIntakeOutput(
     [run.workflow_id],
   );
   const softwareFactory = workflow.rows[0]?.name === "Software Factory";
-  if (softwareFactory !== (decision.spec.factory !== undefined)) {
+  const factory = decision.spec.factory;
+  if (softwareFactory !== (factory !== undefined)) {
     throw new WorkflowGraphError(
       softwareFactory
         ? "Software Factory intake requires spec.factory.outputMode"
@@ -1569,7 +1743,7 @@ async function handleChannelIntakeOutput(
     objective: decision.spec.objective,
     acceptanceCriteria: decision.spec.acceptanceCriteria,
     constraints: decision.spec.constraints,
-    ...(decision.spec.factory ? { factory: decision.spec.factory } : {}),
+    ...(factory ? { factory } : {}),
     channelContext,
   };
   const changed = await transaction.query(
@@ -1826,7 +2000,7 @@ export async function routeWorkflowMessage(
   }
   if (message.type === "system" && await routeChannelCompletionEvent(transaction, message)) return;
   if (await routeTicketStreamEvent(transaction, message)) return;
-  if (message.type !== "output") return;
+  if (message.type !== "output" || message.recipient !== "workflow-engine") return;
   const runResult = await transaction.query(
     `SELECT run.*
      FROM workflow_runs AS run
@@ -1836,7 +2010,55 @@ export async function routeWorkflowMessage(
   );
   if (!runResult.rows[0]) throw new WorkflowStateError(`run ${message.runId} disappeared`);
   const run = runResult.rows[0];
-  if (["completed", "failed", "canceled"].includes(run.status)) return;
+  if (["completed", "failed", "canceled"].includes(run.status)) {
+    let parsed: ReturnType<typeof parseOutputMessage>;
+    try {
+      parsed = parseOutputMessage(message);
+    } catch {
+      return;
+    }
+    const dispatchResult = await transaction.query<{
+      agent_id: string;
+      agent_model: string;
+    }>(
+      `SELECT agent_id, agent_model
+       FROM workflow_dispatches
+       WHERE id = $1 AND run_id = $2`,
+      [parsed.dispatchId, message.runId],
+    );
+    const dispatch = dispatchResult.rows[0];
+    if (!dispatch) return;
+    let usage: ReturnType<typeof parseUsage>;
+    try {
+      usage = parseUsage(message.tokenUsage);
+    } catch {
+      return;
+    }
+    if (usage) {
+      await transaction.query(
+        `INSERT INTO cost_events (
+           run_id, agent_id, model, tokens_in, tokens_out, computed_cost
+         ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          message.runId,
+          dispatch.agent_id,
+          dispatch.agent_model,
+          usage.input,
+          usage.output,
+          usage.cost,
+        ],
+      );
+      await transaction.query(
+        `UPDATE workflow_runs
+         SET total_tokens = total_tokens + $2,
+             total_cost = total_cost + $3,
+             updated_at = clock_timestamp()
+         WHERE id = $1`,
+        [message.runId, usage.input + usage.output, usage.cost],
+      );
+    }
+    return;
+  }
 
   let parsed: {
     dispatchId: string;
@@ -1929,7 +2151,9 @@ export async function routeWorkflowMessage(
       parsed.output,
     );
     const evaluation =
-      intake.kind === "waiting" || intake.kind === "already_ready"
+      intake.kind === "waiting"
+        || intake.kind === "already_ready"
+        || intake.kind === "contract_violation"
         ? null
         : evaluateGraph(graph, dispatch.node_id, parsed.output);
     const runSpec = intake.kind === "ready" ? intake.spec : run.spec;
@@ -1970,6 +2194,45 @@ export async function routeWorkflowMessage(
       [dispatch.id, parsed.sessionId, message.id, parsed.dispatchGeneration],
     );
     await routeScheduledStandup(transaction, run, message, parsed);
+    if (intake.kind === "contract_violation") {
+      const counted = await transaction.query<{ correction_count: number }>(
+        `UPDATE channel_intakes
+         SET correction_count = correction_count + 1, updated_at = clock_timestamp()
+         WHERE run_id = $1 AND status = 'collecting' AND correction_count < 2
+         RETURNING correction_count`,
+        [message.runId],
+      );
+      if (!counted.rows[0]) {
+        await failRun(
+          transaction,
+          message.runId,
+          "intake_contract_violation",
+          intake.error,
+        );
+        return;
+      }
+      const corrective = await insertMessage(transaction, {
+        runId: message.runId,
+        sender: "system:workflow-engine",
+        recipient: `agent:${dispatch.agent_id}`,
+        type: "system",
+        payload: { code: "intake_contract_violation", error: intake.error },
+        handoffBrief:
+          `Your previous reply failed validation: ${intake.error}. `
+          + `Reply again with only the exact JSON contract from your instructions. `
+          + `Do not add, move, or rename fields.`,
+      });
+      const entryNode = graph.nodes.find((node) => node.id === dispatch.node_id)!;
+      await enqueueNode(transaction, {
+        runId: message.runId,
+        spec: asJsonObject(run.spec, "workflow run spec"),
+        node: entryNode,
+        sourceMessage: corrective,
+        sourceOutput: parsed.output,
+        inheritedTicketId: null,
+      });
+      return;
+    }
     if (intake.kind === "waiting" || intake.kind === "already_ready") return;
     await materializeFanoutCapacity(transaction, message.runId, dispatch.node_id);
     const completedNode = graph.nodes.find((node) => node.id === dispatch.node_id)!;
@@ -1995,12 +2258,6 @@ export async function routeWorkflowMessage(
     await finishRunIfIdle(transaction, message.runId);
   } catch (error) {
     if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;
-    await transaction.query(
-      `UPDATE channel_intakes
-       SET status = 'failed', last_question = NULL, updated_at = clock_timestamp()
-       WHERE run_id = $1 AND status = 'collecting'`,
-      [message.runId],
-    );
     await failRun(
       transaction,
       message.runId,
@@ -2020,22 +2277,16 @@ async function routeScheduledStandup(
   const spec = asJsonObject(run.spec, "workflow run spec");
   const schedule = spec.schedule;
   if (!schedule || typeof schedule !== "object" || Array.isArray(schedule) || spec.standup === undefined) return;
-  const chat = await transaction.query<{ chat_id: string }>(
-    `SELECT payload #>> '{chat,id}' AS chat_id
-     FROM messages
-     WHERE type = 'channel_inbound' AND payload ->> 'provider' = 'telegram'
-       AND payload #>> '{chat,id}' IS NOT NULL
-     ORDER BY created_at DESC, id DESC LIMIT 1`,
-  );
-  if (!chat.rows[0]) return;
+  const chatId = typeof spec.standupChatId === "string" ? spec.standupChatId : null;
+  if (!chatId) return;
   const text = message.handoffBrief?.trim()
     || (typeof output.output.summary === "string" ? output.output.summary.trim() : "Daily standup complete.");
   await insertMessage(transaction, {
     runId: message.runId,
     sender: "system:daily-standup",
-    recipient: `telegram:chat:${chat.rows[0].chat_id}`,
+    recipient: `telegram:chat:${chatId}`,
     type: "channel_outbound",
-    payload: { provider: "telegram", chatId: chat.rows[0].chat_id, text },
+    payload: { provider: "telegram", chatId, text },
   });
 }
 
@@ -2049,11 +2300,9 @@ async function routeChannelInbound(
   message: MessageRow,
 ): Promise<void> {
   const runResult = await transaction.query(
-    `SELECT run.*, workflow.graph
-     FROM workflow_runs AS run
-     JOIN workflows AS workflow ON workflow.id = run.workflow_id
-     WHERE run.id = $1
-     FOR UPDATE OF run, workflow`,
+    `SELECT * FROM workflow_runs
+     WHERE id = $1
+     FOR UPDATE`,
     [message.runId],
   );
   if (!runResult.rows[0]) throw new WorkflowStateError(`run ${message.runId} disappeared`);
@@ -2065,7 +2314,7 @@ async function routeChannelInbound(
     if (run.trigger_type !== "channel") {
       throw new WorkflowGraphError("channel inbound message belongs to a non-channel run");
     }
-    const graph = parseWorkflowGraph(run.graph);
+    const graph = parseWorkflowGraph(run.graph_snapshot);
     const entryNode = graph.nodes.find((node) => node.id === workflowEntryNodeId(graph))!;
     if (entryNode.config.channelBinding !== true) {
       throw new WorkflowGraphError("channel workflow entry is not channel-bound");
@@ -2080,10 +2329,10 @@ async function routeChannelInbound(
     if (run.status === "pending") {
       await transaction.query(
         `UPDATE workflow_runs
-         SET status = 'running', graph_snapshot = $2, started_at = clock_timestamp(),
+         SET status = 'running', started_at = clock_timestamp(),
              updated_at = clock_timestamp()
          WHERE id = $1`,
-        [message.runId, run.graph],
+        [message.runId],
       );
     } else {
       const intake = await transaction.query<{ status: string }>(

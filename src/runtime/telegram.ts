@@ -12,10 +12,17 @@ const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
 const databaseUrl = process.env.DATABASE_URL;
 const apiRoot = process.env.ORBITFLOW_TELEGRAM_API_ROOT?.trim();
 const healthPort = Number(process.env.ORBITFLOW_TELEGRAM_HEALTH_PORT ?? "3002");
+const allowedChatIdsValue = process.env.ORBITFLOW_TELEGRAM_ALLOWED_CHAT_IDS?.trim();
+const allowedChatIds = new Set(
+  allowedChatIdsValue ? allowedChatIdsValue.split(",").map((chatId) => chatId.trim()) : [],
+);
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required for the Telegram adapter");
 if (!databaseUrl) throw new Error("DATABASE_URL is required for the Telegram adapter");
 if (!Number.isSafeInteger(healthPort) || healthPort < 1 || healthPort > 65_535) {
   throw new Error("ORBITFLOW_TELEGRAM_HEALTH_PORT is invalid");
+}
+if ([...allowedChatIds].some((chatId) => !/^-?\d+$/.test(chatId))) {
+  throw new Error("ORBITFLOW_TELEGRAM_ALLOWED_CHAT_IDS is invalid");
 }
 
 const pool = new Pool({
@@ -32,11 +39,16 @@ const outbound = startTelegramOutboundWorker(pool, {
 });
 
 bot.on("message:text", async (context) => {
+  const chatId = String(context.chat.id);
+  if (allowedChatIds.size > 0 && !allowedChatIds.has(chatId)) {
+    process.stderr.write(`telegram: dropped update from unlisted chat ${chatId}\n`);
+    return;
+  }
   await ingestTelegramInbound(pool, telegramInboundFromGrammyUpdate(context.update));
 });
 
 bot.catch((error) => {
-  process.stderr.write(`Telegram update failed: ${error.message}\n`);
+  process.stderr.write(`Telegram update failed: ${error.message}\n`, () => process.exit(1));
 });
 
 const healthServer = http.createServer(async (request, response) => {

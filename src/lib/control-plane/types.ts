@@ -118,6 +118,9 @@ export interface MonitoringRunDTO {
   status: string;
   triggerType: string;
   createdAt: string;
+  workflowVersion: string;
+  retryOfRunId: string | null;
+  retryBlockedReason: string | null;
 }
 
 export interface MonitoringTicketDTO {
@@ -165,6 +168,8 @@ export interface MonitoringAgentDTO {
   id: string;
   name: string;
   role: string;
+  /** Bound external channel from the agent's channel_binding, null when unbound. */
+  channel: { provider: string; chatId: string | null } | null;
   status: MonitoringAgentStatus;
   currentTask: { id: string; identifier: string; title: string; runId: string } | null;
   logs: MonitoringMessageDTO[];

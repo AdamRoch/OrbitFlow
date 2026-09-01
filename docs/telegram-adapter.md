@@ -20,6 +20,11 @@ creates a channel workflow run and a Telegram-specific update receipt. A
 repeated long-poll update returns the original run/message instead of starting
 a second workflow.
 
+If a Telegram handler fails, the runner writes the error and exits. Compose
+restarts the `telegram` service with `unless-stopped`; Railway restarts crashed
+services by default. Long polling then resumes from the unconfirmed offset, and
+the retained Telegram update receipt absorbs a redelivered update.
+
 An explicit reply to a sent, pending Factory question is stored as an `answer`
 for that exact run and ticket. Correlation requires the Telegram chat id and
 replied-to message id to match the durable outbound delivery. Missing,

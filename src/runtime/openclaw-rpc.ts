@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -322,7 +323,12 @@ async function readJson(request: IncomingMessage, limit: number): Promise<Record
 }
 
 function requireAuthorization(request: IncomingMessage): void {
-  if (request.headers.authorization !== `Bearer ${TOKEN}`) {
+  const authorizationBytes = Buffer.from(request.headers.authorization ?? "");
+  const tokenBytes = Buffer.from(`Bearer ${TOKEN}`);
+  if (
+    authorizationBytes.length !== tokenBytes.length ||
+    !timingSafeEqual(authorizationBytes, tokenBytes)
+  ) {
     const error = new Error("authorization required");
     (error as Error & { statusCode?: number }).statusCode = 401;
     throw error;

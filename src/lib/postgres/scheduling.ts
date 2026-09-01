@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { insertMessage, type JsonObject, type MessageRow } from "./message-bus.ts";
+import { insertValidatedWorkflowRun } from "./workflow-run-launch.ts";
 
 export type ScheduleTickResult =
   | { kind: "created"; scheduleId: string; tickKey: string; runId: string; messageId: string }
@@ -122,16 +123,29 @@ export async function publishScheduleTick(
     if (previous.rows[0]) return { kind: "duplicate", scheduleId, tickKey, runId: previous.rows[0].run_id, messageId: previous.rows[0].message_id };
     const workflowId = await executionWorkflow(client, schedule);
     const standup = isStandup(schedule) ? await standupInputs(client, at) : null;
+    const standupChat = standup && schedule.agent_id
+      ? await client.query<{ chat_id: string }>(
+          `SELECT channel_binding ->> 'chatId' AS chat_id
+           FROM agents
+           WHERE id = $1
+             AND channel_binding ->> 'provider' = 'telegram'
+             AND NULLIF(channel_binding ->> 'chatId', '') IS NOT NULL`,
+          [schedule.agent_id],
+        )
+      : null;
+    const standupChatId = standupChat?.rows[0]?.chat_id;
     const spec: JsonObject = {
       schedule: { id: scheduleId, tickKey, source: input.source, ...(schedule.agent_id ? { agentId: schedule.agent_id, standingTask: schedule.task_prompt! } : {}) },
       ...(standup ? { standup } : {}),
+      ...(standupChatId ? { standupChatId } : {}),
     };
-    const run = await client.query<{ id: string }>(
-      "INSERT INTO workflow_runs (workflow_id, trigger_type, spec) VALUES ($1, 'cron', $2) RETURNING id",
-      [workflowId, spec],
-    );
+    const run = await insertValidatedWorkflowRun(client, {
+      workflowId,
+      triggerType: "cron",
+      spec,
+    });
     const message = await insertMessage(client, {
-      runId: run.rows[0]!.id,
+      runId: String(run.id),
       sender: "system:scheduler",
       recipient: "system:workflow-engine",
       type: "cron_tick",
@@ -140,9 +154,9 @@ export async function publishScheduleTick(
     });
     await client.query(
       "INSERT INTO schedule_ticks (schedule_id, tick_key, run_id, message_id) VALUES ($1, $2, $3, $4)",
-      [scheduleId, tickKey, run.rows[0]!.id, message.id],
+      [scheduleId, tickKey, run.id, message.id],
     );
-    return { kind: "created", scheduleId, tickKey, runId: run.rows[0]!.id, messageId: message.id };
+    return { kind: "created", scheduleId, tickKey, runId: String(run.id), messageId: message.id };
   });
 }
 

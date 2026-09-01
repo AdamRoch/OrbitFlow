@@ -15,6 +15,8 @@ export function createProductionWorkspaceTools(
     "Only workflow-engine assignment moves tickets to in_progress. Agents cannot set that status.",
     "Replace <unique-suffix> with a new short value for each command invocation.",
     "Use only the commands required by the node prompt.",
+    `Copy the command path exactly as ${tool}. It is absolute and must begin with /.`,
+    "Work only on the ticket bound to this dispatch. Do not implement another listed ticket.",
     "",
     "### list_projects",
     `${tool} list_projects '${JSON.stringify({
@@ -78,6 +80,7 @@ export function createProductionWorkspaceTools(
     "",
     "### delegate_coding_task",
     "Replace <task> with a JSON-escaped and shell-quoted task description.",
+    "Keep the single quotes around the entire JSON object.",
     `${tool} delegate_coding_task '${JSON.stringify({ task: "<task>" })}'`,
   ].join("\n");
 }

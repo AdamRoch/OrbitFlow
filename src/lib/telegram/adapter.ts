@@ -12,7 +12,11 @@ import {
 } from "../workflow/graph.ts";
 import { collectingChannelSpec } from "../channel-intake.ts";
 import { isChannelStatusRequest } from "../channel-reporting.ts";
-import { telegramQuestionForReply } from "../postgres/workflow-questions.ts";
+import {
+  telegramQuestionForReply,
+  uniquePendingTelegramQuestion,
+} from "../postgres/workflow-questions.ts";
+import { insertValidatedWorkflowRun } from "../postgres/workflow-run-launch.ts";
 
 export interface TelegramInboundUpdate {
   updateId: number;
@@ -231,35 +235,35 @@ export async function ingestTelegramInbound(
 
     const chat = payload.chat as JsonObject;
     const replyToMessageId = payload.replyToMessageId as string | undefined;
-    if (replyToMessageId) {
-      const question = await telegramQuestionForReply(
+    const question = replyToMessageId
+      ? await telegramQuestionForReply(
         transaction,
         chat.id as string,
         replyToMessageId,
+      )
+      : await uniquePendingTelegramQuestion(transaction, chat.id as string);
+    if (question) {
+      const answer = await insertMessage(transaction, {
+        runId: question.run_id,
+        ticketId: question.ticket_id,
+        sender: `telegram:chat:${chat.id as string}`,
+        recipient: "workflow-engine",
+        type: "answer",
+        payload: {
+          provider: "telegram",
+          questionId: question.id,
+          answer: payload.text as string,
+          updateId,
+          ...(replyToMessageId ? { replyToMessageId } : {}),
+        },
+        handoffBrief: payload.text as string,
+      });
+      await transaction.query(
+        `INSERT INTO telegram_inbound_updates (update_id, run_id, message_id)
+         VALUES ($1, $2, $3)`,
+        [updateId, question.run_id, answer.id],
       );
-      if (question) {
-        const answer = await insertMessage(transaction, {
-          runId: question.run_id,
-          ticketId: question.ticket_id,
-          sender: `telegram:chat:${chat.id as string}`,
-          recipient: "workflow-engine",
-          type: "answer",
-          payload: {
-            provider: "telegram",
-            questionId: question.id,
-            answer: payload.text as string,
-            updateId,
-            replyToMessageId,
-          },
-          handoffBrief: payload.text as string,
-        });
-        await transaction.query(
-          `INSERT INTO telegram_inbound_updates (update_id, run_id, message_id)
-           VALUES ($1, $2, $3)`,
-          [updateId, question.run_id, answer.id],
-        );
-        return { kind: "accepted", runId: question.run_id, messageId: answer.id };
-      }
+      return { kind: "accepted", runId: question.run_id, messageId: answer.id };
     }
 
     const target = await boundEntry(transaction);
@@ -268,6 +272,16 @@ export async function ingestTelegramInbound(
     await transaction.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [`orbitflow:channel-intake:telegram:${conversationKey}:${target.workflow_id}`],
+    );
+    await transaction.query(
+      `UPDATE channel_intakes AS intake
+       SET status = 'failed', last_question = NULL, updated_at = clock_timestamp()
+       FROM workflow_runs AS run
+       WHERE run.id = intake.run_id
+         AND intake.provider = 'telegram' AND intake.conversation_key = $1
+         AND intake.workflow_id = $2 AND intake.status = 'collecting'
+         AND run.status IN ('completed', 'failed', 'canceled')`,
+      [conversationKey, target.workflow_id],
     );
     const collecting = await transaction.query<{ run_id: string }>(
       `SELECT run_id
@@ -292,24 +306,18 @@ export async function ingestTelegramInbound(
         [conversationKey, target.workflow_id],
       );
     const existingRunId = collecting.rows[0]?.run_id ?? active?.rows[0]?.run_id;
-    const run = await transaction.query<{ id: string }>(
-      existingRunId
-        ? "SELECT $1::bigint AS id"
-        : `INSERT INTO workflow_runs (workflow_id, trigger_type, spec)
-           VALUES ($1, 'channel', $2)
-           RETURNING id`,
-      existingRunId
-        ? [existingRunId]
-        : [target.workflow_id, collectingChannelSpec({
-            provider: "telegram",
-            chat,
-            ...(payload.from ? { from: payload.from as JsonObject } : {}),
-            messageId: payload.messageId as string,
-            updateId,
-            text,
-          })],
-    );
-    const runId = run.rows[0]!.id;
+    const runId = existingRunId ?? String((await insertValidatedWorkflowRun(transaction, {
+      workflowId: target.workflow_id,
+      triggerType: "channel",
+      spec: collectingChannelSpec({
+        provider: "telegram",
+        chat,
+        ...(payload.from ? { from: payload.from as JsonObject } : {}),
+        messageId: payload.messageId as string,
+        updateId,
+        text,
+      }),
+    })).id);
     const message = await insertMessage(transaction, {
       runId,
       sender: `telegram:chat:${chat.id as string}`,
