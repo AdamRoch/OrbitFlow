@@ -37,10 +37,10 @@ type NodeCardData = { label: string; agent: string; detail: string; entry: boole
 const inputClass = "w-full rounded-xl border border-[--border-strong] bg-[--background]/55 px-3 py-2 text-sm text-[--foreground] transition focus:border-[--accent] focus:outline-none";
 const labelClass = "grid gap-1.5 text-xs font-medium text-[--foreground-muted]";
 const buttonClass = "rounded-full border border-[--border-strong] px-3 py-2 text-sm text-[--foreground] transition hover:border-[color-mix(in_srgb,var(--accent)_45%,var(--border-strong))] hover:bg-[--surface-hover] disabled:cursor-not-allowed disabled:opacity-40";
-const readableFitViewOptions = { padding: 0.2 };
+const readableFitViewOptions = { padding: 0.2, maxZoom: 1.6 };
 const retryableSaveFailure = "Save failed. Local edits remain in this editor, and retrying is safe.";
 const connectionTargetPixels = 46;
-const nodeSpacing = { x: 260, y: 160 };
+const nodeSpacing = { x: 390, y: 240 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -189,11 +189,19 @@ function ConnectionHandle({ type, position, id, left }: {
 
 const nodeTypes = { workflow: WorkflowNodeCard };
 
-function FitWorkflowView({ workflowId }: { workflowId: string | null }) {
+function FitWorkflowView({ workflowId, canvasElement }: { workflowId: string | null; canvasElement: HTMLDivElement | null }) {
   const { fitView } = useReactFlow();
   useEffect(() => {
     void fitView(readableFitViewOptions);
   }, [fitView, workflowId]);
+  useEffect(() => {
+    if (!canvasElement) return;
+    const observer = new ResizeObserver(() => {
+      void fitView(readableFitViewOptions);
+    });
+    observer.observe(canvasElement);
+    return () => observer.disconnect();
+  }, [canvasElement, fitView]);
   return null;
 }
 
@@ -223,6 +231,7 @@ export function WorkflowEditor() {
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>({ tone: "neutral", text: "Loading workflows…" });
   const [saving, setSaving] = useState(false);
+  const [canvasElement, setCanvasElement] = useState<HTMLDivElement | null>(null);
 
   const selectWorkflow = useCallback((workflow: WorkflowDTO) => {
     const nextGraph = layoutGraph(graphFromWorkflow(workflow));
@@ -503,7 +512,7 @@ export function WorkflowEditor() {
             <label className={labelClass}>Description<input className={inputClass} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
             <button type="button" className={buttonClass} onClick={addNode} disabled={!agents.length}>Add node</button>
           </div>
-          <div className="glass h-[70vh] min-h-[620px] min-w-0 overflow-hidden rounded-3xl border border-[--border]" aria-label="Workflow canvas">
+          <div ref={setCanvasElement} className="glass h-[70vh] min-h-[620px] min-w-0 overflow-hidden rounded-3xl border border-[--border]" aria-label="Workflow canvas">
             <ReactFlow
               nodes={flowNodes}
               edges={flowEdges}
@@ -530,7 +539,7 @@ export function WorkflowEditor() {
               defaultEdgeOptions={{ type: "smoothstep" }}
               proOptions={{ hideAttribution: true }}
             >
-              <FitWorkflowView workflowId={workflowId} />
+              <FitWorkflowView workflowId={workflowId} canvasElement={canvasElement} />
               <Background color="rgba(140,170,220,0.18)" gap={22} size={1} />
               <Controls position="bottom-left" showInteractive={false} fitViewOptions={readableFitViewOptions} />
               <MiniMap pannable zoomable position="bottom-right" style={{ width: 120, height: 80 }} nodeColor={(node) => node.data.entry ? "#a3e635" : "#8caadc"} maskColor="rgba(4,6,12,0.78)" />
