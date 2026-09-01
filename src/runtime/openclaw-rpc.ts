@@ -221,7 +221,7 @@ function runGatewayCommand(
 ): Promise<CommandResult> {
   if (signal?.aborted) return Promise.resolve({ exitCode: null, signal: null, stdout: "", stderrBytes: 0, timedOut: false, terminated: true });
   return new Promise((resolve, reject) => {
-    const child = spawn(OPENCLAW_COMMAND, [...OPENCLAW_ARGUMENTS, "--no-color", ...arguments_], {
+    const child: ChildProcess = spawn(OPENCLAW_COMMAND, [...OPENCLAW_ARGUMENTS, "--no-color", ...arguments_], {
       cwd: RUNTIME_ROOT,
       env: {
         HOME: process.env.HOME || "/home/node",
@@ -229,6 +229,7 @@ function runGatewayCommand(
         OPENCLAW_STATE_DIR: STATE_DIRECTORY,
         OPENCLAW_GATEWAY_URL: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789",
         OPENCLAW_GATEWAY_TOKEN: process.env.OPENCLAW_GATEWAY_TOKEN,
+        NODE_ENV: process.env.NODE_ENV || "production",
         NO_COLOR: "1",
       },
       detached: process.platform !== "win32",
