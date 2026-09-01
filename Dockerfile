@@ -1,3 +1,7 @@
+# Railway passes its service name as a Docker build argument. Matching service
+# and stage names lets every service build from this one reviewed Dockerfile.
+ARG RAILWAY_SERVICE_NAME=web
+
 FROM ghcr.io/openclaw/openclaw:2026.4.15 AS openclaw-base
 
 FROM node:22.22.2-bookworm-slim AS build
@@ -104,7 +108,4 @@ FROM app AS migrate
 
 CMD ["npm", "run", "db:migrate"]
 
-# Railway passes its service name as a Docker build argument. Matching service
-# and stage names lets every service build from this one reviewed Dockerfile.
-ARG RAILWAY_SERVICE_NAME=web
 FROM ${RAILWAY_SERVICE_NAME} AS railway-service
