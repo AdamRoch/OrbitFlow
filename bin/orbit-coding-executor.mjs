@@ -155,7 +155,11 @@ async function executionAuthority(workspace) {
   if (canonical !== workspace || !initial.isDirectory() || initial.isSymbolicLink()) {
     throw new CliFailureError("coding executor workspace is invalid");
   }
-  const handle = { workspace, device: String(initial.dev), inode: String(initial.ino) };
+  const handle = {
+    workspace,
+    workspaceDevice: String(initial.dev),
+    workspaceInode: String(initial.ino),
+  };
   return {
     async resolve(candidate) {
       if (candidate !== workspace) throw new CliFailureError("coding executor workspace changed");
@@ -164,7 +168,9 @@ async function executionAuthority(workspace) {
     async assertCurrent(candidate) {
       try {
         const current = await lstat(workspace);
-        return candidate === handle && String(current.dev) === handle.device && String(current.ino) === handle.inode;
+        return candidate === handle
+          && String(current.dev) === handle.workspaceDevice
+          && String(current.ino) === handle.workspaceInode;
       } catch {
         return false;
       }
