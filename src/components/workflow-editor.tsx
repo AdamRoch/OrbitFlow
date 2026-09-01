@@ -8,6 +8,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  useReactFlow,
   useStore,
   type Connection,
   type EdgeChange,
@@ -36,9 +37,10 @@ type NodeCardData = { label: string; agent: string; detail: string; entry: boole
 const inputClass = "w-full rounded-xl border border-[--border-strong] bg-[--background]/55 px-3 py-2 text-sm text-[--foreground] transition focus:border-[--accent] focus:outline-none";
 const labelClass = "grid gap-1.5 text-xs font-medium text-[--foreground-muted]";
 const buttonClass = "rounded-full border border-[--border-strong] px-3 py-2 text-sm text-[--foreground] transition hover:border-[color-mix(in_srgb,var(--accent)_45%,var(--border-strong))] hover:bg-[--surface-hover] disabled:cursor-not-allowed disabled:opacity-40";
-const readableFitViewOptions = { padding: 0.12, minZoom: 0.75, maxZoom: 1.2 };
+const readableFitViewOptions = { padding: 0.2 };
 const retryableSaveFailure = "Save failed. Local edits remain in this editor, and retrying is safe.";
 const connectionTargetPixels = 46;
+const nodeSpacing = { x: 260, y: 160 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -75,6 +77,45 @@ function readPositions(graph: WorkflowGraph): Record<string, CanvasPosition> {
 function withPositions(graph: WorkflowGraph, positions: Record<string, CanvasPosition>): WorkflowGraph {
   const metadata = isObject(graph.builderMetadata) ? graph.builderMetadata : {};
   return { ...graph, builderMetadata: { ...metadata, positions } as JsonObject };
+}
+
+function positionsNeedLayout(graph: WorkflowGraph, positions: Record<string, CanvasPosition>): boolean {
+  if (graph.nodes.some((node) => !positions[node.id])) return true;
+  return graph.nodes.some((node, index) => graph.nodes.slice(index + 1).some((other) => {
+    const position = positions[node.id]!;
+    const otherPosition = positions[other.id]!;
+    return Math.abs(position.x - otherPosition.x) < nodeSpacing.x - 20
+      && Math.abs(position.y - otherPosition.y) < nodeSpacing.y - 20;
+  }));
+}
+
+function layoutGraph(graph: WorkflowGraph): WorkflowGraph {
+  const positions = readPositions(graph);
+  if (!positionsNeedLayout(graph, positions)) return graph;
+
+  const orderedIds: string[] = [];
+  const queued = new Set<string>();
+  const queue = graph.nodes.filter((node) => node.config.entry === true).map((node) => node.id);
+  if (!queue.length && graph.nodes[0]) queue.push(graph.nodes[0].id);
+  queue.forEach((id) => queued.add(id));
+
+  while (queue.length) {
+    const id = queue.shift()!;
+    orderedIds.push(id);
+    for (const edge of graph.edges) {
+      if (edge.source === id && !queued.has(edge.target)) {
+        queued.add(edge.target);
+        queue.push(edge.target);
+      }
+    }
+  }
+  for (const node of graph.nodes) {
+    if (!queued.has(node.id)) orderedIds.push(node.id);
+  }
+
+  return withPositions(graph, Object.fromEntries(
+    orderedIds.map((id, index) => [id, { x: 80 + index * nodeSpacing.x, y: 100 }]),
+  ));
 }
 
 function nextNodeId(nodes: WorkflowNode[]): string {
@@ -148,6 +189,14 @@ function ConnectionHandle({ type, position, id, left }: {
 
 const nodeTypes = { workflow: WorkflowNodeCard };
 
+function FitWorkflowView({ workflowId }: { workflowId: string | null }) {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    void fitView(readableFitViewOptions);
+  }, [fitView, workflowId]);
+  return null;
+}
+
 async function readJson(response: Response): Promise<unknown> {
   const text = await response.text();
   return text ? JSON.parse(text) : undefined;
@@ -176,7 +225,7 @@ export function WorkflowEditor() {
   const [saving, setSaving] = useState(false);
 
   const selectWorkflow = useCallback((workflow: WorkflowDTO) => {
-    const nextGraph = graphFromWorkflow(workflow);
+    const nextGraph = layoutGraph(graphFromWorkflow(workflow));
     setWorkflowId(workflow.id);
     setName(workflow.name);
     setDescription(workflow.description);
@@ -258,7 +307,7 @@ export function WorkflowEditor() {
       type: "smoothstep",
       markerEnd: { type: MarkerType.ArrowClosed, color: "#a3e635" },
       style: { stroke: index === selectedEdgeIndex ? "#bef264" : isLoopRoute ? "#a78bfa" : "#8caadc", strokeWidth: index === selectedEdgeIndex ? 2.5 : 1.7 },
-      labelStyle: { fill: "#e8f0ff", fontSize: 13, fontFamily: "var(--font-geist-mono)" },
+      labelStyle: { fill: "#ffffff", fontSize: 14, fontWeight: 600, fontFamily: "var(--font-geist-mono)" },
       labelBgStyle: { fill: "#0b111f", fillOpacity: 0.94 },
       labelBgPadding: [7, 4] as [number, number],
       labelBgBorderRadius: 5,
@@ -431,15 +480,15 @@ export function WorkflowEditor() {
 
       {notice && <NoticeBanner notice={notice} />}
 
-      <div className="grid min-w-0 gap-4 lg:grid-cols-[210px_minmax(0,1fr)_300px]">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[160px_minmax(0,1fr)_300px]">
         <aside className="glass min-w-0 rounded-3xl p-3">
           <div className="mb-3 flex items-center justify-between gap-2 px-1">
             <h2 className="text-xs font-semibold uppercase tracking-[0.16em] text-[--foreground-muted]">Workflows</h2>
             <button type="button" onClick={() => resetNewWorkflow(agents)} className="rounded-full border border-[--border-strong] px-2.5 py-1 text-xs text-[--accent] hover:bg-[--surface-hover]">New</button>
           </div>
-          <div className="flex max-h-48 gap-2 overflow-auto pb-1 lg:max-h-[620px] lg:flex-col lg:pb-0">
+          <div className="flex max-h-48 gap-2 overflow-auto pb-1 xl:max-h-[70vh] xl:flex-col xl:pb-0">
             {workflows.map((workflow) => (
-              <button type="button" key={workflow.id} onClick={() => selectWorkflow(workflow)} className={`min-w-40 rounded-2xl border p-3 text-left transition lg:min-w-0 ${workflow.id === workflowId ? "border-[color-mix(in_srgb,var(--accent)_42%,var(--border-strong))] bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]" : "border-transparent hover:border-[--border] hover:bg-[--surface-hover]"}`}>
+              <button type="button" key={workflow.id} onClick={() => selectWorkflow(workflow)} className={`min-w-40 rounded-2xl border p-3 text-left transition xl:min-w-0 ${workflow.id === workflowId ? "border-[color-mix(in_srgb,var(--accent)_42%,var(--border-strong))] bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]" : "border-transparent hover:border-[--border] hover:bg-[--surface-hover]"}`}>
                 <span className="block truncate text-sm font-medium text-[--foreground]">{workflow.name}</span>
                 <span className="mt-1 block text-xs text-[--foreground-subtle]">{(workflow.graph.nodes as unknown[] | undefined)?.length ?? 0} nodes</span>
               </button>
@@ -454,7 +503,7 @@ export function WorkflowEditor() {
             <label className={labelClass}>Description<input className={inputClass} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
             <button type="button" className={buttonClass} onClick={addNode} disabled={!agents.length}>Add node</button>
           </div>
-          <div className="glass h-[460px] min-w-0 overflow-hidden rounded-3xl border border-[--border] sm:h-[620px]" aria-label="Workflow canvas">
+          <div className="glass h-[70vh] min-h-[620px] min-w-0 overflow-hidden rounded-3xl border border-[--border]" aria-label="Workflow canvas">
             <ReactFlow
               nodes={flowNodes}
               edges={flowEdges}
@@ -481,14 +530,15 @@ export function WorkflowEditor() {
               defaultEdgeOptions={{ type: "smoothstep" }}
               proOptions={{ hideAttribution: true }}
             >
+              <FitWorkflowView workflowId={workflowId} />
               <Background color="rgba(140,170,220,0.18)" gap={22} size={1} />
               <Controls position="bottom-left" showInteractive={false} fitViewOptions={readableFitViewOptions} />
-              <MiniMap pannable zoomable position="bottom-right" nodeColor={(node) => node.data.entry ? "#a3e635" : "#8caadc"} maskColor="rgba(4,6,12,0.78)" />
+              <MiniMap pannable zoomable position="bottom-right" style={{ width: 120, height: 80 }} nodeColor={(node) => node.data.entry ? "#a3e635" : "#8caadc"} maskColor="rgba(4,6,12,0.78)" />
             </ReactFlow>
           </div>
         </div>
 
-        <aside className="glass min-w-0 self-start rounded-3xl p-4 lg:max-h-[700px] lg:overflow-y-auto">
+        <aside className="glass min-w-0 self-start rounded-3xl p-4 xl:max-h-[70vh] xl:overflow-y-auto">
           {selectedNode ? (
             <NodePanel
               agents={agents}
