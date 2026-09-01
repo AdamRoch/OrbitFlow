@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, chown, lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { createOpenCodeAdapter } from "../coding-adapter/src/openCodeAdapter.js";
@@ -20,7 +20,8 @@ const MAX_REQUEST_BYTES = 12 * 1024 * 1024;
 const operations = new Map();
 const pendingCancellations = new Set();
 
-await mkdir(EXECUTOR_ROOT, { recursive: true, mode: 0o700 });
+await mkdir(EXECUTOR_ROOT, { recursive: true, mode: 0o711 });
+await chmod(EXECUTOR_ROOT, 0o711);
 const server = http.createServer((request, response) => {
   void handleRequest(request, response).catch((error) => {
     if (!response.destroyed) {
@@ -89,11 +90,14 @@ async function handleRequest(request, response) {
   let operationRoot = null;
   try {
     operationRoot = await mkdtemp(path.join(EXECUTOR_ROOT, "operation-"));
+    await chmod(operationRoot, 0o711);
     const workspace = path.join(operationRoot, "workspace");
     const gitHome = path.join(operationRoot, "git-home");
     await mkdir(gitHome, { mode: 0o700 });
     await extractWorkspaceArchive(body.workspaceArchive, workspace);
     initializeGitWorkspace(workspace, gitHome);
+    await chownTree(workspace, body.executionUid, body.executionGid);
+    await chownTree(gitHome, body.executionUid, body.executionGid);
     const authority = await executionAuthority(workspace);
     const adapter = createOpenCodeAdapter({
       env: process.env,
@@ -123,6 +127,16 @@ async function handleRequest(request, response) {
     finishOperation();
     if (operationRoot !== null) await rm(operationRoot, { recursive: true, force: true });
   }
+}
+
+async function chownTree(target, uid, gid) {
+  const stat = await lstat(target);
+  if (stat.isDirectory()) {
+    for (const entry of await readdir(target)) {
+      await chownTree(path.join(target, entry), uid, gid);
+    }
+  }
+  await chown(target, uid, gid);
 }
 
 function validateDelegation(request) {
