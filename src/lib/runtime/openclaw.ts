@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
@@ -10,6 +10,7 @@ import {
   type Queryable,
 } from "../postgres/message-bus.ts";
 import { parseAgentGuardrails } from "../guardrails.ts";
+import { writeOpenClawWorkspace } from "./openclaw-workspace.ts";
 
 export const EXPECTED_OPENCLAW_VERSION = "2026.4.15";
 export const DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -23,6 +24,7 @@ const OPENCLAW_GATEWAY_ENVIRONMENT = new Set([
   "OPENCLAW_GATEWAY_URL",
   "OPENCLAW_GATEWAY_TOKEN",
   "OPENCLAW_GATEWAY_PASSWORD",
+  "OPENCLAW_ALLOW_INSECURE_PRIVATE_WS",
 ]);
 const FIXED_OUTPUT_CONTRACT =
   '{"artifact":{},"handoff_brief":"string","events":[]}';
@@ -177,7 +179,8 @@ export interface RuntimeAdapterOptions {
   wakeTimeoutMs?: number;
   terminationGraceMs?: number;
   gatewayEnvironment?: Readonly<Record<string, string | undefined>>;
-  allowedExecEnvironment?: readonly string[];
+  runtimeUrl?: string;
+  runtimeToken?: string;
   availableModels?: readonly string[];
   retryMalformedOutput?: boolean;
 }
@@ -196,13 +199,13 @@ interface RunningCommand {
   child: ChildProcess;
   closed: Promise<void>;
   sessionKey?: string;
+  runId?: string;
 }
 
 interface ParsedTurn {
   output: RuntimeOutput;
   usage: RuntimeUsage;
   completion: Omit<RuntimeCompletion, "model"> & { model: string | null };
-  embedded: boolean;
 }
 
 interface RuntimeInvocation {
@@ -264,8 +267,8 @@ function stableJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function parseJsonDocument(primary: string, fallback?: string, stderrBytes?: number): unknown {
-  for (const text of [primary, fallback].filter((t): t is string => typeof t === "string" && t.length > 0)) {
+function parseJsonDocument(primary: string): unknown {
+  for (const text of [primary].filter((t): t is string => typeof t === "string" && t.length > 0)) {
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const first = lines[index].trimStart()[0];
@@ -277,10 +280,10 @@ function parseJsonDocument(primary: string, fallback?: string, stderrBytes?: num
       }
     }
   }
-  const tail = (primary || fallback || "").slice(-500).replace(/\n/g, "\\n");
   throw new RuntimeAdapterError(
     "openclaw_turn_failed",
-    `OpenClaw did not emit a JSON document (primary=${primary.length}, fallback=${(fallback || "").length}, stderrBytes=${stderrBytes ?? "?"}, tail=${tail.slice(-200)})`,
+    "OpenClaw did not emit a JSON document",
+    { stdoutBytes: Buffer.byteLength(primary) },
   );
 }
 
@@ -432,7 +435,11 @@ function normalizeUsage(raw: unknown, rawLastCall: unknown): RuntimeUsage {
   };
 }
 
-function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
+function parseTurn(
+  result: CommandResult,
+  attempt: number,
+  expectedRunId: string,
+): ParsedTurn {
   if (result.timedOut) {
     throw new RuntimeAdapterError("openclaw_timeout", "OpenClaw wake timed out", {
       signal: result.signal,
@@ -444,89 +451,80 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
     });
   }
 
-  const parsedDocument = parseJsonDocument(result.stdout, result.stderr, result.stderrBytes);
+  const parsedDocument = parseJsonDocument(result.stdout);
   if (!isObject(parsedDocument)) {
     throw new RuntimeAdapterError("openclaw_turn_failed", "OpenClaw envelope must be an object");
   }
-  let envelope: Record<string, unknown> = parsedDocument;
-
-  let embedded = false;
-  if (
-    !Object.hasOwn(envelope, "status") &&
-    !Object.hasOwn(envelope, "result") &&
-    Array.isArray(envelope.payloads) &&
-    isObject(envelope.meta)
-  ) {
-    embedded = true;
-    const sessionId =
-      isObject(envelope.meta.agentMeta) &&
-      typeof envelope.meta.agentMeta.sessionId === "string"
-        ? envelope.meta.agentMeta.sessionId
-        : `embedded-${createHash("sha256").update(result.stdout.slice(0, 4096)).digest("hex").slice(0, 16)}`;
-    envelope = {
-      status: "ok",
-      summary: "completed",
-      runId: sessionId,
-      result: envelope,
-    };
-  }
+  const envelope: Record<string, unknown> = parsedDocument;
 
   const turn = isObject(envelope.result) ? envelope.result : null;
   const meta = turn && isObject(turn.meta) ? turn.meta : null;
   const completion = meta && isObject(meta.completion) ? meta.completion : null;
   const agentMeta = meta && isObject(meta.agentMeta) ? meta.agentMeta : null;
   const payloads = turn && Array.isArray(turn.payloads) ? turn.payloads : null;
-  const textPayloads = payloads?.filter(
-    (p) => isObject(p) && p.mediaUrl === null && typeof p.text === "string",
-  ) ?? [];
-  const firstPayload = textPayloads.length >= 1 ? textPayloads[textPayloads.length - 1] : null;
+  const firstPayload = payloads?.length === 1 && isObject(payloads[0]) ? payloads[0] : null;
 
-  const isCompletedStop =
-    envelope.status === "ok" &&
-    envelope.summary === "completed" &&
-    meta &&
-    meta.aborted === false &&
-    meta.livenessState === "working" &&
-    meta.stopReason === "stop";
-
-  if (isCompletedStop && !firstPayload && meta && meta.replayInvalid === true) {
-    throw new RuntimeAdapterError(
-      "openclaw_turn_failed",
-      "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without an output payload",
-      {
-        exitCode: result.exitCode,
-        status: typeof envelope.status === "string" ? envelope.status : null,
-        livenessState:
-          typeof meta.livenessState === "string" ? meta.livenessState : null,
-        stopReason: typeof meta.stopReason === "string" ? meta.stopReason : null,
-        diagnostics: { hasFirstPayload: false, metaReplayInvalid: true },
-      },
-    );
-  }
-
-  if (isCompletedStop && !firstPayload && attempt === 1) {
-    throw new MalformedOutputError(
-      "Agent completed its turn without a text payload; retry should prompt for the output contract",
-    );
-  }
   const envelopeKeys = Object.keys(envelope).sort().join(",");
   const turnKeys = turn ? Object.keys(turn).sort().join(",") : "";
   const payloadKeys = firstPayload ? Object.keys(firstPayload).sort().join(",") : "";
+  const failEnvelope = (): never => {
+    const diag: JsonObject = {
+      exitCode: result.exitCode,
+      envelopeHasExpectedKeys: envelopeKeys === "result,runId,status,summary",
+      statusType: typeof envelope.status,
+      summaryType: typeof envelope.summary,
+      runIdType: typeof envelope.runId,
+      runIdMatchesRequest: envelope.runId === expectedRunId,
+      hasTurn: !!turn,
+      hasMeta: !!meta,
+      hasCompletion: !!completion,
+      hasAgentMeta: !!agentMeta,
+      payloadCount: payloads?.length ?? null,
+      hasFirstPayload: !!firstPayload,
+    };
+    if (turn) diag.turnHasExpectedKeys = turnKeys === "meta,payloads";
+    if (firstPayload) {
+      diag.payloadHasExpectedKeys = payloadKeys === "mediaUrl,text";
+      diag.mediaUrlType = typeof firstPayload.mediaUrl;
+      diag.mediaUrlIsNull = firstPayload.mediaUrl === null;
+    }
+    if (meta) {
+      diag.hasErrorField = Object.hasOwn(meta, "error");
+      diag.metaAbortedIsFalse = meta.aborted === false;
+      diag.metaReplayInvalidType = typeof meta.replayInvalid;
+      diag.metaLivenessStateType = typeof meta.livenessState;
+      diag.metaStopReasonType = typeof meta.stopReason;
+    }
+    if (completion) {
+      diag.compStopReasonType = typeof completion.stopReason;
+      diag.compFinishReasonType = typeof completion.finishReason;
+    }
+    if (agentMeta) {
+      diag.agSessionId = typeof agentMeta.sessionId;
+      diag.agProvider = typeof agentMeta.provider;
+      diag.agModel = typeof agentMeta.model;
+    }
+    throw new RuntimeAdapterError(
+      "openclaw_turn_failed",
+      "OpenClaw 2026.4.15 gateway turn envelope did not complete",
+      {
+        exitCode: result.exitCode,
+        diagnostics: diag,
+      },
+    );
+  };
   if (
     result.exitCode !== 0 ||
     envelopeKeys !== "result,runId,status,summary" ||
     envelope.status !== "ok" ||
     envelope.summary !== "completed" ||
-    typeof envelope.runId !== "string" ||
-    envelope.runId.trim() === "" ||
+    envelope.runId !== expectedRunId ||
     !turn ||
     !meta ||
     !completion ||
     !agentMeta ||
-    !firstPayload ||
     turnKeys !== "meta,payloads" ||
-    payloadKeys !== "mediaUrl,text" ||
-    firstPayload.mediaUrl !== null ||
+    (payloads !== null && payloads.length > 1) ||
     meta.aborted !== false ||
     (Object.hasOwn(meta, "replayInvalid") && typeof meta.replayInvalid !== "boolean") ||
     meta.livenessState !== "working" ||
@@ -541,63 +539,62 @@ function parseTurn(result: CommandResult, attempt: number): ParsedTurn {
     agentMeta.model.trim() === "" ||
     Object.hasOwn(meta, "error")
   ) {
-    const diag: JsonObject = {
-      exitCode: result.exitCode,
-      envelopeKeys,
-      status: typeof envelope.status === "string" ? envelope.status : null,
-      summary: typeof envelope.summary === "string" ? envelope.summary : null,
-      runIdType: typeof envelope.runId,
-      hasTurn: !!turn,
-      hasMeta: !!meta,
-      hasCompletion: !!completion,
-      hasAgentMeta: !!agentMeta,
-      hasFirstPayload: !!firstPayload,
-    };
-    if (turn) diag.turnKeys = turnKeys;
-    if (firstPayload) {
-      diag.payloadKeys = payloadKeys;
-      diag.mediaUrl = firstPayload.mediaUrl;
+    failEnvelope();
+  }
+
+  const completedMeta = meta as Record<string, unknown>;
+  const completedAgentMeta = agentMeta as Record<string, unknown>;
+  const usage = normalizeUsage(
+    completedAgentMeta.usage,
+    completedAgentMeta.lastCallUsage,
+  );
+  if (!firstPayload) {
+    if (completedMeta.replayInvalid === true) {
+      throw new RuntimeAdapterError(
+        "openclaw_turn_failed",
+          "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without an output payload",
+        {
+          exitCode: result.exitCode,
+          diagnostics: { hasFirstPayload: false, metaReplayInvalid: true },
+        },
+      );
     }
-    if (meta) {
-      diag.hasErrorField = Object.hasOwn(meta, "error");
-      if (typeof meta.aborted !== "undefined") diag.metaAborted = meta.aborted as JsonValue;
-      if (typeof meta.replayInvalid !== "undefined") diag.metaReplayInvalid = meta.replayInvalid as JsonValue;
-      if (typeof meta.livenessState === "string") diag.metaLivenessState = meta.livenessState;
-      if (typeof meta.stopReason === "string") diag.metaStopReason = meta.stopReason;
+    if (attempt === 1) {
+      throw new MalformedOutputError(
+        "Agent completed its turn without a text payload; retry should prompt for the output contract",
+      );
     }
-    if (completion) {
-      if (typeof completion.stopReason === "string") diag.compStopReason = completion.stopReason;
-      if (typeof completion.finishReason === "string") diag.compFinishReason = completion.finishReason;
+    failEnvelope();
+  }
+  const payload = firstPayload;
+  if (payload === null) return failEnvelope();
+  if (payloads?.length !== 1 || payloadKeys !== "mediaUrl,text" || payload.mediaUrl !== null) {
+    failEnvelope();
+  }
+
+  let output: RuntimeOutput;
+  try {
+    output = parseOutputContract(payload.text, attempt);
+  } catch (error) {
+    if (error instanceof MalformedOutputError && completedMeta.replayInvalid === true) {
+      throw new RuntimeAdapterError(
+        "openclaw_turn_failed",
+        "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) with malformed output",
+        { diagnostics: { hasFirstPayload: true, metaReplayInvalid: true } },
+      );
     }
-    if (agentMeta) {
-      diag.agSessionId = typeof agentMeta.sessionId;
-      diag.agProvider = typeof agentMeta.provider;
-      diag.agModel = typeof agentMeta.model;
-    }
-    throw new RuntimeAdapterError(
-      "openclaw_turn_failed",
-      "OpenClaw 2026.4.15 gateway turn envelope did not complete",
-      {
-        exitCode: result.exitCode,
-        status: typeof envelope.status === "string" ? envelope.status : null,
-        livenessState:
-          meta && typeof meta.livenessState === "string" ? meta.livenessState : null,
-        stopReason: meta && typeof meta.stopReason === "string" ? meta.stopReason : null,
-        diagnostics: diag,
-      },
-    );
+    throw error;
   }
   return {
-    output: parseOutputContract(firstPayload.text, attempt),
-    usage: normalizeUsage(agentMeta.usage, agentMeta.lastCallUsage),
+    output,
+    usage,
     completion: {
       status: "stop",
       exitCode: 0,
-      sessionId: agentMeta.sessionId,
-      provider: agentMeta.provider,
-      model: agentMeta.model,
+      sessionId: completedAgentMeta.sessionId as string,
+      provider: completedAgentMeta.provider as string,
+      model: completedAgentMeta.model as string,
     },
-    embedded,
   };
 }
 
@@ -613,25 +610,8 @@ function openClawRef(agent: AgentRow): string {
   return candidate;
 }
 
-function runtimeSession(ref: string, input: WakeAgentInput, invocationId: string): {
-  sessionId: string;
-  sessionKey: string;
-} {
-  const ticketIds = [...(input.ticketIds ?? [])].map(String).sort();
-  const digest = createHash("sha256")
-    .update(
-      JSON.stringify({
-        runId: String(input.runId),
-        agentId: String(input.agentId),
-        invocationId,
-        nodeId: input.nodeId,
-        ticketIds,
-      }),
-    )
-    .digest("hex")
-    .slice(0, 32);
-  const sessionId = `orbitflow-${digest}`;
-  return { sessionId, sessionKey: `agent:${ref}:main` };
+function runtimeSession(ref: string, dispatchSessionId: string): { sessionKey: string } {
+  return { sessionKey: `agent:${ref}:${dispatchSessionId}` };
 }
 
 function runtimeInvocation(
@@ -667,6 +647,10 @@ function runtimeInvocation(
   return { invocationKey, requestFingerprint, costEventId: (-positive).toString() };
 }
 
+function gatewayTurnIdempotencyKey(invocationKey: string, attempt: number): string {
+  return `orbitflow-${invocationKey.slice(0, 48)}-${attempt}`;
+}
+
 /**
  * FACT-30: stable advisory lock key for one exact canonical OpenClaw agent
  * ref, derived through SHA-256 and BigInt so JavaScript number precision never
@@ -693,8 +677,8 @@ function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-function safeBaseEnvironment(runtimeRoot: string, extraNames: readonly string[] = []): NodeJS.ProcessEnv {
-  const allowed = ["LANG", "LC_ALL", "PATH", "TMPDIR", "TZ", ...extraNames] as const;
+function safeBaseEnvironment(runtimeRoot: string): NodeJS.ProcessEnv {
+  const allowed = ["LANG", "LC_ALL", "PATH", "TMPDIR", "TZ"] as const;
   return {
     ...(Object.fromEntries(
       allowed.flatMap((name) =>
@@ -804,7 +788,8 @@ export class OpenClawRuntimeAdapter {
   private readonly wakeTimeoutMs: number;
   private readonly terminationGraceMs: number;
   private readonly gatewayEnvironment: Readonly<Record<string, string | undefined>>;
-  private readonly allowedExecEnvironment: readonly string[];
+  private readonly runtimeUrl: string | null;
+  private readonly runtimeToken: string | null;
   private readonly availableModels: ReadonlySet<string> | null;
   private readonly retryMalformedOutput: boolean;
   private readonly activeCommands = new Map<string, Set<RunningCommand>>();
@@ -825,7 +810,17 @@ export class OpenClawRuntimeAdapter {
       DEFAULT_TERMINATION_GRACE_MS,
     );
     this.gatewayEnvironment = options.gatewayEnvironment ?? {};
-    this.allowedExecEnvironment = options.allowedExecEnvironment ?? [];
+    this.runtimeUrl = options.runtimeUrl?.trim().replace(/\/$/, "") || null;
+    this.runtimeToken = options.runtimeToken?.trim() || null;
+    if ((this.runtimeUrl === null) !== (this.runtimeToken === null)) {
+      throw new TypeError("runtimeUrl and runtimeToken must be supplied together");
+    }
+    if (this.runtimeUrl !== null) {
+      const parsed = new URL(this.runtimeUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new TypeError("runtimeUrl must use http or https");
+      }
+    }
     this.availableModels = options.availableModels
       ? new Set(options.availableModels)
       : null;
@@ -837,6 +832,10 @@ export class OpenClawRuntimeAdapter {
       throw new TypeError(
         `gatewayEnvironment contains unsupported variables: ${rejectedEnvironment.sort().join(", ")}`,
       );
+    }
+    const allowInsecurePrivateWs = this.gatewayEnvironment.OPENCLAW_ALLOW_INSECURE_PRIVATE_WS;
+    if (allowInsecurePrivateWs !== undefined && allowInsecurePrivateWs !== "1") {
+      throw new TypeError("OPENCLAW_ALLOW_INSECURE_PRIVATE_WS must be exactly 1 when supplied");
     }
   }
 
@@ -883,7 +882,7 @@ export class OpenClawRuntimeAdapter {
     this.requireAvailableModel(runtimeAgent);
     const invocation = runtimeInvocation(normalizedInput, runId, agentId, invocationId);
     const ref = openClawRef(runtimeAgent);
-    const session = runtimeSession(ref, normalizedInput, invocationId);
+    const session = runtimeSession(ref, dispatchSessionId ?? invocationId);
 
     return await this.withInvocationLock(invocation.invocationKey, async (client) => {
       const reserved = await this.reserveInvocation(client, {
@@ -911,7 +910,7 @@ export class OpenClawRuntimeAdapter {
       try {
         return await this.withAgentSessionLock(ref, wakeTimeoutMs, async (deadlineMs) => {
           let attempts = 0;
-          let agentCommandLaunched = false;
+          let launchedGatewayRunId: string | null = null;
           try {
             const synchronized = await this.withConfigurationLock(async () => {
               await this.ensureVersion(deadlineMs);
@@ -927,6 +926,7 @@ export class OpenClawRuntimeAdapter {
               invocationId,
               nodeId,
               nodeSystemPrompt,
+              workspaceTools: input.workspaceTools ?? null,
               agent: runtimeAgent,
               run: context.run,
               tickets: context.tickets,
@@ -948,36 +948,37 @@ export class OpenClawRuntimeAdapter {
                 attempts === 1
                   ? prompt
                   : `${prompt}\n\n# Structured-output retry\nYour previous response was rejected because it included text or Markdown formatting outside the JSON object. This is the only retry. Do not repeat tool actions already completed in this session. Do not explain, apologize, or claim the previous response was valid. Your entire response must start with { and end with }. Return exactly one strict JSON object matching the fixed output contract.`;
-              agentCommandLaunched = true;
-              const result = await this.runCommand(
-                [
-                  "agent",
-                  "--agent",
-                  synchronized.openclawRef,
-                  "--session-id",
-                  session.sessionId,
-                  "--message",
-                  deliveredPrompt,
-                  "--timeout",
-                  String(commandTimeoutSeconds),
-                  "--json",
-                ],
+              const gatewayRunId = gatewayTurnIdempotencyKey(
+                invocation.invocationKey,
+                attempts,
+              );
+              launchedGatewayRunId = gatewayRunId;
+              const result = await this.runGatewayCall(
+                "agent",
+                {
+                  message: deliveredPrompt,
+                  agentId: synchronized.openclawRef,
+                  sessionKey: session.sessionKey,
+                  timeout: commandTimeoutSeconds,
+                  deliver: false,
+                  idempotencyKey: gatewayRunId,
+                },
                 {
                   timeoutMs: commandTimeoutMs,
+                  expectFinal: true,
                   activeAgentRef: synchronized.openclawRef,
                   activeSessionKey: session.sessionKey,
+                  activeRunId: gatewayRunId,
                 },
               );
               try {
-                const parsed = parseTurn(result, attempts);
-                if (!parsed.embedded) {
-                  await this.verifySessionIdentity(
-                    synchronized.openclawRef,
-                    session,
-                    parsed.completion.sessionId,
-                    deadlineMs,
-                  );
-                }
+                const parsed = parseTurn(result, attempts, gatewayRunId);
+                await this.verifySessionIdentity(
+                  synchronized.openclawRef,
+                  session.sessionKey,
+                  parsed.completion.sessionId,
+                  deadlineMs,
+                );
                 const completion: RuntimeCompletion = {
                   ...parsed.completion,
                   model: parsed.completion.model ?? runtimeAgent.model,
@@ -1009,11 +1010,11 @@ export class OpenClawRuntimeAdapter {
               // created gateway session state, so it must not abort anything.
               await this.terminateRef(
                 ref,
-                agentCommandLaunched &&
+                launchedGatewayRunId !== null &&
                   (runtimeError.code === "openclaw_timeout" ||
                     runtimeError.code === "openclaw_terminated" ||
                     runtimeError.code === "openclaw_session_mismatch")
-                  ? session.sessionKey
+                  ? { sessionKey: session.sessionKey, runId: launchedGatewayRunId }
                   : null,
               );
             } catch (terminationError) {
@@ -1107,83 +1108,112 @@ export class OpenClawRuntimeAdapter {
   ): Promise<SynchronizedAgent> {
     const ref = openClawRef(agent);
     const workspace = path.join(this.runtimeRoot, "workspaces", ref);
-    await this.writeWorkspace(workspace, agent, workspaceTools, toolContext);
-
-    const listed = await this.requireJsonCommand(["agents", "list", "--json"], deadlineMs);
-    const entries = Array.isArray(listed)
-      ? listed
-      : isObject(listed) && Array.isArray(listed.agents)
-        ? listed.agents
-        : [];
-    const index = entries.findIndex((entry) => isObject(entry) && entry.id === ref);
-    const created = index === -1;
-    if (created) {
-      await this.requireJsonCommand([
-        "agents",
-        "add",
-        ref,
-        "--workspace",
-        workspace,
-        "--model",
-        agent.model,
-        "--non-interactive",
-        "--json",
-      ], deadlineMs);
-    } else {
-      const configured = await this.requireJsonCommand([
-        "config",
-        "get",
-        "agents.list",
-        "--json",
-      ], deadlineMs);
-      if (!Array.isArray(configured)) {
-        throw new RuntimeAdapterError(
-          "openclaw_configuration_failed",
-          "OpenClaw agents.list configuration is not an array",
-          { agentId: agent.id },
-        );
-      }
-      const configuredIndex = configured.findIndex(
-        (entry) => isObject(entry) && entry.id === ref,
+    let synchronized: SynchronizedAgent;
+    if (this.runtimeUrl !== null) {
+      const remote = await this.runtimeRequest(
+        "/v1/sync-agent",
+        {
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            role: agent.role,
+            system_prompt: agent.system_prompt,
+            model: agent.model,
+            memory: agent.memory,
+          },
+          openclawRef: ref,
+          workspaceTools,
+          toolContext,
+        },
+        this.commandBudget(deadlineMs, 30_000, "the OpenClaw workspace sync"),
       );
-      if (configuredIndex === -1) {
+      if (
+        !isObject(remote) ||
+        remote.agentId !== agent.id ||
+        remote.openclawRef !== ref ||
+        typeof remote.workspace !== "string" ||
+        typeof remote.created !== "boolean"
+      ) {
         throw new RuntimeAdapterError(
           "openclaw_configuration_failed",
-          "OpenClaw listed the agent without a mutable agents.list entry",
+          "OpenClaw runtime returned an invalid workspace sync response",
           { agentId: agent.id },
         );
       }
-      const entry = configured[configuredIndex];
-      const configuredWorkspace = isObject(entry) ? String(entry.workspace ?? "") : "";
-      const configuredModel = isObject(entry) ? String(entry.model ?? "") : "";
-      if (configuredWorkspace !== workspace) {
-        await this.requireCommand([
-          "config",
-          "set",
-          `agents.list[${configuredIndex}].workspace`,
-          JSON.stringify(workspace),
-          "--strict-json",
-        ], deadlineMs);
+      synchronized = remote as unknown as SynchronizedAgent;
+    } else {
+      await this.writeWorkspace(workspace, agent, workspaceTools, toolContext);
+
+      const listed = await this.requireGatewayJson("agents.list", {}, deadlineMs);
+      if (!isObject(listed) || !Array.isArray(listed.agents)) {
+        throw new RuntimeAdapterError(
+          "openclaw_configuration_failed",
+          "OpenClaw gateway returned an invalid agents.list response",
+          { agentId: agent.id },
+        );
       }
-      if (configuredModel !== agent.model) {
-        await this.requireCommand([
-          "config",
-          "set",
-          `agents.list[${configuredIndex}].model`,
-          JSON.stringify(agent.model),
-          "--strict-json",
-        ], deadlineMs);
+      const entries = listed.agents;
+      const index = entries.findIndex((entry) => isObject(entry) && entry.id === ref);
+      const created = index === -1;
+      if (created) {
+        const createdAgent = await this.requireGatewayJson(
+          "agents.create",
+          { name: ref, workspace, model: agent.model },
+          deadlineMs,
+        );
+        if (
+          !isObject(createdAgent) ||
+          createdAgent.ok !== true ||
+          createdAgent.agentId !== ref
+        ) {
+          throw new RuntimeAdapterError(
+            "openclaw_configuration_failed",
+            "OpenClaw gateway returned an invalid agents.create response",
+            { agentId: agent.id },
+          );
+        }
       }
+
+      const entry = created ? null : entries[index];
+      const configuredWorkspace = isObject(entry) && typeof entry.workspace === "string"
+        ? entry.workspace
+        : "";
+      const configuredModel =
+        isObject(entry) &&
+        isObject(entry.model) &&
+        typeof entry.model.primary === "string"
+          ? entry.model.primary
+          : "";
+      const configuredName = isObject(entry) && typeof entry.name === "string"
+        ? entry.name
+        : isObject(entry) && isObject(entry.identity) && typeof entry.identity.name === "string"
+          ? entry.identity.name
+          : "";
+      if (
+        created ||
+        configuredWorkspace !== workspace ||
+        configuredModel !== agent.model ||
+        configuredName !== agent.name
+      ) {
+        const updatedAgent = await this.requireGatewayJson(
+          "agents.update",
+          { agentId: ref, name: agent.name, workspace, model: agent.model },
+          deadlineMs,
+        );
+        if (
+          !isObject(updatedAgent) ||
+          updatedAgent.ok !== true ||
+          updatedAgent.agentId !== ref
+        ) {
+          throw new RuntimeAdapterError(
+            "openclaw_configuration_failed",
+            "OpenClaw gateway returned an invalid agents.update response",
+            { agentId: agent.id },
+          );
+        }
+      }
+      synchronized = { agentId: agent.id, openclawRef: ref, workspace, created };
     }
-    await this.requireJsonCommand([
-      "agents",
-      "set-identity",
-      "--agent",
-      ref,
-      "--identity-file",
-      path.join(workspace, "IDENTITY.md"),
-      "--json",
-    ], deadlineMs);
 
     const persisted = await database.query(
       `UPDATE agents
@@ -1200,7 +1230,7 @@ export class OpenClawRuntimeAdapter {
         { agentId: agent.id },
       );
     }
-    return { agentId: agent.id, openclawRef: ref, workspace, created };
+    return synchronized;
   }
 
   private async loadContext(
@@ -1252,6 +1282,7 @@ export class OpenClawRuntimeAdapter {
     invocationId: string;
     nodeId: string;
     nodeSystemPrompt: string;
+    workspaceTools: string | null;
     agent: AgentRow;
     run: RunRow;
     tickets: TicketRow[];
@@ -1301,6 +1332,9 @@ export class OpenClawRuntimeAdapter {
       "# Blocked actions",
       ...blockedActionLines(input.agent.guardrails),
       "",
+      ...(input.workspaceTools?.trim()
+        ? ["# Platform tools", input.workspaceTools.trim(), ""]
+        : []),
       "# Fixed output contract",
       `Return only strict JSON matching ${FIXED_OUTPUT_CONTRACT}.`,
       "artifact must be a JSON object, handoff_brief must be a non-blank string, and every events entry must be a JSON object.",
@@ -1315,72 +1349,30 @@ export class OpenClawRuntimeAdapter {
     toolContext: JsonObject | null = null,
   ): Promise<void> {
     await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
-    await mkdir(workspace, { recursive: true, mode: 0o700 });
-    const toolsContent = workspaceTools?.trim()
-      || "# Tools\n\nUse only tools allowed by the delivered node prompt.\n";
-    const files: Record<string, string> = {
-      "AGENTS.md":
-        "Read SOUL.md and MEMORY.md before every turn. Follow the delivery prompt and return its fixed output contract exactly.\n",
-      "SOUL.md": `${agent.system_prompt.trim()}\n`,
-      "IDENTITY.md": `# ${agent.name}\n\n- Name: ${agent.name}\n- Role: ${agent.role}\n`,
-      "MEMORY.md": [
-        "# Canonical OrbitFlow memory",
-        "",
-        "Generated from PostgreSQL at wake time. Local edits are not authoritative.",
-        "",
-        "```json",
-        JSON.stringify(agent.memory, null, 2),
-        "```",
-        "",
-      ].join("\n"),
-      "USER.md": "# User\n\nOrbitFlow delivers bounded workflow-node prompts.\n",
-      "TOOLS.md": toolsContent,
-      "HEARTBEAT.md": "# Heartbeat\n\nOrbitFlow owns scheduling and wake delivery.\n",
-    };
-    await Promise.all(
-      Object.entries(files).map(async ([name, contents]) => {
-        const target = path.join(workspace, name);
-        const temporary = path.join(workspace, `.${name}.${process.pid}.tmp`);
-        await writeFile(temporary, contents, { mode: 0o600 });
-        await rename(temporary, target);
-      }),
-    );
-    const contextTarget = path.join(workspace, ".orbitflow-tool-context.json");
-    if (toolContext === null) {
-      await unlink(contextTarget).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
-      return;
-    }
-    const contextTemporary = path.join(workspace, `.orbitflow-tool-context.${process.pid}.tmp`);
-    await writeFile(
-      contextTemporary,
-      `${JSON.stringify({ ...toolContext, workspace })}\n`,
-      { mode: 0o600 },
-    );
-    await rename(contextTemporary, contextTarget);
+    await writeOpenClawWorkspace(workspace, agent, workspaceTools, toolContext);
   }
 
   private async verifySessionIdentity(
     ref: string,
-    requested: { sessionId: string; sessionKey: string },
+    requestedSessionKey: string,
     returnedSessionId: string | null,
     deadlineMs?: number,
   ): Promise<void> {
     if (
       typeof returnedSessionId !== "string" ||
-      returnedSessionId.trim() === "" ||
-      returnedSessionId !== requested.sessionId
+      returnedSessionId.trim() === ""
     ) {
       throw new RuntimeAdapterError(
         "openclaw_session_mismatch",
         "OpenClaw returned output with an invalid sessionId",
-        { requestedSessionId: requested.sessionId },
       );
     }
-    const result = await this.runCommand(
-      ["sessions", "--agent", ref, "--json"],
-      { timeoutMs: this.commandBudget(deadlineMs, 30_000, "session verification") },
+    const result = await this.runGatewayCall(
+      "sessions.resolve",
+      { agentId: ref, sessionId: returnedSessionId },
+      {
+        timeoutMs: this.commandBudget(deadlineMs, 30_000, "session verification"),
+      },
     );
     if (deadlineMs !== undefined && result.timedOut) {
       throw new RuntimeAdapterError(
@@ -1388,24 +1380,18 @@ export class OpenClawRuntimeAdapter {
         "OpenClaw session verification consumed the wake deadline",
       );
     }
-    const payload =
-      !result.timedOut && result.exitCode === 0
-        ? parseJsonDocument(result.stdout)
-        : null;
-    const sessions = isObject(payload) && Array.isArray(payload.sessions)
-      ? payload.sessions
-      : [];
-    const matches = sessions.filter(
-      (session) =>
-        isObject(session) &&
-        typeof session.sessionId === "string" &&
-        session.sessionId === returnedSessionId,
-    );
-    if (matches.length !== 1) {
+    const payload = !result.timedOut && result.exitCode === 0
+      ? parseJsonDocument(result.stdout)
+      : null;
+    if (
+      !isObject(payload) ||
+      payload.ok !== true ||
+      payload.key !== requestedSessionKey
+    ) {
       throw new RuntimeAdapterError(
         "openclaw_session_mismatch",
-        `Expected one OpenClaw session with id ${returnedSessionId}; found ${matches.length}`,
-        { requestedSessionId: requested.sessionId },
+        "OpenClaw did not resolve the returned session to the requested session key",
+        { returnedSessionIdType: typeof returnedSessionId },
       );
     }
   }
@@ -1858,41 +1844,132 @@ export class OpenClawRuntimeAdapter {
     }
   }
 
-  private async requireJsonCommand(
-    arguments_: readonly string[],
+  private async requireGatewayJson(
+    method: string,
+    params: JsonObject,
     deadlineMs?: number,
   ): Promise<unknown> {
-    const result = await this.requireCommand(arguments_, deadlineMs);
-    return parseJsonDocument(result.stdout);
-  }
-
-  private async requireCommand(
-    arguments_: readonly string[],
-    deadlineMs?: number,
-  ): Promise<CommandResult> {
-    const result = await this.runCommand(arguments_, {
+    const result = await this.runGatewayCall(method, params, {
       timeoutMs: this.commandBudget(deadlineMs, 30_000, "a configuration command"),
     });
     if (result.timedOut && deadlineMs !== undefined) {
       throw new RuntimeAdapterError(
         "openclaw_timeout",
         "OpenClaw configuration command consumed the wake deadline",
-        { command: arguments_.slice(0, 2).join(" ") },
+        { method },
       );
     }
     if (result.timedOut || result.exitCode !== 0) {
       throw new RuntimeAdapterError(
         "openclaw_configuration_failed",
-        "OpenClaw agent configuration command failed",
+        "OpenClaw gateway configuration call failed",
         {
-          command: arguments_.slice(0, 2).join(" "),
+          method,
           exitCode: result.exitCode,
           timedOut: result.timedOut,
           stderrBytes: result.stderrBytes,
         },
       );
     }
-    return result;
+    try {
+      return parseJsonDocument(result.stdout);
+    } catch {
+      throw new RuntimeAdapterError(
+        "openclaw_configuration_failed",
+        "OpenClaw gateway configuration call returned invalid JSON",
+        { method, stderrBytes: result.stderrBytes },
+      );
+    }
+  }
+
+  private async runtimeRequest(
+    requestPath: string,
+    payload: JsonObject,
+    timeoutMs: number,
+  ): Promise<unknown> {
+    if (this.runtimeUrl === null || this.runtimeToken === null) {
+      throw new RuntimeAdapterError(
+        "openclaw_configuration_failed",
+        "OpenClaw runtime RPC is not configured",
+      );
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs + 10_000);
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`${this.runtimeUrl}${requestPath}`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.runtimeToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new RuntimeAdapterError(
+            "openclaw_timeout",
+            "OpenClaw runtime RPC timed out",
+            { requestPath },
+          );
+        }
+        throw new RuntimeAdapterError(
+          "openclaw_turn_failed",
+          "OpenClaw runtime RPC could not be reached",
+          { requestPath, errorName: error instanceof Error ? error.name : "unknown" },
+        );
+      }
+      const responseText = await response.text();
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(responseText);
+      } catch {
+        throw new RuntimeAdapterError(
+          "openclaw_turn_failed",
+          "OpenClaw runtime RPC returned malformed JSON",
+          { requestPath, status: response.status },
+        );
+      }
+      if (!response.ok || !isObject(envelope) || envelope.ok !== true) {
+        throw new RuntimeAdapterError(
+          "openclaw_turn_failed",
+          "OpenClaw runtime RPC rejected the request",
+          { requestPath, status: response.status },
+        );
+      }
+      return envelope.result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async runGatewayCall(
+    method: string,
+    params: JsonObject,
+    options: {
+      timeoutMs: number;
+      expectFinal?: boolean;
+      activeAgentRef?: string;
+      activeSessionKey?: string;
+      activeRunId?: string;
+    },
+  ): Promise<CommandResult> {
+    return await this.runCommand(
+      [
+        "gateway",
+        "call",
+        method,
+        "--params",
+        JSON.stringify(params),
+        "--timeout",
+        String(options.timeoutMs),
+        "--json",
+        ...(options.expectFinal ? ["--expect-final"] : []),
+      ],
+      options,
+    );
   }
 
   private async runCommand(
@@ -1901,12 +1978,55 @@ export class OpenClawRuntimeAdapter {
       timeoutMs: number;
       activeAgentRef?: string;
       activeSessionKey?: string;
+      activeRunId?: string;
     },
   ): Promise<CommandResult> {
+    if (this.runtimeUrl !== null) {
+      const remote = await this.runtimeRequest(
+        "/v1/gateway",
+        {
+          arguments: [...arguments_],
+          timeoutMs: options.timeoutMs,
+          ...(options.activeAgentRef === undefined
+            ? {}
+            : { activeAgentRef: options.activeAgentRef }),
+          ...(options.activeSessionKey === undefined
+            ? {}
+            : { activeSessionKey: options.activeSessionKey }),
+          ...(options.activeRunId === undefined
+            ? {}
+            : { activeRunId: options.activeRunId }),
+        },
+        options.timeoutMs,
+      );
+      if (
+        !isObject(remote) ||
+        (remote.exitCode !== null && typeof remote.exitCode !== "number") ||
+        (remote.signal !== null && typeof remote.signal !== "string") ||
+        typeof remote.stdout !== "string" ||
+        typeof remote.stderrBytes !== "number" ||
+        typeof remote.timedOut !== "boolean" ||
+        typeof remote.terminated !== "boolean"
+      ) {
+        throw new RuntimeAdapterError(
+          "openclaw_turn_failed",
+          "OpenClaw runtime returned an invalid command result",
+        );
+      }
+      return {
+        exitCode: remote.exitCode as number | null,
+        signal: remote.signal as NodeJS.Signals | null,
+        stdout: remote.stdout,
+        stderr: "",
+        stderrBytes: remote.stderrBytes,
+        timedOut: remote.timedOut,
+        terminated: remote.terminated,
+      };
+    }
     await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
     await mkdir(path.join(this.runtimeRoot, "home"), { recursive: true, mode: 0o700 });
     const environment: NodeJS.ProcessEnv = {
-      ...safeBaseEnvironment(this.runtimeRoot, this.allowedExecEnvironment),
+      ...safeBaseEnvironment(this.runtimeRoot),
       ...Object.fromEntries(
         Object.entries(this.gatewayEnvironment).filter((entry): entry is [string, string] =>
           entry[1] !== undefined,
@@ -1942,6 +2062,7 @@ export class OpenClawRuntimeAdapter {
         child,
         closed,
         sessionKey: options.activeSessionKey,
+        runId: options.activeRunId,
       };
       const activeRef = options.activeAgentRef;
       if (activeRef) {
@@ -2023,28 +2144,30 @@ export class OpenClawRuntimeAdapter {
     clearTimeout(force);
   }
 
-  private async terminateRef(ref: string, additionalSessionKey: string | null = null): Promise<void> {
+  private async terminateRef(
+    ref: string,
+    additionalSession: { sessionKey: string; runId: string } | null = null,
+  ): Promise<void> {
     const commands = [...(this.activeCommands.get(ref) ?? [])];
     await Promise.all(commands.map((command) => this.stopCommand(command)));
-    const sessionKeys = new Set(
-      commands.flatMap((command) => (command.sessionKey ? [command.sessionKey] : [])),
+    const sessionTargets = new Map<string, string>();
+    for (const command of commands) {
+      if (command.sessionKey && command.runId) {
+        sessionTargets.set(command.sessionKey, command.runId);
+      }
+    }
+    if (additionalSession) {
+      sessionTargets.set(additionalSession.sessionKey, additionalSession.runId);
+    }
+    await Promise.all(
+      [...sessionTargets].map(([sessionKey, runId]) => this.abortSession(sessionKey, runId)),
     );
-    if (additionalSessionKey) sessionKeys.add(additionalSessionKey);
-    await Promise.all([...sessionKeys].map((sessionKey) => this.abortSession(sessionKey)));
   }
 
-  private async abortSession(sessionKey: string): Promise<void> {
-    const result = await this.runCommand(
-      [
-        "gateway",
-        "call",
-        "sessions.abort",
-        "--params",
-        JSON.stringify({ key: sessionKey }),
-        "--timeout",
-        "5000",
-        "--json",
-      ],
+  private async abortSession(sessionKey: string, runId: string): Promise<void> {
+    const result = await this.runGatewayCall(
+      "sessions.abort",
+      { key: sessionKey, runId },
       { timeoutMs: 7_000 },
     );
     if (result.timedOut || result.exitCode !== 0) {
@@ -2067,6 +2190,13 @@ export class OpenClawRuntimeAdapter {
       throw new RuntimeAdapterError(
         "openclaw_termination_failed",
         "OpenClaw gateway did not confirm session termination",
+      );
+    }
+    if (payload.status === "aborted" && payload.abortedRunId !== runId) {
+      throw new RuntimeAdapterError(
+        "openclaw_termination_failed",
+        "OpenClaw gateway aborted a different run than the requested run",
+        { abortedRunIdMatchesRequest: false },
       );
     }
   }

@@ -59,12 +59,19 @@ CMD ["node", "--experimental-strip-types", "src/runtime/engine.ts"]
 
 FROM engine AS openclaw-gateway
 
+# Copying only OpenClaw's /app tree omits the official image's Python runtime.
+# Its pinned safe-file writer imports Python's secrets module for agent updates.
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --chown=node:node docker/openclaw/openclaw.json /opt/orbitflow/openclaw.json
 COPY --chown=node:node docker/openclaw/exec-approvals.json /opt/orbitflow/exec-approvals.json
 COPY --chown=node:node docker/openclaw/apply-config.mjs /opt/orbitflow/apply-config.mjs
 COPY --chown=root:root docker/openclaw/entrypoint.sh /usr/local/bin/orbitflow-openclaw-gateway
+COPY --chown=root:root docker/openclaw/healthcheck.sh /usr/local/bin/orbitflow-openclaw-healthcheck
 
-RUN chmod 755 /usr/local/bin/orbitflow-openclaw-gateway
+RUN chmod 755 /usr/local/bin/orbitflow-openclaw-gateway /usr/local/bin/orbitflow-openclaw-healthcheck
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-openclaw-gateway"]
 CMD []

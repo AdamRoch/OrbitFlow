@@ -24,6 +24,7 @@ import {
 import {
   immutableDispatchContext,
   loadOpenClawToolContext,
+  validateOpenClawToolContext,
 } from "../src/lib/runtime/openclaw-tool-context.mjs";
 import { buildPlatformCommandInput } from "../src/lib/runtime/platform-tool-broker-input.mjs";
 
@@ -37,7 +38,16 @@ const PLATFORM_COMMANDS = new Set([
   "list_tickets",
 ]);
 const CODING_COMMANDS = new Set(["start_run_workspace", "delegate_coding_task"]);
-const SOCKET = requiredEnv("ORBITFLOW_TOOL_BROKER_SOCKET");
+const SOCKET = process.env.ORBITFLOW_TOOL_BROKER_SOCKET?.trim() || null;
+const PORT = process.env.ORBITFLOW_TOOL_BROKER_PORT
+  ? positiveInteger(process.env.ORBITFLOW_TOOL_BROKER_PORT, "ORBITFLOW_TOOL_BROKER_PORT")
+  : null;
+if (SOCKET === null && PORT === null) throw new Error("ORBITFLOW_TOOL_BROKER_SOCKET or ORBITFLOW_TOOL_BROKER_PORT is required");
+const BROKER_TOKEN = process.env.ORBITFLOW_TOOL_BROKER_TOKEN?.trim() || null;
+if (PORT !== null && BROKER_TOKEN === null) {
+  throw new Error("ORBITFLOW_TOOL_BROKER_TOKEN is required with ORBITFLOW_TOOL_BROKER_PORT");
+}
+const REMOTE_CONTEXT = process.env.ORBITFLOW_TOOL_BROKER_REMOTE_CONTEXT === "1";
 const EXECUTOR_SOCKET = requiredEnv("ORBITFLOW_CODING_EXECUTOR_SOCKET");
 const AGENT_WORKSPACE_ROOT = requiredEnv("ORBITFLOW_AGENT_WORKSPACE_ROOT");
 const WORKSPACE_ROOT = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
@@ -58,7 +68,7 @@ const workspaceService = createRunWorkspaceService({
 });
 const costEventStore = createCostEventStore({ pool });
 
-await mkdir(path.dirname(SOCKET), { recursive: true, mode: 0o770 });
+if (SOCKET !== null) await mkdir(path.dirname(SOCKET), { recursive: true, mode: 0o770 });
 await mkdir(WORKSPACE_ROOT, { recursive: true, mode: 0o711 });
 await mkdir(path.join(WORKSPACE_ROOT, ".orbitflow"), { recursive: true, mode: 0o700 });
 await chmod(path.join(WORKSPACE_ROOT, ".orbitflow"), 0o700);
@@ -69,14 +79,24 @@ const server = http.createServer((request, response) => {
     if (!response.destroyed) writeJson(response, 400, failure(error));
   });
 });
-server.listen(SOCKET, async () => {
-  await chown(SOCKET, 0, 19_000);
-  await chmod(SOCKET, 0o660);
+server.listen(PORT === null ? SOCKET : { port: PORT, host: "0.0.0.0" }, async () => {
+  if (SOCKET !== null) {
+    await chown(SOCKET, 0, 19_000);
+    await chmod(SOCKET, 0o660);
+  }
 });
 
 async function handleRequest(request, response) {
+  if (request.method === "GET" && request.url === "/healthz") {
+    writeJson(response, 200, { status: "live", service: "tool-broker" });
+    return;
+  }
   if (request.method !== "POST" || request.url !== "/v1/tool") {
     writeJson(response, 404, { ok: false, error: { code: "not_found", message: "not found" } });
+    return;
+  }
+  if (BROKER_TOKEN !== null && request.headers.authorization !== `Bearer ${BROKER_TOKEN}`) {
+    writeJson(response, 401, { ok: false, error: { code: "unauthorized", message: "authorization required" } });
     return;
   }
   const body = await readJson(request, MAX_REQUEST_BYTES);
@@ -87,10 +107,15 @@ async function handleRequest(request, response) {
   if (!body.input || typeof body.input !== "object" || Array.isArray(body.input)) {
     throw new Error("broker input must be one JSON object");
   }
-  const loaded = await loadOpenClawToolContext({
-    agentWorkspaceRoot: AGENT_WORKSPACE_ROOT,
-    workspace: body.workspace,
-  });
+  const loaded = REMOTE_CONTEXT
+    ? (() => {
+        validateOpenClawToolContext(body.context, body.workspace);
+        return { context: body.context, workspace: body.workspace };
+      })()
+    : await loadOpenClawToolContext({
+        agentWorkspaceRoot: AGENT_WORKSPACE_ROOT,
+        workspace: body.workspace,
+      });
   if (stableJson(loaded.context) !== stableJson(body.context)) {
     throw new Error("active dispatch context changed before broker authorization");
   }
@@ -375,6 +400,13 @@ function requiredEnv(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function positiveInteger(value, field) {
+  if (!/^[1-9][0-9]*$/.test(value)) throw new Error(`${field} must be a positive integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${field} is too large`);
+  return parsed;
 }
 
 function stableJson(value) {

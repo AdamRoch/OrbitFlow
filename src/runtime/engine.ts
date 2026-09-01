@@ -48,10 +48,17 @@ try {
   throw error;
 }
 
-const gatewayEnvironment = {
-  OPENCLAW_GATEWAY_URL: requiredEnvironment("OPENCLAW_GATEWAY_URL"),
-  OPENCLAW_GATEWAY_TOKEN: requiredEnvironment("OPENCLAW_GATEWAY_TOKEN"),
-};
+const runtimeUrl = process.env.ORBITFLOW_OPENCLAW_RUNTIME_URL?.trim() || undefined;
+const runtimeToken = runtimeUrl
+  ? requiredEnvironment("ORBITFLOW_OPENCLAW_RUNTIME_TOKEN")
+  : undefined;
+const gatewayEnvironment = runtimeUrl
+  ? undefined
+  : {
+      OPENCLAW_GATEWAY_URL: requiredEnvironment("OPENCLAW_GATEWAY_URL"),
+      OPENCLAW_GATEWAY_TOKEN: requiredEnvironment("OPENCLAW_GATEWAY_TOKEN"),
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: process.env.OPENCLAW_ALLOW_INSECURE_PRIVATE_WS?.trim(),
+    };
 
 const openclaw = new OpenClawRuntimeAdapter({
   pool,
@@ -60,6 +67,8 @@ const openclaw = new OpenClawRuntimeAdapter({
   openClawCommandArguments: openClawArguments,
   wakeTimeoutMs: positiveIntegerEnvironment("ORBITFLOW_OPENCLAW_WAKE_TIMEOUT_MS", 300_000),
   gatewayEnvironment,
+  runtimeUrl,
+  runtimeToken,
   availableModels: modelCatalog.availableModels,
 });
 const runtime = new OpenClawEngineAdapter({

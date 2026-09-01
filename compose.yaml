@@ -71,14 +71,14 @@ services:
       target: tool-broker
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      ORBITFLOW_TOOL_BROKER_PORT: 3003
+      ORBITFLOW_TOOL_BROKER_TOKEN: ${ORBITFLOW_TOOL_BROKER_TOKEN:-local-tool-broker-token}
+      ORBITFLOW_TOOL_BROKER_REMOTE_CONTEXT: "1"
       ORBITFLOW_AGENT_WORKSPACE_ROOT: /var/lib/orbitflow/runtime/workspaces
       ORBITFLOW_CODING_EXECUTOR_SOCKET: /run/orbitflow-executor/executor.sock
-      ORBITFLOW_TOOL_BROKER_SOCKET: /run/orbitflow-broker/tool.sock
       ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
     volumes:
-      - engine-data:/var/lib/orbitflow/runtime
       - run-workspaces:/var/lib/orbitflow/run-workspaces
-      - tool-broker-ipc:/run/orbitflow-broker
       - coding-executor-ipc:/run/orbitflow-executor
     depends_on:
       migrate:
@@ -86,7 +86,7 @@ services:
       coding-executor:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "test -S /run/orbitflow-broker/tool.sock"]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3003/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -100,21 +100,23 @@ services:
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       OPENCLAW_DISABLE_BONJOUR: "1"
-      ORBITFLOW_AGENT_WORKSPACE_ROOT: /var/lib/orbitflow/runtime/workspaces
-      ORBITFLOW_TOOL_BROKER_SOCKET: /run/orbitflow-broker/tool.sock
+      ORBITFLOW_RUNTIME_RPC_PORT: 3004
+      ORBITFLOW_RUNTIME_RPC_TOKEN: ${ORBITFLOW_RUNTIME_RPC_TOKEN:-local-runtime-rpc-token}
+      ORBITFLOW_RUNTIME_ROOT: /var/lib/orbitflow/runtime
+      ORBITFLOW_TOOL_BROKER_URL: http://tool-broker:3003
+      ORBITFLOW_TOOL_BROKER_TOKEN: ${ORBITFLOW_TOOL_BROKER_TOKEN:-local-tool-broker-token}
     volumes:
-      - engine-data:/var/lib/orbitflow/runtime
       - openclaw-state:/home/node/.openclaw
-      - tool-broker-ipc:/run/orbitflow-broker
+      - openclaw-runtime-data:/var/lib/orbitflow/runtime
     depends_on:
       migrate:
         condition: service_completed_successfully
       tool-broker:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18789/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      test: ["CMD", "/usr/local/bin/orbitflow-openclaw-healthcheck"]
       interval: 2s
-      timeout: 3s
+      timeout: 15s
       retries: 30
       start_period: 15s
     networks: [control, provider]
@@ -125,13 +127,13 @@ services:
       target: engine
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
-      OPENCLAW_GATEWAY_URL: ws://openclaw:18789
+      ORBITFLOW_OPENCLAW_RUNTIME_URL: http://openclaw:3004
+      ORBITFLOW_OPENCLAW_RUNTIME_TOKEN: ${ORBITFLOW_RUNTIME_RPC_TOKEN:-local-runtime-rpc-token}
       ORBITFLOW_RUNTIME_ROOT: /var/lib/orbitflow/runtime
       ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
     volumes:
       - engine-data:/var/lib/orbitflow/runtime
       - run-workspaces:/var/lib/orbitflow/run-workspaces
-      - openclaw-state:/run/openclaw-state:ro
     ports:
       - "127.0.0.1:${ORBITFACTORY_ENGINE_HOST_PORT:-}:3001"
     depends_on:
@@ -189,8 +191,8 @@ networks:
 
 volumes:
   engine-data:
+  openclaw-runtime-data:
   run-workspaces:
   openclaw-state:
   postgres-data:
-  tool-broker-ipc:
   coding-executor-ipc:

@@ -16,23 +16,29 @@ const PLATFORM_COMMANDS = new Set([
 ]);
 const CODING_COMMANDS = new Set(["start_run_workspace", "delegate_coding_task"]);
 const BROKER_SOCKET = process.env.ORBITFLOW_TOOL_BROKER_SOCKET ?? "/run/orbitflow-broker/tool.sock";
+const BROKER_URL = process.env.ORBITFLOW_TOOL_BROKER_URL?.trim() || null;
+const BROKER_TOKEN = process.env.ORBITFLOW_TOOL_BROKER_TOKEN?.trim() || null;
 const AGENT_WORKSPACE_ROOT = process.env.ORBITFLOW_AGENT_WORKSPACE_ROOT
   ?? "/var/lib/orbitflow/runtime/workspaces";
 
+if (BROKER_URL !== null && BROKER_TOKEN === null) {
+  throw new Error("ORBITFLOW_TOOL_BROKER_TOKEN is required with ORBITFLOW_TOOL_BROKER_URL");
+}
+
 try {
-  const [command, serializedInput, ...extra] = process.argv.slice(2);
+  const [command, ...inputArguments] = process.argv.slice(2);
   if (
-    extra.length !== 0 ||
     typeof command !== "string" ||
     (!PLATFORM_COMMANDS.has(command) && !CODING_COMMANDS.has(command)) ||
-    typeof serializedInput !== "string"
+    inputArguments.length === 0
   ) {
     throw new Error("usage: orbit-openclaw-tool <command> <json-input>");
   }
+  const serializedInput = inputArguments.join(" ");
   if (Buffer.byteLength(serializedInput) > 32_768) {
     throw new Error("json-input exceeds 32768 bytes");
   }
-  const supplied = JSON.parse(serializedInput);
+  const supplied = parseInput(command, serializedInput);
   if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) {
     throw new Error("json-input must be one JSON object");
   }
@@ -53,7 +59,40 @@ try {
   process.exitCode = 1;
 }
 
+function parseInput(command, serializedInput) {
+  try {
+    return JSON.parse(serializedInput);
+  } catch (error) {
+    if (command !== "delegate_coding_task") throw error;
+    const shellStrippedTask = serializedInput.match(/^\{task:(.*)\}$/s)?.[1]?.trim();
+    if (!shellStrippedTask) throw error;
+    return { task: shellStrippedTask };
+  }
+}
+
 function brokerRequest(payload) {
+  if (BROKER_URL !== null) return remoteBrokerRequest(payload);
+  return socketBrokerRequest(payload);
+}
+
+async function remoteBrokerRequest(payload) {
+  const response = await fetch(`${BROKER_URL}/v1/tool`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${BROKER_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const contents = await response.text();
+  try {
+    return JSON.parse(contents);
+  } catch {
+    throw new Error("tool broker returned malformed JSON");
+  }
+}
+
+function socketBrokerRequest(payload) {
   const body = JSON.stringify(payload);
   return new Promise((resolve, reject) => {
     const request = http.request({
