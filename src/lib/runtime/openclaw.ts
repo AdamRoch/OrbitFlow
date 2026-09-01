@@ -577,6 +577,7 @@ function parseTurn(
   }
   const payload = finalPayload;
   if (payload === null) return failEnvelope();
+  if (!payloads) return failEnvelope();
 
   let output: RuntimeOutput;
   try {
