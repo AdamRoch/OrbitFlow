@@ -2219,7 +2219,7 @@ export async function routeWorkflowMessage(
         payload: { code: "intake_contract_violation", error: intake.error },
         handoffBrief:
           `Your previous reply failed validation: ${intake.error}. `
-          + `Reply again with only the exact JSON contract from your instructions. `
+          + `Submit again via the submit_result tool. `
           + `Do not add, move, or rename fields.`,
       });
       const entryNode = graph.nodes.find((node) => node.id === dispatch.node_id)!;

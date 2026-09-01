@@ -82,5 +82,13 @@ export function createProductionWorkspaceTools(
     "Replace <task> with a JSON-escaped and shell-quoted task description.",
     "Keep the single quotes around the entire JSON object.",
     `${tool} delegate_coding_task '${JSON.stringify({ task: "<task>" })}'`,
+    "",
+    "### submit_result",
+    "Call this exactly once at the end of the turn. Keep the JSON on one line. Do not include dispatch, run, agent, ticket, or generation identifiers.",
+    `${tool} submit_result '${JSON.stringify({
+      artifact: {},
+      handoff_brief: "<non-blank handoff brief>",
+      events: [],
+    })}'`,
   ].join("\n");
 }

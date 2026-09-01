@@ -6,9 +6,9 @@ FACT-11 turns the FACT-1 control spike into the execution boundary used by later
 
 `syncAgent(agentId)` reads the current PostgreSQL `agents` row and writes the generated OpenClaw workspace. It then uses the gateway's `agents.list`, `agents.create`, and `agents.update` RPCs to create or reconcile the stable `openclaw_ref`, workspace, model, and identity. The gateway is the only OpenClaw agent-registry authority. `agents.memory` remains authoritative for OrbitFlow memory. `MEMORY.md` is regenerated from that JSON snapshot and is never read back into PostgreSQL.
 
-`wakeAgent(input)` requires the caller's durable node invocation id and reads one consistent agent snapshot for both the generated workspace and the delivery prompt. The prompt contains the node system prompt, workflow and run context, tickets assigned to the calling agent and run, upstream handoff brief, canonical memory, and the fixed output contract. Requested ticket ids fail closed unless every ticket belongs to that run and agent.
+`wakeAgent(input)` requires the caller's durable node invocation id and reads one consistent agent snapshot for both the generated workspace and the delivery prompt. The prompt contains the node system prompt, workflow and run context, tickets assigned to the calling agent and run, upstream handoff brief, canonical memory, and the `submit_result` instructions. Requested ticket ids fail closed unless every ticket belongs to that run and agent.
 
-The adapter accepts only this top-level output:
+The agent calls `submit_result` with this top-level object:
 
 ```json
 {
@@ -18,7 +18,7 @@ The adapter accepts only this top-level output:
 }
 ```
 
-Every event must be a JSON object. A malformed final output gets one corrective retry. A second malformed output, a timeout, an incomplete OpenClaw envelope, invalid usage, or another runtime failure rejects the wake and inserts one durable `system` message with FACT-9's `insertMessage` helper. The error payload contains bounded metadata only. It never includes provider stderr, raw model output, the composed prompt, or credentials.
+The broker validates the object during the tool call, stamps the authorized dispatch id and runtime generation, and stores the first valid submission for that attempt. The adapter never parses turn text. A completed turn without a submission gets one corrective retry. A second miss, a timeout, an incomplete OpenClaw envelope, invalid usage, or another runtime failure rejects the wake and inserts one durable `system` message with FACT-9's `insertMessage` helper. The error payload contains bounded metadata only. It never includes provider stderr, raw model output, the composed prompt, or credentials.
 
 Successful wakes return the validated output to the caller. They do not route it. FACT-10 owns workflow routing. Usage is written to `cost_events` for the calling run and agent, while `workflow_runs.total_tokens` and `total_cost` are updated in the same PostgreSQL transaction.
 
@@ -30,7 +30,7 @@ FACT-30 adds same-agent serialization for OpenClaw fan-out. OpenClaw `2026.4.15`
 
 ## Completion and termination
 
-OpenClaw `2026.4.15` is pinned. Completion accepts only that release's gateway response shape: the outer `runId` must equal the request's deterministic idempotency key, `status` must be `ok`, `summary` must be `completed`, and the result must contain one payload with metadata reporting `aborted: false`, `replayInvalid: false`, `livenessState: "working"`, and matching `stop` reasons. Blocked, errored, aborted, replay-invalid, stale, invented, and otherwise unsupported zero-exit envelopes fail closed. Usage comes only from `result.meta.agentMeta.usage`, which represents the complete session stream; `lastCallUsage` is never substituted.
+OpenClaw `2026.4.15` is pinned. Completion accepts only that release's gateway response shape: the outer `runId` must equal the request's deterministic idempotency key, `status` must be `ok`, `summary` must be `completed`, and metadata must report `aborted: false`, `livenessState: "working"`, and matching `stop` reasons. A `replayInvalid` turn succeeds only when the broker already stored its valid result submission. A `replayInvalid` turn without a submission fails closed rather than repeating possible side effects. Usage comes only from `result.meta.agentMeta.usage`, which represents the complete session stream; `lastCallUsage` is never substituted.
 
 The configurable wake timeout defaults to five minutes and is bounded to thirty minutes. Every delivery uses the canonical `agent:<ref>:main` session key while its gateway run id is deterministic for the durable invocation and retry number. OpenClaw owns the internal session UUID. After a completed turn, the gateway's `sessions.resolve` RPC must map its returned UUID to that exact requested key. A mismatch or stale result is rejected. The same deadline is sent to the OpenClaw request and enforced outside the CLI. Timeout or explicit `terminateAgent` sends `SIGTERM` to the isolated process group, waits a short grace period, then sends `SIGKILL`, and calls the gateway's `sessions.abort` RPC with that exact session key and deterministic run id. An `aborted` response must report the same run id; `no-active-run` is accepted only as confirmation that the target is already gone. The failure is not reported as a normal timeout when the gateway cannot confirm `aborted` or `no-active-run`. No database transaction stays open while OpenClaw runs.
 

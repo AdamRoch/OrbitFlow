@@ -16,7 +16,7 @@
         {
           "id": "5d360489-a868-49c9-9185-f1a87d48d74d",
           "pattern": "/app/bin/orbit-openclaw-tool.mjs",
-          "argPattern": "^(list_projects|create_ticket|update_ticket|set_ticket_dependencies|post_message|list_tickets|start_run_workspace|delegate_coding_task) \\{.*\\}$"
+          "argPattern": "^(list_projects|create_ticket|update_ticket|set_ticket_dependencies|post_message|list_tickets|start_run_workspace|delegate_coding_task|submit_result) \\{[\\s\\S]*\\}$"
         }
       ]
     }

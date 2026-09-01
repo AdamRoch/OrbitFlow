@@ -41,6 +41,7 @@ const PLATFORM_COMMANDS = new Set([
   "post_message",
   "list_tickets",
 ]);
+const RESULT_COMMANDS = new Set(["submit_result"]);
 const CODING_COMMANDS = new Set(["start_run_workspace", "delegate_coding_task"]);
 const SOCKET = process.env.ORBITFLOW_TOOL_BROKER_SOCKET?.trim() || null;
 const PORT = process.env.ORBITFLOW_TOOL_BROKER_PORT
@@ -106,7 +107,11 @@ async function handleRequest(request, response) {
   }
   const body = await readJson(request, MAX_REQUEST_BYTES);
   requireExactKeys(body, ["command", "context", "input", "workspace"]);
-  if (!PLATFORM_COMMANDS.has(body.command) && !CODING_COMMANDS.has(body.command)) {
+  if (
+    !PLATFORM_COMMANDS.has(body.command) &&
+    !RESULT_COMMANDS.has(body.command) &&
+    !CODING_COMMANDS.has(body.command)
+  ) {
     throw new Error("unknown broker command");
   }
   if (!body.input || typeof body.input !== "object" || Array.isArray(body.input)) {
@@ -139,6 +144,8 @@ async function handleRequest(request, response) {
     let result;
     if (PLATFORM_COMMANDS.has(body.command)) {
       result = invokePlatformCommand(body.command, body.input, context, loaded.context);
+    } else if (body.command === "submit_result") {
+      result = await submitResult(body.input, context);
     } else if (body.command === "start_run_workspace") {
       requireExactKeys(body.input, []);
       const workspace = await workspaceService.startRunWorkspace(context.runId);
@@ -181,6 +188,49 @@ async function handleRequest(request, response) {
     request.off("aborted", cancelForDisconnect);
     response.off("close", cancelForDisconnect);
   }
+}
+
+async function submitResult(output, context) {
+  const validationError = validateResult(output);
+  if (validationError !== null) {
+    return { ok: false, error: { code: "invalid_result", message: validationError } };
+  }
+  const inserted = await pool.query(
+    `INSERT INTO result_submissions (dispatch_id, runtime_generation, output)
+     VALUES ($1, $2, $3::jsonb)
+     ON CONFLICT (dispatch_id, runtime_generation) DO NOTHING`,
+    [context.dispatchId, context.dispatchGeneration, JSON.stringify(output)],
+  );
+  if (inserted.rowCount !== 1) {
+    return {
+      ok: false,
+      error: {
+        code: "result_already_submitted",
+        message: "result already submitted for this attempt",
+      },
+    };
+  }
+  return { ok: true, result: { message: "result submitted" } };
+}
+
+function validateResult(output) {
+  const keys = Object.keys(output).sort();
+  if (keys.join(",") !== "artifact,events,handoff_brief") {
+    return "submit_result must contain exactly artifact, handoff_brief, and events";
+  }
+  if (!output.artifact || typeof output.artifact !== "object" || Array.isArray(output.artifact)) {
+    return "submit_result artifact must be a JSON object";
+  }
+  if (typeof output.handoff_brief !== "string" || output.handoff_brief.trim() === "") {
+    return "submit_result handoff_brief must be a non-blank string";
+  }
+  if (
+    !Array.isArray(output.events) ||
+    output.events.some((event) => !event || typeof event !== "object" || Array.isArray(event))
+  ) {
+    return "submit_result events must be an array of JSON objects";
+  }
+  return null;
 }
 
 function remoteExecutorAdapter({ context, identity, model, workspaceAuthority }) {

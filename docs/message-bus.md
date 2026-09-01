@@ -72,6 +72,12 @@ This is exactly-once database routing, not exactly-once external effects. Later
 effect executors must use durable dispatch records and idempotency keys before
 calling OpenClaw, Telegram, or any other provider.
 
+OpenClaw agents return node results through the broker's `submit_result` tool.
+The broker stamps the authorized dispatch id and runtime generation, validates
+the `{artifact, handoff_brief, events}` object, and keeps the first valid
+submission for that attempt. The runtime routes that stored object through this
+message bus. Agent chat text is never a result transport.
+
 ## Worker lifecycle
 
 `runMessageBusWorker` and `startMessageBusWorker` poll sequentially. The default

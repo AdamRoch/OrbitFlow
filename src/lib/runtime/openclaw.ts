@@ -26,9 +26,6 @@ const OPENCLAW_GATEWAY_ENVIRONMENT = new Set([
   "OPENCLAW_GATEWAY_PASSWORD",
   "OPENCLAW_ALLOW_INSECURE_PRIVATE_WS",
 ]);
-const FIXED_OUTPUT_CONTRACT =
-  '{"artifact":{},"handoff_brief":"string","events":[]}';
-
 /** FACT-23 lists the enforced blocked-action boundary inside every wake prompt. */
 function blockedActionLines(guardrails: unknown): string[] {
   const { blockedActions } = parseAgentGuardrails(guardrails);
@@ -203,15 +200,17 @@ interface RunningCommand {
 }
 
 interface ParsedTurn {
-  output: RuntimeOutput;
   usage: RuntimeUsage;
   completion: Omit<RuntimeCompletion, "model"> & { model: string | null };
+  replayInvalid: boolean;
 }
 
 interface RuntimeInvocation {
   invocationKey: string;
   requestFingerprint: string;
   costEventId: string;
+  dispatchId: string;
+  runtimeGeneration: string;
 }
 
 interface InvocationReceiptRow extends QueryResultRow {
@@ -251,11 +250,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function jsonObject(value: unknown, field: string): JsonObject {
-  if (!isObject(value)) throw new MalformedOutputError(`${field} must be a JSON object`);
-  return value as JsonObject;
-}
-
 function stableJson(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (isObject(value)) {
@@ -285,58 +279,6 @@ function parseJsonDocument(primary: string): unknown {
     "OpenClaw did not emit a JSON document",
     { stdoutBytes: Buffer.byteLength(primary) },
   );
-}
-
-function parseOutputContract(text: unknown, attempt: number): RuntimeOutput {
-  if (typeof text !== "string" || text.trim() === "") {
-    throw new MalformedOutputError("OpenClaw completed without a final output");
-  }
-
-  const trimmed = text.trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    // On the retry, strip markdown fences before rejecting
-    if (attempt === 2) {
-      const fenceStart = trimmed.match(/^`{3,}\w*\s*\n/);
-      if (fenceStart) {
-        let inner = trimmed.slice(fenceStart[0].length);
-        const fenceEnd = inner.lastIndexOf("\n```");
-        if (fenceEnd !== -1) inner = inner.slice(0, fenceEnd).trim();
-        try {
-          parsed = JSON.parse(inner);
-        } catch {
-          throw new MalformedOutputError("Agent final output is not strict JSON");
-        }
-      } else {
-        throw new MalformedOutputError("Agent final output is not strict JSON");
-      }
-    } else {
-      throw new MalformedOutputError("Agent final output is not strict JSON");
-    }
-  }
-
-  const output = jsonObject(parsed, "Agent final output");
-  const keys = Object.keys(output).sort();
-  if (keys.join(",") !== "artifact,events,handoff_brief") {
-    throw new MalformedOutputError(
-      "Agent final output must contain exactly artifact, handoff_brief, and events",
-    );
-  }
-  const artifact = jsonObject(output.artifact, "Agent output artifact");
-  if (typeof output.handoff_brief !== "string" || output.handoff_brief.trim() === "") {
-    throw new MalformedOutputError("Agent output handoff_brief must be a non-blank string");
-  }
-  if (!Array.isArray(output.events) || output.events.some((event) => !isObject(event))) {
-    throw new MalformedOutputError("Agent output events must be an array of JSON objects");
-  }
-
-  return {
-    artifact,
-    handoff_brief: output.handoff_brief,
-    events: output.events as JsonObject[],
-  };
 }
 
 function usageInteger(value: unknown, field: string, optional = false): number {
@@ -437,7 +379,6 @@ function normalizeUsage(raw: unknown, rawLastCall: unknown): RuntimeUsage {
 
 function parseTurn(
   result: CommandResult,
-  attempt: number,
   expectedRunId: string,
 ): ParsedTurn {
   if (result.timedOut) {
@@ -557,60 +498,9 @@ function parseTurn(
     completedAgentMeta.usage,
     completedAgentMeta.lastCallUsage,
   );
-  if (!finalPayload) {
-    if (completedMeta.replayInvalid === true) {
-      throw new RuntimeAdapterError(
-        "openclaw_turn_failed",
-          "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without an output payload",
-        {
-          exitCode: result.exitCode,
-          diagnostics: { hasFinalPayload: false, metaReplayInvalid: true },
-        },
-      );
-    }
-    if (attempt === 1) {
-      throw new MalformedOutputError(
-        "Agent completed its turn without a text payload; retry should prompt for the output contract",
-      );
-    }
-    failEnvelope();
-  }
-  const payload = finalPayload;
-  if (payload === null) return failEnvelope();
-  if (!payloads) return failEnvelope();
-
-  let output: RuntimeOutput;
-  try {
-    output = parseOutputContract(payload.text, attempt);
-  } catch (error) {
-    if (error instanceof MalformedOutputError && completedMeta.replayInvalid === true) {
-      throw new RuntimeAdapterError(
-        "openclaw_turn_failed",
-        "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) with malformed output",
-        { diagnostics: { hasFinalPayload: true, metaReplayInvalid: true } },
-      );
-    }
-    throw error;
-  }
-  for (const earlierPayload of payloads.slice(0, payloads.lastIndexOf(finalPayload))) {
-    if (!isObject(earlierPayload) || typeof earlierPayload.text !== "string" || !earlierPayload.text.trim()) {
-      continue;
-    }
-    try {
-      parseOutputContract(earlierPayload.text, attempt);
-    } catch (error) {
-      if (error instanceof MalformedOutputError) continue;
-      throw error;
-    }
-    throw new RuntimeAdapterError(
-      "openclaw_turn_failed",
-      "OpenClaw 2026.4.15 gateway turn produced multiple valid output contracts",
-      { diagnostics: { validContractCount: 2 } },
-    );
-  }
   return {
-    output,
     usage,
+    replayInvalid: completedMeta.replayInvalid === true,
     completion: {
       status: "stop",
       exitCode: 0,
@@ -643,6 +533,11 @@ function runtimeInvocation(
   agentId: string,
   invocationId: string,
 ): RuntimeInvocation {
+  const dispatchId = positiveId(String(input.toolContext?.dispatchId ?? ""), "toolContext.dispatchId");
+  const runtimeGeneration = positiveId(
+    String(input.dispatchGeneration ?? ""),
+    "dispatchGeneration",
+  );
   const invocationKey = createHash("sha256")
     .update(stableJson({ runId, agentId, invocationId }))
     .digest("hex");
@@ -667,7 +562,13 @@ function runtimeInvocation(
     (BigInt(`0x${invocationKey.slice(0, 16)}`) &
       ((BigInt(1) << BigInt(63)) - BigInt(1))) +
     BigInt(1);
-  return { invocationKey, requestFingerprint, costEventId: (-positive).toString() };
+  return {
+    invocationKey,
+    requestFingerprint,
+    costEventId: (-positive).toString(),
+    dispatchId,
+    runtimeGeneration,
+  };
 }
 
 function gatewayTurnIdempotencyKey(invocationKey: string, attempt: number): string {
@@ -970,7 +871,7 @@ export class OpenClawRuntimeAdapter {
               const deliveredPrompt =
                 attempts === 1
                   ? prompt
-                  : `${prompt}\n\n# Structured-output retry\nYour previous response was rejected because it included text or Markdown formatting outside the JSON object. This is the only retry. Do not repeat tool actions already completed in this session. Do not explain, apologize, or claim the previous response was valid. Your entire response must start with { and end with }. Return exactly one strict JSON object matching the fixed output contract.`;
+                  : `${prompt}\n\n# Result-submission retry\nYour previous turn ended without a valid submit_result call. This is the only retry. Do not repeat other platform actions already completed in this session. Call submit_result exactly once with the required artifact, handoff_brief, and events object.`;
               const gatewayRunId = gatewayTurnIdempotencyKey(
                 invocation.invocationKey,
                 attempts,
@@ -995,7 +896,7 @@ export class OpenClawRuntimeAdapter {
                 },
               );
               try {
-                const parsed = parseTurn(result, attempts, gatewayRunId);
+                const parsed = parseTurn(result, gatewayRunId);
                 await this.verifySessionIdentity(
                   synchronized.openclawRef,
                   session.sessionKey,
@@ -1012,9 +913,9 @@ export class OpenClawRuntimeAdapter {
                   agentId,
                   ticketId: context.tickets.length === 1 ? context.tickets[0].id : null,
                   attempts,
-                  output: parsed.output,
                   usage: parsed.usage,
                   completion,
+                  replayInvalid: parsed.replayInvalid,
                 });
               } catch (error) {
                 if (
@@ -1358,10 +1259,11 @@ export class OpenClawRuntimeAdapter {
       ...(input.workspaceTools?.trim()
         ? ["# Platform tools", input.workspaceTools.trim(), ""]
         : []),
-      "# Fixed output contract",
-      `Return only strict JSON matching ${FIXED_OUTPUT_CONTRACT}.`,
+      "# Result submission",
+      "Do not print the result as chat text. Call the submit_result platform tool exactly once at the end of the turn.",
+      "Its single-line JSON input must contain exactly artifact, handoff_brief, and events.",
       "artifact must be a JSON object, handoff_brief must be a non-blank string, and every events entry must be a JSON object.",
-      "Do not wrap the JSON in Markdown fences and do not add top-level fields.",
+      "The broker supplies dispatch identifiers. Do not include them. Text after a successful submission is ignored.",
     ].join("\n");
   }
 
@@ -1672,7 +1574,7 @@ export class OpenClawRuntimeAdapter {
       );
     }
     return {
-      output: parseOutputContract(JSON.stringify(receipt.output), storedAttempts(receipt.attempts)),
+      output: receipt.output as unknown as RuntimeOutput,
       usage: storedUsage(receipt.usage),
       completion: storedCompletion(receipt.completion),
       attempts: storedAttempts(receipt.attempts),
@@ -1688,11 +1590,30 @@ export class OpenClawRuntimeAdapter {
       agentId: string;
       ticketId: string | null;
       attempts: number;
-      output: RuntimeOutput;
       usage: RuntimeUsage;
       completion: RuntimeCompletion;
+      replayInvalid: boolean;
     },
   ): Promise<WakeAgentResult> {
+    const submitted = await client.query<{ output: RuntimeOutput }>(
+      `SELECT output
+       FROM result_submissions
+       WHERE dispatch_id = $1 AND runtime_generation = $2`,
+      [input.dispatchId, input.runtimeGeneration],
+    );
+    const output = submitted.rows[0]?.output;
+    if (!output) {
+      if (input.replayInvalid) {
+        throw new RuntimeAdapterError(
+          "openclaw_turn_failed",
+          "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without a result submission",
+          { diagnostics: { hasResultSubmission: false, metaReplayInvalid: true } },
+        );
+      }
+      throw new MalformedOutputError(
+        "Agent completed its turn without calling submit_result",
+      );
+    }
     try {
       await client.query("BEGIN");
       const attributed = await client.query(
@@ -1742,9 +1663,9 @@ export class OpenClawRuntimeAdapter {
           costEventId: input.costEventId,
           attempts: input.attempts,
           output: {
-            artifact: input.output.artifact,
-            handoff_brief: input.output.handoff_brief,
-            events: input.output.events,
+            artifact: output.artifact,
+            handoff_brief: output.handoff_brief,
+            events: output.events,
           },
           usage: {
             input: input.usage.input,
@@ -1762,7 +1683,7 @@ export class OpenClawRuntimeAdapter {
             model: input.completion.model,
           },
         },
-        handoffBrief: input.output.handoff_brief,
+        handoffBrief: output.handoff_brief,
         tokenUsage: {
           input: input.usage.input,
           output: input.usage.output,
@@ -1774,7 +1695,7 @@ export class OpenClawRuntimeAdapter {
       });
       await client.query("COMMIT");
       return {
-        output: input.output,
+        output,
         usage: input.usage,
         completion: input.completion,
         attempts: input.attempts,
