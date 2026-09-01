@@ -462,11 +462,14 @@ function parseTurn(
   const completion = meta && isObject(meta.completion) ? meta.completion : null;
   const agentMeta = meta && isObject(meta.agentMeta) ? meta.agentMeta : null;
   const payloads = turn && Array.isArray(turn.payloads) ? turn.payloads : null;
-  const firstPayload = payloads?.length === 1 && isObject(payloads[0]) ? payloads[0] : null;
+  const finalPayload = payloads?.filter(
+    (payload): payload is Record<string, unknown> =>
+      isObject(payload) && typeof payload.text === "string" && payload.text.trim() !== "",
+  ).at(-1) ?? null;
 
   const envelopeKeys = Object.keys(envelope).sort().join(",");
   const turnKeys = turn ? Object.keys(turn).sort().join(",") : "";
-  const payloadKeys = firstPayload ? Object.keys(firstPayload).sort().join(",") : "";
+  const payloadKeys = finalPayload ? Object.keys(finalPayload).sort().join(",") : "";
   const failEnvelope = (): never => {
     const diag: JsonObject = {
       exitCode: result.exitCode,
@@ -480,13 +483,13 @@ function parseTurn(
       hasCompletion: !!completion,
       hasAgentMeta: !!agentMeta,
       payloadCount: payloads?.length ?? null,
-      hasFirstPayload: !!firstPayload,
+      hasFinalPayload: !!finalPayload,
     };
     if (turn) diag.turnHasExpectedKeys = turnKeys === "meta,payloads";
-    if (firstPayload) {
+    if (finalPayload) {
       diag.payloadHasExpectedKeys = payloadKeys === "mediaUrl,text";
-      diag.mediaUrlType = typeof firstPayload.mediaUrl;
-      diag.mediaUrlIsNull = firstPayload.mediaUrl === null;
+      diag.mediaUrlType = typeof finalPayload.mediaUrl;
+      diag.mediaUrlIsNull = finalPayload.mediaUrl === null;
     }
     if (meta) {
       diag.hasErrorField = Object.hasOwn(meta, "error");
@@ -524,7 +527,13 @@ function parseTurn(
     !completion ||
     !agentMeta ||
     turnKeys !== "meta,payloads" ||
-    (payloads !== null && payloads.length > 1) ||
+    !payloads ||
+    payloads.some((payload) =>
+      !isObject(payload) ||
+      Object.keys(payload).sort().join(",") !== "mediaUrl,text" ||
+      typeof payload.text !== "string" ||
+      payload.mediaUrl !== null
+    ) ||
     meta.aborted !== false ||
     (Object.hasOwn(meta, "replayInvalid") && typeof meta.replayInvalid !== "boolean") ||
     meta.livenessState !== "working" ||
@@ -548,14 +557,14 @@ function parseTurn(
     completedAgentMeta.usage,
     completedAgentMeta.lastCallUsage,
   );
-  if (!firstPayload) {
+  if (!finalPayload) {
     if (completedMeta.replayInvalid === true) {
       throw new RuntimeAdapterError(
         "openclaw_turn_failed",
           "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) without an output payload",
         {
           exitCode: result.exitCode,
-          diagnostics: { hasFirstPayload: false, metaReplayInvalid: true },
+          diagnostics: { hasFinalPayload: false, metaReplayInvalid: true },
         },
       );
     }
@@ -566,11 +575,8 @@ function parseTurn(
     }
     failEnvelope();
   }
-  const payload = firstPayload;
+  const payload = finalPayload;
   if (payload === null) return failEnvelope();
-  if (payloads?.length !== 1 || payloadKeys !== "mediaUrl,text" || payload.mediaUrl !== null) {
-    failEnvelope();
-  }
 
   let output: RuntimeOutput;
   try {
@@ -580,10 +586,26 @@ function parseTurn(
       throw new RuntimeAdapterError(
         "openclaw_turn_failed",
         "OpenClaw 2026.4.15 gateway turn produced mutating side effects (replayInvalid) with malformed output",
-        { diagnostics: { hasFirstPayload: true, metaReplayInvalid: true } },
+        { diagnostics: { hasFinalPayload: true, metaReplayInvalid: true } },
       );
     }
     throw error;
+  }
+  for (const earlierPayload of payloads.slice(0, payloads.lastIndexOf(finalPayload))) {
+    if (!isObject(earlierPayload) || typeof earlierPayload.text !== "string" || !earlierPayload.text.trim()) {
+      continue;
+    }
+    try {
+      parseOutputContract(earlierPayload.text, attempt);
+    } catch (error) {
+      if (error instanceof MalformedOutputError) continue;
+      throw error;
+    }
+    throw new RuntimeAdapterError(
+      "openclaw_turn_failed",
+      "OpenClaw 2026.4.15 gateway turn produced multiple valid output contracts",
+      { diagnostics: { validContractCount: 2 } },
+    );
   }
   return {
     output,
