@@ -52,13 +52,11 @@ services:
       target: coding-executor
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
-      ORBITFLOW_CODING_EXECUTOR_SOCKET: /run/orbitflow-executor/executor.sock
-      ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
-    volumes:
-      - run-workspaces:/var/lib/orbitflow/run-workspaces
-      - coding-executor-ipc:/run/orbitflow-executor
+      ORBITFLOW_CODING_EXECUTOR_PORT: 3005
+      ORBITFLOW_CODING_EXECUTOR_TOKEN: ${ORBITFLOW_CODING_EXECUTOR_TOKEN:-local-coding-executor-token}
+      ORBITFLOW_CODING_EXECUTOR_ROOT: /tmp/orbitflow-coding-executor
     healthcheck:
-      test: ["CMD-SHELL", "test -S /run/orbitflow-executor/executor.sock"]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3005/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -75,11 +73,11 @@ services:
       ORBITFLOW_TOOL_BROKER_TOKEN: ${ORBITFLOW_TOOL_BROKER_TOKEN:-local-tool-broker-token}
       ORBITFLOW_TOOL_BROKER_REMOTE_CONTEXT: "1"
       ORBITFLOW_AGENT_WORKSPACE_ROOT: /var/lib/orbitflow/runtime/workspaces
-      ORBITFLOW_CODING_EXECUTOR_SOCKET: /run/orbitflow-executor/executor.sock
+      ORBITFLOW_CODING_EXECUTOR_URL: http://coding-executor:3005
+      ORBITFLOW_CODING_EXECUTOR_TOKEN: ${ORBITFLOW_CODING_EXECUTOR_TOKEN:-local-coding-executor-token}
       ORBITFLOW_WORKSPACE_ROOT: /var/lib/orbitflow/run-workspaces
     volumes:
       - run-workspaces:/var/lib/orbitflow/run-workspaces
-      - coding-executor-ipc:/run/orbitflow-executor
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -91,7 +89,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
-    networks: [control]
+    networks: [control, provider]
 
   openclaw:
     build:
@@ -195,4 +193,3 @@ volumes:
   run-workspaces:
   openclaw-state:
   postgres-data:
-  coding-executor-ipc:

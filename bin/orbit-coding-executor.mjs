@@ -1,20 +1,26 @@
 #!/usr/bin/env node
 
-import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { createExecutionIdentityStore } from "../coding-adapter/src/executionIdentityStore.js";
 import { createOpenCodeAdapter } from "../coding-adapter/src/openCodeAdapter.js";
 import { createPublicErrorResponse, CliFailureError } from "../coding-adapter/src/errors.js";
+import { runSafeGit } from "../coding-adapter/src/git.js";
+import {
+  createWorkspaceArchive,
+  extractWorkspaceArchive,
+} from "../src/lib/runtime/workspace-archive.mjs";
 
-const SOCKET = requiredEnv("ORBITFLOW_CODING_EXECUTOR_SOCKET");
-const WORKSPACE_ROOT = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
-const MAX_REQUEST_BYTES = 64 * 1024;
+const PORT = positiveInteger(requiredEnv("ORBITFLOW_CODING_EXECUTOR_PORT"));
+const TOKEN = requiredEnv("ORBITFLOW_CODING_EXECUTOR_TOKEN");
+const EXECUTOR_ROOT = path.resolve(
+  process.env.ORBITFLOW_CODING_EXECUTOR_ROOT?.trim() || "/tmp/orbitflow-coding-executor",
+);
+const MAX_REQUEST_BYTES = 12 * 1024 * 1024;
 const operations = new Map();
 const pendingCancellations = new Set();
-const executionIdentityStore = createExecutionIdentityStore({ workspaceRoot: WORKSPACE_ROOT });
 
-await mkdir(path.dirname(SOCKET), { recursive: true, mode: 0o700 });
+await mkdir(EXECUTOR_ROOT, { recursive: true, mode: 0o700 });
 const server = http.createServer((request, response) => {
   void handleRequest(request, response).catch((error) => {
     if (!response.destroyed) {
@@ -22,11 +28,17 @@ const server = http.createServer((request, response) => {
     }
   });
 });
-server.listen(SOCKET, async () => {
-  await chmod(SOCKET, 0o600);
-});
+server.listen(PORT, "0.0.0.0");
 
 async function handleRequest(request, response) {
+  if (request.method === "GET" && request.url === "/healthz") {
+    writeJson(response, 200, { status: "live", service: "coding-executor" });
+    return;
+  }
+  if (request.headers.authorization !== `Bearer ${TOKEN}`) {
+    writeJson(response, 401, { ok: false, error: { code: "unauthorized", message: "authorization required" } });
+    return;
+  }
   if (request.method !== "POST" || !["/v1/delegate", "/v1/cancel"].includes(request.url)) {
     writeJson(response, 404, { ok: false, error: { code: "invalid_request", message: "not found" } });
     return;
@@ -46,6 +58,7 @@ async function handleRequest(request, response) {
     if (!response.destroyed) writeJson(response, 200, { ok: true, result: { cancelled: true } });
     return;
   }
+
   requireExactKeys(body, [
     "executionGid",
     "executionUid",
@@ -53,10 +66,9 @@ async function handleRequest(request, response) {
     "operationId",
     "runId",
     "task",
-    "workspace",
-    "workspaceIdentity",
+    "workspaceArchive",
   ]);
-  requireOperationId(body.operationId);
+  validateDelegation(body);
   if (operations.has(body.operationId)) throw new CliFailureError("coding operation already exists");
   const controller = new AbortController();
   let finishOperation;
@@ -74,8 +86,15 @@ async function handleRequest(request, response) {
   };
   request.once("aborted", cancelForDisconnect);
   response.once("close", cancelForDisconnect);
+  let operationRoot = null;
   try {
-    const authority = await executionAuthority(body);
+    operationRoot = await mkdtemp(path.join(EXECUTOR_ROOT, "operation-"));
+    const workspace = path.join(operationRoot, "workspace");
+    const gitHome = path.join(operationRoot, "git-home");
+    await mkdir(gitHome, { mode: 0o700 });
+    await extractWorkspaceArchive(body.workspaceArchive, workspace);
+    initializeGitWorkspace(workspace, gitHome);
+    const authority = await executionAuthority(workspace);
     const adapter = createOpenCodeAdapter({
       env: process.env,
       ...(process.env.ORBITFLOW_OPENCODE_BINARY ? { binary: process.env.ORBITFLOW_OPENCODE_BINARY } : {}),
@@ -86,30 +105,39 @@ async function handleRequest(request, response) {
       executionIdentity: { uid: body.executionUid, gid: body.executionGid },
       workspaceAuthority: authority,
     });
-    const result = await adapter.delegate_coding_task(body.task, body.workspace, {
+    const result = await adapter.delegate_coding_task(body.task, workspace, {
       signal: controller.signal,
     });
-    if (!response.destroyed) writeJson(response, 200, { ok: true, result });
+    const workspaceArchive = await createWorkspaceArchive(workspace);
+    if (!response.destroyed) {
+      writeJson(response, 200, { ok: true, result: { ...result, workspaceArchive } });
+    }
   } catch (error) {
     const payload = createPublicErrorResponse(error);
-    if (error?.containWorkspace === true) {
-      payload.containWorkspace = true;
-    }
+    if (error?.containWorkspace === true) payload.containWorkspace = true;
     if (!response.destroyed) writeJson(response, 400, { ok: false, error: payload });
   } finally {
     request.off("aborted", cancelForDisconnect);
     response.off("close", cancelForDisconnect);
     operations.delete(body.operationId);
     finishOperation();
+    if (operationRoot !== null) await rm(operationRoot, { recursive: true, force: true });
   }
 }
 
-async function executionAuthority(request) {
+function validateDelegation(request) {
+  requireOperationId(request.operationId);
   if (typeof request.runId !== "string" || !/^[1-9][0-9]*$/.test(request.runId)) {
     throw new CliFailureError("coding executor run id is invalid");
   }
+  if (typeof request.task !== "string" || request.task.trim() === "") {
+    throw new CliFailureError("coding executor task is invalid");
+  }
   if (typeof request.model !== "string" || request.model.trim() === "") {
     throw new CliFailureError("coding executor model is invalid");
+  }
+  if (typeof request.workspaceArchive !== "string" || request.workspaceArchive === "") {
+    throw new CliFailureError("coding executor workspace archive is invalid");
   }
   if (
     !Number.isSafeInteger(request.executionUid) ||
@@ -119,74 +147,24 @@ async function executionAuthority(request) {
   ) {
     throw new CliFailureError("coding executor identity is invalid");
   }
-  requireExactKeys(request.workspaceIdentity, [
-    "gitDevice",
-    "gitInode",
-    "markerDevice",
-    "markerInode",
-    "workspaceDevice",
-    "workspaceId",
-    "workspaceInode",
-  ]);
-  for (const field of [
-    "gitDevice",
-    "gitInode",
-    "markerDevice",
-    "markerInode",
-    "workspaceDevice",
-    "workspaceInode",
-  ]) {
-    if (!/^\d+$/.test(request.workspaceIdentity[field] ?? "")) {
-      throw new CliFailureError("coding executor workspace identity is invalid");
-    }
-  }
-  if (
-    typeof request.workspaceIdentity.workspaceId !== "string" ||
-    request.workspaceIdentity.workspaceId === ""
-  ) {
-    throw new CliFailureError("coding executor workspace identity is invalid");
-  }
-  const expectedWorkspace = path.join(WORKSPACE_ROOT, `run-${request.runId}`);
-  if (request.workspace !== expectedWorkspace || await realpath(request.workspace) !== expectedWorkspace) {
+}
+
+async function executionAuthority(workspace) {
+  const canonical = await realpath(workspace);
+  const initial = await lstat(canonical);
+  if (canonical !== workspace || !initial.isDirectory() || initial.isSymbolicLink()) {
     throw new CliFailureError("coding executor workspace is invalid");
   }
-  const identity = await executionIdentityStore.require(request.runId, expectedWorkspace);
-  const stat = await lstat(expectedWorkspace);
-  if (
-    identity.version !== 2 ||
-    identity.state !== "active" ||
-    identity.runId !== request.runId ||
-    identity.workspace !== expectedWorkspace ||
-    identity.workspaceDevice !== String(stat.dev) ||
-    identity.workspaceInode !== String(stat.ino) ||
-    request.workspaceIdentity.workspaceDevice !== String(stat.dev) ||
-    request.workspaceIdentity.workspaceInode !== String(stat.ino) ||
-    identity.uid !== request.executionUid ||
-    identity.gid !== request.executionGid ||
-    stat.uid !== request.executionUid ||
-    stat.gid !== request.executionGid
-  ) {
-    throw new CliFailureError("coding executor workspace identity changed");
-  }
-  const handle = {
-    workspace: expectedWorkspace,
-    workspaceDevice: String(stat.dev),
-    workspaceInode: String(stat.ino),
-  };
+  const handle = { workspace, device: String(initial.dev), inode: String(initial.ino) };
   return {
-    async resolve(workspace) {
-      if (workspace !== expectedWorkspace) throw new CliFailureError("coding executor workspace changed");
+    async resolve(candidate) {
+      if (candidate !== workspace) throw new CliFailureError("coding executor workspace changed");
       return handle;
     },
     async assertCurrent(candidate) {
       try {
-        const current = await lstat(expectedWorkspace);
-        return (
-          candidate === handle &&
-          String(current.dev) === handle.workspaceDevice &&
-          String(current.ino) === handle.workspaceInode &&
-          current.uid === request.executionUid
-        );
+        const current = await lstat(workspace);
+        return candidate === handle && String(current.dev) === handle.device && String(current.ino) === handle.inode;
       } catch {
         return false;
       }
@@ -195,6 +173,25 @@ async function executionAuthority(request) {
       if (!(await this.assertCurrent(candidate))) throw new Error("workspace identity changed");
     },
   };
+}
+
+function initializeGitWorkspace(workspace, home) {
+  runSafeGit(["init", "-q"], { cwd: workspace, home });
+  runSafeGit(["add", "-A"], { cwd: workspace, home });
+  runSafeGit(
+    [
+      "-c",
+      "user.email=workspace@orbitflow.local",
+      "-c",
+      "user.name=orbitflow-workspace",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "Import delegated workspace",
+    ],
+    { cwd: workspace, home },
+  );
 }
 
 function requireOperationId(value) {
@@ -225,14 +222,14 @@ function requireExactKeys(value, expected) {
 }
 
 function positiveInteger(value) {
-  if (!/^[1-9][0-9]*$/.test(value)) throw new CliFailureError("coding timeout is invalid");
+  if (!/^[1-9][0-9]*$/.test(value)) throw new CliFailureError("coding executor integer is invalid");
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed)) throw new CliFailureError("coding timeout is invalid");
+  if (!Number.isSafeInteger(parsed)) throw new CliFailureError("coding executor integer is invalid");
   return parsed;
 }
 
 function requiredEnv(name) {
-  const value = process.env[name];
+  const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
 }

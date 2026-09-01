@@ -27,6 +27,10 @@ import {
   validateOpenClawToolContext,
 } from "../src/lib/runtime/openclaw-tool-context.mjs";
 import { buildPlatformCommandInput } from "../src/lib/runtime/platform-tool-broker-input.mjs";
+import {
+  createWorkspaceArchive,
+  replaceWorkspaceFromArchive,
+} from "../src/lib/runtime/workspace-archive.mjs";
 
 const { Pool } = pg;
 const PLATFORM_COMMANDS = new Set([
@@ -48,7 +52,8 @@ if (PORT !== null && BROKER_TOKEN === null) {
   throw new Error("ORBITFLOW_TOOL_BROKER_TOKEN is required with ORBITFLOW_TOOL_BROKER_PORT");
 }
 const REMOTE_CONTEXT = process.env.ORBITFLOW_TOOL_BROKER_REMOTE_CONTEXT === "1";
-const EXECUTOR_SOCKET = requiredEnv("ORBITFLOW_CODING_EXECUTOR_SOCKET");
+const EXECUTOR_URL = internalUrl(requiredEnv("ORBITFLOW_CODING_EXECUTOR_URL"));
+const EXECUTOR_TOKEN = requiredEnv("ORBITFLOW_CODING_EXECUTOR_TOKEN");
 const AGENT_WORKSPACE_ROOT = requiredEnv("ORBITFLOW_AGENT_WORKSPACE_ROOT");
 const WORKSPACE_ROOT = requiredEnv("ORBITFLOW_WORKSPACE_ROOT");
 const DATABASE_URL = requiredEnv("DATABASE_URL");
@@ -183,20 +188,33 @@ function remoteExecutorAdapter({ context, identity, model, workspaceAuthority })
     async delegate_coding_task(task, workspace, { signal } = {}) {
       const handle = await workspaceAuthority.resolve(workspace);
       try {
+        const workspaceArchive = await createWorkspaceArchive(workspace);
         const result = await executorRequest({
           task,
-          workspace,
           runId: context.runId,
           executionUid: identity.uid,
           executionGid: identity.gid,
           model,
-          workspaceIdentity: immutableWorkspaceIdentity(handle),
+          workspaceArchive,
         }, signal);
+        if (!result || typeof result !== "object" || typeof result.workspaceArchive !== "string") {
+          throw new WorkspaceError("coding executor returned an invalid workspace archive");
+        }
         await requireActiveDispatch(context);
         if (!(await workspaceAuthority.assertCurrent(handle))) {
           throw new WorkspaceError("workspace ownership changed during remote coding execution");
         }
-        return result;
+        const { workspaceArchive: returnedArchive, ...delegation } = result;
+        try {
+          await replaceWorkspaceFromArchive(returnedArchive, workspace);
+        } catch {
+          await workspaceAuthority.containCredentialExposure(handle);
+          throw new WorkspaceError("coding executor workspace update failed and was quarantined");
+        }
+        if (!(await workspaceAuthority.assertCurrent(handle))) {
+          throw new WorkspaceError("workspace ownership changed while applying coding output");
+        }
+        return delegation;
       } catch (error) {
         if (error?.containWorkspace === true) {
           await workspaceAuthority.containCredentialExposure(handle);
@@ -204,18 +222,6 @@ function remoteExecutorAdapter({ context, identity, model, workspaceAuthority })
         throw error;
       }
     },
-  };
-}
-
-function immutableWorkspaceIdentity(handle) {
-  return {
-    workspaceId: handle.workspaceId,
-    workspaceDevice: handle.record.workspaceDevice,
-    workspaceInode: handle.record.workspaceInode,
-    gitDevice: handle.record.gitDevice,
-    gitInode: handle.record.gitInode,
-    markerDevice: handle.record.markerDevice,
-    markerInode: handle.record.markerInode,
   };
 }
 
@@ -323,36 +329,31 @@ async function executorRequest(payload, signal) {
   }
 }
 
-function postExecutor(requestPath, payload) {
-  const body = JSON.stringify(payload);
-  return new Promise((resolve, reject) => {
-    const request = http.request({
-      socketPath: EXECUTOR_SOCKET,
-      path: requestPath,
-      method: "POST",
-      headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
-    }, (response) => {
-      let contents = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        contents += chunk;
-        if (Buffer.byteLength(contents) > 12 * 1024 * 1024) {
-          request.destroy(new Error("coding executor response is too large"));
-        }
-      });
-      response.on("end", () => {
-        try {
-          const value = JSON.parse(contents);
-          if (value.ok === true) resolve(value.result);
-          else reject(Object.assign(new Error(value.error?.message ?? "coding executor failed"), value.error));
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
-    request.on("error", reject);
-    request.end(body);
+async function postExecutor(requestPath, payload) {
+  const response = await fetch(`${EXECUTOR_URL}${requestPath}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${EXECUTOR_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
   });
+  const contents = await readResponse(response, 12 * 1024 * 1024);
+  const value = JSON.parse(contents);
+  if (response.ok && value.ok === true) return value.result;
+  throw Object.assign(new Error(value.error?.message ?? "coding executor failed"), value.error);
+}
+
+async function readResponse(response, limit) {
+  let contents = "";
+  if (!response.body) throw new Error("coding executor returned an empty response");
+  const decoder = new TextDecoder();
+  for await (const chunk of response.body) {
+    contents += decoder.decode(chunk, { stream: true });
+    if (Buffer.byteLength(contents) > limit) throw new Error("coding executor response is too large");
+  }
+  contents += decoder.decode();
+  return contents;
 }
 
 function cancellationError(signal) {
@@ -400,6 +401,14 @@ function requiredEnv(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function internalUrl(value) {
+  const parsed = new URL(value);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("ORBITFLOW_CODING_EXECUTOR_URL must use http or https");
+  }
+  return value.replace(/\/$/, "");
 }
 
 function positiveInteger(value, field) {
