@@ -10,6 +10,10 @@ try {
   current = template;
 }
 current.tools = template.tools;
+current.gateway = {
+  ...(current.gateway ?? {}),
+  reload: template.gateway.reload,
+};
 if (process.env.ORBITFLOW_OPENCLAW_BASE_URL) {
   template.models.providers.openrouter.baseUrl = process.env.ORBITFLOW_OPENCLAW_BASE_URL;
 }

@@ -1,4 +1,9 @@
 {
+  "gateway": {
+    "reload": {
+      "mode": "hot"
+    }
+  },
   "models": {
     "mode": "replace",
     "providers": {
@@ -7,18 +12,18 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "openai/gpt-4.1-mini",
-            "name": "OpenAI GPT-4.1 Mini",
-            "reasoning": false,
+            "id": "z-ai/glm-5.3-flash",
+            "name": "Z.ai GLM 5.3 Flash",
+            "reasoning": true,
             "input": ["text"],
             "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
+              "input": 0.075,
+              "output": 0.25,
+              "cacheRead": 0.015,
               "cacheWrite": 0
             },
             "contextWindow": 1048576,
-            "maxTokens": 32768
+            "maxTokens": 131072
           }
         ]
       }
@@ -27,10 +32,10 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openrouter/openai/gpt-4.1-mini"
+        "primary": "openrouter/z-ai/glm-5.3-flash"
       },
       "models": {
-        "openrouter/openai/gpt-4.1-mini": {}
+        "openrouter/z-ai/glm-5.3-flash": {}
       }
     }
   },
