@@ -13,7 +13,7 @@ import { parseAgentGuardrails } from "../guardrails.ts";
 import { writeOpenClawWorkspace } from "./openclaw-workspace.ts";
 
 export const EXPECTED_OPENCLAW_VERSION = "2026.4.15";
-export const DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS = 5 * 60 * 1_000;
+export const DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS = 13 * 60 * 1_000;
 
 const MAX_OPENCLAW_WAKE_TIMEOUT_MS = 30 * 60 * 1_000;
 const MIN_OPENCLAW_WAKE_TIMEOUT_MS = 50;
@@ -868,7 +868,6 @@ export class OpenClawRuntimeAdapter {
                 wakeTimeoutMs,
                 "the OpenClaw agent command",
               );
-              const commandTimeoutSeconds = Math.max(1, Math.ceil(commandTimeoutMs / 1_000));
               const deliveredPrompt =
                 attempts === 1
                   ? prompt
@@ -880,25 +879,24 @@ export class OpenClawRuntimeAdapter {
                 attempts,
               );
               launchedGatewayRunId = gatewayRunId;
-              const result = await this.runGatewayCall(
-                "agent",
-                {
-                  message: deliveredPrompt,
-                  agentId: synchronized.openclawRef,
-                  sessionKey: session.sessionKey,
-                  timeout: commandTimeoutSeconds,
-                  deliver: false,
-                  idempotencyKey: gatewayRunId,
-                },
-                {
-                  timeoutMs: commandTimeoutMs,
-                  expectFinal: true,
-                  activeAgentRef: synchronized.openclawRef,
-                  activeSessionKey: session.sessionKey,
-                  activeRunId: gatewayRunId,
-                },
-              );
               try {
+                const result = await this.runGatewayCall(
+                  "agent",
+                  {
+                    message: deliveredPrompt,
+                    agentId: synchronized.openclawRef,
+                    sessionKey: session.sessionKey,
+                    deliver: false,
+                    idempotencyKey: gatewayRunId,
+                  },
+                  {
+                    timeoutMs: commandTimeoutMs,
+                    expectFinal: true,
+                    activeAgentRef: synchronized.openclawRef,
+                    activeSessionKey: session.sessionKey,
+                    activeRunId: gatewayRunId,
+                  },
+                );
                 const parsed = parseTurn(result, gatewayRunId);
                 await this.verifySessionIdentity(
                   synchronized.openclawRef,
@@ -921,6 +919,27 @@ export class OpenClawRuntimeAdapter {
                   replayInvalid: parsed.replayInvalid,
                 });
               } catch (error) {
+                const runtimeError = safeError(error);
+                if (runtimeError.code === "openclaw_timeout" && attempts === 1) {
+                  try {
+                    await this.terminateRef(ref, {
+                      sessionKey: session.sessionKey,
+                      runId: gatewayRunId,
+                    });
+                  } catch (terminationError) {
+                    throw new RuntimeAdapterError(
+                      "openclaw_termination_failed",
+                      "OpenClaw wake timed out and its gateway session could not be confirmed aborted",
+                      {
+                        originalErrorCode: runtimeError.code,
+                        terminationErrorName:
+                          terminationError instanceof Error ? terminationError.name : "unknown",
+                      },
+                    );
+                  }
+                  launchedGatewayRunId = null;
+                  continue;
+                }
                 if (
                   error instanceof MalformedOutputError &&
                   attempts === 1 &&

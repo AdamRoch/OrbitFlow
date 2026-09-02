@@ -3,7 +3,10 @@ import path from "node:path";
 import pg from "pg";
 import { startWorkflowEngine } from "../lib/postgres/workflow-engine.ts";
 import { OpenClawEngineAdapter } from "../lib/runtime/engine-adapter.ts";
-import { OpenClawRuntimeAdapter } from "../lib/runtime/openclaw.ts";
+import {
+  DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS,
+  OpenClawRuntimeAdapter,
+} from "../lib/runtime/openclaw.ts";
 import { createProductionWorkspaceTools } from "../lib/runtime/workspace-tools.ts";
 import {
   loadOpenClawModelCatalog,
@@ -65,7 +68,10 @@ const openclaw = new OpenClawRuntimeAdapter({
   runtimeRoot,
   openClawCommand,
   openClawCommandArguments: openClawArguments,
-  wakeTimeoutMs: positiveIntegerEnvironment("ORBITFLOW_OPENCLAW_WAKE_TIMEOUT_MS", 300_000),
+  wakeTimeoutMs: positiveIntegerEnvironment(
+    "ORBITFLOW_OPENCLAW_WAKE_TIMEOUT_MS",
+    DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS,
+  ),
   gatewayEnvironment,
   runtimeUrl,
   runtimeToken,

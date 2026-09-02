@@ -45,6 +45,7 @@
   },
   "agents": {
     "defaults": {
+      "timeoutSeconds": 720,
       "model": {
         "primary": "openrouter/z-ai/glm-5.3-flash"
       },
