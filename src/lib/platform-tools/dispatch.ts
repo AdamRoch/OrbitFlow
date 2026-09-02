@@ -316,6 +316,12 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
     if (typeof input.type !== "string" || !MESSAGE_TYPES.has(input.type as MessageType)) {
       throw new PlatformToolError("invalid_message_type", "type must be a supported message type");
     }
+    if (input.type === "question" || input.type === "answer") {
+      throw new PlatformToolError(
+        "invalid_message_type",
+        "post_message does not accept question or answer; submit workflow questions through submit_result events",
+      );
+    }
     return {
       command, ...attribution(input), ticketId: id(input.ticketId, "ticketId"), recipient: requiredString(input.recipient, "recipient", 256),
       type: input.type as MessageType, payload: jsonObject(input.payload, "payload"), handoffBrief: nullableText(input.handoffBrief, "handoffBrief"),

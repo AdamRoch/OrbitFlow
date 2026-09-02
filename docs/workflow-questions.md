@@ -16,6 +16,8 @@ one `events` entry, and no fields on that event other than `type: "question"`
 and a non-blank `question` of at most 12,000 characters. An answer turn cannot
 raise another question. Invalid shapes fail closed as malformed runtime output
 instead of discarding an artifact or another event.
+The platform broker rejects agent `post_message` calls with `question` or
+`answer`; workflow questions must use the output event contract above.
 
 The node snapshot selects one accepted route:
 
