@@ -1731,11 +1731,12 @@ async function handleChannelIntakeOutput(
   const softwareFactory = workflow.rows[0]?.name === "Software Factory";
   const factory = decision.spec.factory;
   if (softwareFactory !== (factory !== undefined)) {
-    throw new WorkflowGraphError(
-      softwareFactory
+    return {
+      kind: "contract_violation",
+      error: softwareFactory
         ? "Software Factory intake requires spec.factory.outputMode"
         : "spec.factory.outputMode is reserved for Software Factory runs",
-    );
+    };
   }
 
   const spec: JsonObject = {
