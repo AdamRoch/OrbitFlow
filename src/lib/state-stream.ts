@@ -1,17 +1,8 @@
 import { Client } from "pg";
-import {
-  createStateEvent,
-  parseStateEvent,
-  type StateEvent,
-  type StateEventListener,
-} from "./state-events.ts";
+import { parseStateEvent, type StateEvent, type StateEventListener } from "./state-events.ts";
 
 export const STATE_NOTIFICATION_CHANNEL = "orbitflow_state_changed";
-
-interface StateEventHubOptions {
-  connectionString?: string;
-  reconnectDelayMs?: number;
-}
+const RECONNECT_DELAY_MS = 1_000;
 
 /**
  * One PostgreSQL LISTEN connection fans committed database wake-ups out to the
@@ -21,16 +12,10 @@ interface StateEventHubOptions {
  */
 export class StateEventHub {
   private readonly listeners = new Set<StateEventListener>();
-  private readonly connectionString: string | undefined;
-  private readonly reconnectDelayMs: number;
+  private readonly connectionString = process.env.DATABASE_URL;
   private client: Client | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connecting: Promise<void> | null = null;
-
-  constructor(options: StateEventHubOptions = {}) {
-    this.connectionString = options.connectionString ?? process.env.DATABASE_URL;
-    this.reconnectDelayMs = options.reconnectDelayMs ?? 1_000;
-  }
 
   subscribe(listener: StateEventListener): () => void {
     this.listeners.add(listener);
@@ -39,19 +24,6 @@ export class StateEventHub {
       this.listeners.delete(listener);
       if (this.listeners.size === 0) void this.stop();
     };
-  }
-
-  /** Useful to proof code: wait until LISTEN is installed before producing rows. */
-  async ready(): Promise<void> {
-    await this.connect();
-  }
-
-  get subscriberCount(): number {
-    return this.listeners.size;
-  }
-
-  get listening(): boolean {
-    return this.client !== null;
   }
 
   async stop(): Promise<void> {
@@ -93,12 +65,14 @@ export class StateEventHub {
         // PostgreSQL does not replay notifications that committed before this
         // LISTEN completed. This is deliberately only a wake-up: connected
         // browsers must re-fetch their bounded, authoritative snapshot.
-        this.broadcast(createStateEvent({
+        this.broadcast({
+          schemaVersion: 1,
           type: "state.resync",
           runId: null,
           agentId: null,
           ticketId: null,
-        }));
+          occurredAt: new Date().toISOString(),
+        });
       } catch {
         await client.end().catch(() => undefined);
         this.reconnect(client);
@@ -115,7 +89,7 @@ export class StateEventHub {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();
-    }, this.reconnectDelayMs);
+    }, RECONNECT_DELAY_MS);
   }
 
   private broadcast(event: StateEvent): void {

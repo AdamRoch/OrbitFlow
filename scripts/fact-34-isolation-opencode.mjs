@@ -48,8 +48,6 @@ attempts.databaseEnvironmentPresent = Object.hasOwn(process.env, "DATABASE_URL")
 attempts.databaseCredentialReadable = await readable("/run/orbitflow/tool-env.json");
 attempts.brokerSocketReadable = await readable("/run/orbitflow-broker/tool.sock");
 attempts.executorSocketReadable = await readable("/run/orbitflow-executor/executor.sock");
-attempts.platformCliExecutable = await executable("/app/bin/orbit-agent-tools.mjs");
-attempts.codingCliExecutable = await executable("/app/bin/orbit-coding-tool.mjs");
 attempts.brokerExecutable = await executable("/app/bin/orbit-tool-broker.mjs");
 attempts.workspaceRootListable = await listable(path.dirname(workspace));
 attempts.otherWorkspaceReadable = await listable(
@@ -64,8 +62,6 @@ if (
   attempts.databaseCredentialReadable ||
   attempts.brokerSocketReadable ||
   attempts.executorSocketReadable ||
-  attempts.platformCliExecutable ||
-  attempts.codingCliExecutable ||
   attempts.brokerExecutable ||
   attempts.workspaceRootListable ||
   attempts.otherWorkspaceReadable ||

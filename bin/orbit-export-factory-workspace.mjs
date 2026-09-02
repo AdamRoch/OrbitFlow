@@ -3,14 +3,17 @@ import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
 try {
-  const options = parseOptions(process.argv.slice(2), ["--run-id", "--destination"]);
-  const runId = options.get("--run-id");
-  if (!/^[1-9]\d*$/.test(runId)) throw new Error("--run-id must be a positive integer");
-  const requestedDestination = options.get("--destination");
+  const { values: { "run-id": runId, destination: requestedDestination } } = parseArgs({
+    options: { "run-id": { type: "string" }, destination: { type: "string" } },
+    strict: true,
+  });
+  if (!/^[1-9]\d*$/.test(runId ?? "")) throw new Error("--run-id must be a positive integer");
+  if (!requestedDestination) throw new Error("--destination is required");
   if (!path.isAbsolute(requestedDestination)) {
     throw new Error("--destination must be an absolute host path");
   }
@@ -36,23 +39,6 @@ try {
 } catch (error) {
   process.stderr.write(`Export refused: ${error?.message ?? "unknown error"}\n`);
   process.exitCode = 1;
-}
-
-function parseOptions(args, supported) {
-  if (args.length !== supported.length * 2) throw new Error("unexpected workspace export arguments");
-  const options = new Map();
-  for (let index = 0; index < args.length; index += 2) {
-    const name = args[index];
-    const value = args[index + 1];
-    if (!supported.includes(name) || !value || options.has(name)) {
-      throw new Error("unexpected workspace export arguments");
-    }
-    options.set(name, value);
-  }
-  for (const name of supported) {
-    if (!options.has(name)) throw new Error(`${name} is required`);
-  }
-  return options;
 }
 
 function runDockerCompose({ destination, runId, owner }) {

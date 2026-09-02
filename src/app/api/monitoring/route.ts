@@ -1,9 +1,8 @@
-import { handleError, ok } from "@/lib/api";
+import { handleError, ok, ValidationError } from "@/lib/api";
 import { getControlPlaneRepository } from "@/lib/control-plane";
 import type { MonitoringFilters } from "@/lib/control-plane/types";
 import { parseId } from "@/lib/control-plane/validate";
 import { MESSAGE_TYPES } from "@/lib/message-types";
-import { ValidationError } from "@/lib/validate";
 
 /**
  * GET /api/monitoring?runId=&agentId=&messageType=

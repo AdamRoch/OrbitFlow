@@ -75,11 +75,6 @@ export interface RunWorkerOptions extends ConsumeOptions {
   onOperational?: () => void;
 }
 
-export interface MessageBusWorker {
-  readonly done: Promise<void>;
-  stop(): Promise<void>;
-}
-
 export class MessageEnvelopeError extends TypeError {
   readonly field: string;
 
@@ -97,16 +92,47 @@ const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_RETRY_INTERVAL_MS = 250;
 const CANDIDATE_RUN_LIMIT = 32;
 
-function positiveDatabaseId(value: DatabaseId, field: string): string {
-  if (typeof value === "bigint") {
-    if (value > BigInt(0)) return value.toString();
-  } else if (typeof value === "number") {
-    if (Number.isSafeInteger(value) && value > 0) return String(value);
-  } else if (/^[1-9][0-9]*$/.test(value)) {
-    return value;
-  }
-
+/** Shared id validation: bigint, safe integer, or decimal string, returned as text. */
+export function positiveId(value: unknown, field: string): string {
+  if (typeof value === "bigint" && value > BigInt(0)) return value.toString();
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
+  if (typeof value === "string" && /^[1-9][0-9]*$/.test(value)) return value;
   throw new MessageEnvelopeError(field, "must be a positive integer");
+}
+
+export function nonBlank(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${field} must be a non-blank string`);
+  }
+  return value.trim();
+}
+
+export async function inTransaction<T>(
+  pool: Pool,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await operation(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Timestamps double as optimistic-lock versions. `pg` may hand back either a
+ * Date or the raw `YYYY-MM-DD HH:MM:SS.ffffff+00` text; return ISO-8601 with
+ * microseconds intact so clients can send it back as a precondition.
+ */
+export function iso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
 }
 
 function nonBlankString(value: unknown, field: string): string {
@@ -191,7 +217,7 @@ function interval(value: number | undefined, fallback: number, field: string): n
   return resolved;
 }
 
-function messageFromRow(row: QueryResultRow): MessageRow {
+export function messageFromRow(row: QueryResultRow): MessageRow {
   return {
     id: row.id,
     runId: row.run_id,
@@ -222,11 +248,11 @@ export async function insertMessage(
     throw new MessageEnvelopeError("message", "must be an object");
   }
 
-  const runId = positiveDatabaseId(envelope.runId, "runId");
+  const runId = positiveId(envelope.runId, "runId");
   const ticketId =
     envelope.ticketId === undefined || envelope.ticketId === null
       ? null
-      : positiveDatabaseId(envelope.ticketId, "ticketId");
+      : positiveId(envelope.ticketId, "ticketId");
   const sender = nonBlankString(envelope.sender, "sender");
   const recipient = nonBlankString(envelope.recipient, "recipient");
   if (!MESSAGE_TYPE_SET.has(envelope.type)) {
@@ -526,24 +552,4 @@ export async function runMessageBusWorker(
       throw error;
     }
   }
-}
-
-export function startMessageBusWorker(
-  pool: Pool,
-  handler: DatabaseRoutingHandler,
-  options: Omit<RunWorkerOptions, "signal"> = { consumerId: "engine" },
-): MessageBusWorker {
-  const controller = new AbortController();
-  const done = runMessageBusWorker(pool, handler, {
-    ...options,
-    signal: controller.signal,
-  });
-
-  return {
-    done,
-    async stop() {
-      controller.abort();
-      await done;
-    },
-  };
 }

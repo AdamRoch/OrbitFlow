@@ -1,6 +1,5 @@
-import { handleError, type RouteContext } from "@/lib/api";
+import { handleError, resourceResponse, type RouteContext } from "@/lib/api";
 import { getControlPlaneRepository } from "@/lib/control-plane";
-import { resourceResponse } from "@/lib/control-plane/http";
 import { parseId } from "@/lib/control-plane/validate";
 
 type SkillContext = RouteContext<{ id: string; skillId: string }>;

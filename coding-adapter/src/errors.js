@@ -1,38 +1,17 @@
-// Authoritative public failure contract for the executable coding tool. Runtime
-// serialization, tests, and docs all consume or point to this schema so adding a
-// failure cannot silently create an undocumented response code.
-
-export const PUBLIC_ERROR_RESPONSE_SCHEMA = Object.freeze({
-  required: Object.freeze(["code", "message"]),
-  additionalProperties: false,
-  properties: Object.freeze({
-    code: Object.freeze({
-      enum: Object.freeze([
-        "internal_failure",
-        "missing_credentials",
-        "cli_failure",
-        "timeout",
-        "malformed_output",
-        "output_too_large",
-        "credential_exposure",
-        "workspace_invalid",
-        "persistence_failure",
-        "invalid_request",
-      ]),
-    }),
-    message: Object.freeze({ type: "string", maxLength: 1_000 }),
-    exitCode: Object.freeze({ type: "integer" }),
-    signal: Object.freeze({ type: "string" }),
-    timeoutMs: Object.freeze({ type: "integer", minimum: 1 }),
-    limitBytes: Object.freeze({ type: "integer", minimum: 1 }),
-    stderrTail: Object.freeze({ type: "string", maxLength: 4_000 }),
-    stdoutTail: Object.freeze({ type: "string", maxLength: 4_000 }),
-    rawTail: Object.freeze({ type: "string", maxLength: 500 }),
-    varName: Object.freeze({ type: "string" }),
-  }),
-});
-
-const PUBLIC_ERROR_CODES = new Set(PUBLIC_ERROR_RESPONSE_SCHEMA.properties.code.enum);
+// Public failure codes for the executable coding tool. Anything else is
+// reported as internal_failure.
+export const PUBLIC_ERROR_CODES = new Set([
+  "internal_failure",
+  "missing_credentials",
+  "cli_failure",
+  "timeout",
+  "malformed_output",
+  "output_too_large",
+  "credential_exposure",
+  "workspace_invalid",
+  "persistence_failure",
+  "invalid_request",
+]);
 
 export function createPublicErrorResponse(error) {
   const code = PUBLIC_ERROR_CODES.has(error?.code) ? error.code : "internal_failure";

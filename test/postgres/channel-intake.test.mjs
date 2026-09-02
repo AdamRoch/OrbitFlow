@@ -4,9 +4,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
-import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
+import { consumeNextMessage, insertMessage } from "../../src/lib/postgres/message-bus.ts";
 import {
-  consumeNextWorkflowMessage,
+  routeWorkflowMessage,
   dispatchNextWorkflowNode,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import {
@@ -76,7 +76,7 @@ test("FACT-16 orchestrator channel intake", async () => {
 
     async function consumeThrough(messageId, consumerId) {
       for (let attempt = 0; attempt < 100; attempt += 1) {
-        const consumed = await consumeNextWorkflowMessage(pool, { consumerId });
+        const consumed = await consumeNextMessage(pool, routeWorkflowMessage, { consumerId });
         if (consumed?.message.id === messageId) return consumed;
       }
       assert.fail(`message ${messageId} was not consumed`);

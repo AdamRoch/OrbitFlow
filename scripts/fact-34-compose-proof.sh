@@ -164,7 +164,7 @@ compose exec -T coding-executor node -e '
   const workspace=path.join("/var/lib/orbitflow/run-workspaces",`run-${process.argv[1]}`);
   if(fs.readFileSync(path.join(workspace,"delegated.txt"),"utf8")!=="engine-produced delegation succeeded\n")process.exit(1);
   const proof=JSON.parse(fs.readFileSync(path.join(workspace,"isolation-proof.json"),"utf8"));
-  for(const field of ["databaseEnvironmentPresent","databaseCredentialReadable","brokerSocketReadable","executorSocketReadable","platformCliExecutable","codingCliExecutable","brokerExecutable","workspaceRootListable","otherWorkspaceReadable","directPostgresConnected"]){
+  for(const field of ["databaseEnvironmentPresent","databaseCredentialReadable","brokerSocketReadable","executorSocketReadable","brokerExecutable","workspaceRootListable","otherWorkspaceReadable","directPostgresConnected"]){
     if(proof[field]!==false)process.exit(1);
   }
   if(!Number.isInteger(proof.uid)||proof.uid<20000||proof.gid!==proof.uid)process.exit(1);

@@ -1,5 +1,5 @@
 import { subscribeToStateEvents } from "@/lib/state-stream";
-import type { StateEvent, StateEventListener } from "@/lib/state-events";
+import type { StateEvent } from "@/lib/state-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,10 +15,7 @@ function encodeComment(comment: string): Uint8Array {
   return encoder.encode(`: ${comment}\n\n`);
 }
 
-export function stateStreamResponse(
-  request: Request,
-  subscribe: (listener: StateEventListener) => () => void = subscribeToStateEvents,
-): Response {
+export function GET(request: Request): Response {
   let unsubscribe: (() => void) | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -52,7 +49,7 @@ export function stateStreamResponse(
         }
         controller!.enqueue(chunk);
       };
-      unsubscribe = subscribe((event) => send(encodeEvent(event)));
+      unsubscribe = subscribeToStateEvents((event) => send(encodeEvent(event)));
       send(encodeComment("connected"));
       heartbeat = setInterval(() => send(encodeComment("keepalive")), HEARTBEAT_MS);
       request.signal.addEventListener("abort", close, { once: true });
@@ -68,8 +65,4 @@ export function stateStreamResponse(
       "X-Accel-Buffering": "no",
     },
   });
-}
-
-export function GET(request: Request): Response {
-  return stateStreamResponse(request);
 }

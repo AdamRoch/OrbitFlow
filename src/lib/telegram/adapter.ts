@@ -2,6 +2,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
   insertMessage,
+  inTransaction,
+  nonBlank,
+  positiveId,
   type JsonObject,
   type MessageRow,
 } from "../postgres/message-bus.ts";
@@ -9,7 +12,7 @@ import {
   WorkflowGraphError,
   parseWorkflowGraph,
   workflowEntryNodeId,
-} from "../workflow/graph.ts";
+} from "../workflow/graph-contract.ts";
 import { collectingChannelSpec } from "../channel-intake.ts";
 import { isChannelStatusRequest } from "../channel-reporting.ts";
 import {
@@ -85,21 +88,6 @@ interface ClaimedOutbound extends QueryResultRow {
   payload: JsonObject;
 }
 
-function nonBlank(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new TypeError(`${field} must be a non-blank string`);
-  }
-  return value.trim();
-}
-
-function positiveInteger(value: unknown, field: string): string {
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
-    return String(value);
-  }
-  if (typeof value === "string" && /^[1-9][0-9]*$/.test(value)) return value;
-  throw new TypeError(`${field} must be a positive integer`);
-}
-
 // Telegram group and supergroup chat ids are negative. User, update, and
 // message ids remain positive, but reply routing must preserve either chat id.
 function chatId(value: unknown, field: string): string {
@@ -146,8 +134,8 @@ export function telegramInboundFromGrammyUpdate(update: GrammyTextUpdate): Teleg
 function inboundPayload(update: TelegramInboundUpdate & { text: string }): JsonObject {
   return {
     provider: "telegram",
-    updateId: positiveInteger(update.updateId, "updateId"),
-    messageId: positiveInteger(update.messageId, "messageId"),
+    updateId: positiveId(update.updateId, "updateId"),
+    messageId: positiveId(update.messageId, "messageId"),
     chat: {
       id: chatId(update.chat?.id, "chat.id"),
       type: nonBlank(update.chat?.type, "chat.type"),
@@ -157,7 +145,7 @@ function inboundPayload(update: TelegramInboundUpdate & { text: string }): JsonO
     ...(update.from
       ? {
           from: {
-            id: positiveInteger(update.from.id, "from.id"),
+            id: positiveId(update.from.id, "from.id"),
             ...(update.from.username ? { username: update.from.username } : {}),
             ...(update.from.firstName ? { firstName: update.from.firstName } : {}),
             ...(update.from.lastName ? { lastName: update.from.lastName } : {}),
@@ -166,25 +154,10 @@ function inboundPayload(update: TelegramInboundUpdate & { text: string }): JsonO
       : {}),
     text: update.text.trim(),
     ...(update.replyToMessageId === undefined ? {} : {
-      replyToMessageId: positiveInteger(update.replyToMessageId, "replyToMessageId"),
+      replyToMessageId: positiveId(update.replyToMessageId, "replyToMessageId"),
     }),
     ...(isChannelStatusRequest(update.text) ? { channelRequest: "status" } : {}),
   };
-}
-
-async function withTransaction<T>(pool: Pool, action: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await action(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 async function boundEntry(transaction: PoolClient): Promise<BoundEntry> {
@@ -219,7 +192,7 @@ export async function ingestTelegramInbound(
 ): Promise<TelegramInboundResult> {
   if (!supportedInbound(update)) return { kind: "ignored" };
   const payload = inboundPayload(update);
-  return withTransaction(pool, async (transaction) => {
+  return inTransaction(pool, async (transaction) => {
     const updateId = payload.updateId as string;
     await transaction.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -371,7 +344,7 @@ function outboundPayload(payload: JsonObject): { chatId: string; text: string } 
 }
 
 async function claimNextOutbound(pool: Pool): Promise<ClaimedOutbound | null> {
-  return withTransaction(pool, async (transaction) => {
+  return inTransaction(pool, async (transaction) => {
     const result = await transaction.query<ClaimedOutbound>(
       `WITH candidate AS (
          SELECT message.id, message.payload
@@ -397,7 +370,7 @@ async function markOutboundSent(pool: Pool, messageId: string, telegramMessageId
     `UPDATE telegram_outbound_deliveries
      SET status = 'sent', telegram_message_id = $2, sent_at = clock_timestamp()
      WHERE message_id = $1 AND status = 'sending'`,
-    [messageId, positiveInteger(telegramMessageId, "telegram message id")],
+    [messageId, positiveId(telegramMessageId, "telegram message id")],
   );
 }
 

@@ -4,17 +4,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
-import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
+import { consumeNextMessage, insertMessage } from "../../src/lib/postgres/message-bus.ts";
 import {
-  consumeNextWorkflowMessage,
+  routeWorkflowMessage,
   createWorkflowRun,
   dispatchNextWorkflowNode,
   getWorkflowRun,
-  listWorkflowThreadStates,
-  pauseWorkflowThread,
-  pauseWorkflowRun,
-  resumeWorkflowThread,
-  resumeWorkflowRun,
   startWorkflowRun,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import { dispatchPlatformTool } from "../../src/lib/platform-tools/dispatch.ts";
@@ -154,7 +149,7 @@ test("FACT-10 durable workflow engine", async (t) => {
 
     async function consumeThrough(messageId, consumerId = "fact10-proof") {
       for (let attempt = 0; attempt < 30; attempt += 1) {
-        const consumed = await consumeNextWorkflowMessage(pool, { consumerId });
+        const consumed = await consumeNextMessage(pool, routeWorkflowMessage, { consumerId });
         if (consumed?.message.id === messageId) return consumed;
       }
       assert.fail(`message ${messageId} was not consumed`);
@@ -201,7 +196,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       ],
     };
 
-    await t.test("persists pause/resume, cycles, cost totals, and atomic competing consumption", async () => {
+    await t.test("persists cycles, cost totals, and atomic competing consumption", async () => {
       const { run } = await createRun(cycleGraph);
       const runtime = new DeterministicRuntimeAdapter();
       await client.query(
@@ -223,13 +218,6 @@ test("FACT-10 durable workflow engine", async (t) => {
         ],
       );
 
-      assert.equal((await pauseWorkflowRun(pool, run.id)).status, "paused");
-      assert.equal(
-        await dispatchNextWorkflowNode(pool, runtime, { workerId: "paused-worker" }),
-        null,
-      );
-      assert.equal((await resumeWorkflowRun(pool, run.id)).status, "running");
-
       await dispatchNextWorkflowNode(pool, runtime, { workerId: "cycle-worker" });
       const implementOne = await dispatchFor(run.id, "implement");
       const firstOutput = await insertMessage(pool, {
@@ -249,8 +237,8 @@ test("FACT-10 durable workflow engine", async (t) => {
       const competingPool = new Pool({ connectionString: databaseUrl, max: 2 });
       try {
         const results = await Promise.all([
-          consumeNextWorkflowMessage(pool, { consumerId: "engine-a" }),
-          consumeNextWorkflowMessage(competingPool, { consumerId: "engine-b" }),
+          consumeNextMessage(pool, routeWorkflowMessage, { consumerId: "engine-a" }),
+          consumeNextMessage(competingPool, routeWorkflowMessage, { consumerId: "engine-b" }),
         ]);
         assert.equal(results.filter((result) => result?.message.id === firstOutput.id).length, 1);
       } finally {
@@ -335,25 +323,6 @@ test("FACT-10 durable workflow engine", async (t) => {
         members: 3,
         dispatches: 2,
       }, "the ticket snapshot is durable while only max N work is runnable");
-      await pauseWorkflowThread(pool, run.id, ticketIds[0], "waiting for one answer");
-      const pausedThread = (await listWorkflowThreadStates(pool, run.id)).find(
-        (thread) => thread.ticketId === ticketIds[0],
-      );
-      assert.ok(pausedThread);
-      assert.deepEqual(
-        {
-          runId: pausedThread.runId,
-          ticketId: pausedThread.ticketId,
-          status: pausedThread.status,
-          pauseReason: pausedThread.pauseReason,
-        },
-        {
-          runId: run.id,
-          ticketId: ticketIds[0],
-          status: "paused",
-          pauseReason: "waiting for one answer",
-        },
-      );
       const firstPool = new Pool({ connectionString: databaseUrl, max: 1 });
       const secondPool = new Pool({ connectionString: databaseUrl, max: 1 });
       try {
@@ -385,12 +354,6 @@ test("FACT-10 durable workflow engine", async (t) => {
         [run.id],
       );
       await publishOutput(active.rows[0], { artifact: "ticket done" });
-      assert.equal(
-        await dispatchNextWorkflowNode(pool, runtime, { workerId: "fanout-c" }),
-        null,
-        "released capacity does not wake the paused ticket thread",
-      );
-      await resumeWorkflowThread(pool, run.id, ticketIds[0]);
       const released = await dispatchNextWorkflowNode(pool, runtime, { workerId: "fanout-c" });
       assert.ok(released);
       assert.equal(runtime.sessions.size, 3);
@@ -841,73 +804,16 @@ test("FACT-10 durable workflow engine", async (t) => {
       );
       assert.equal(dispatches.rows[0].count, 3, "a replayed output cannot create another dispatch");
 
-      await pauseWorkflowThread(
-        pool,
-        run.id,
-        firstGroup.rows[0].ticket_id,
-        "hold causal re-entry before completion check",
-      );
-      dispatches = await client.query(
-        `SELECT ticket_id::text AS ticket_id, status
-         FROM workflow_dispatches
-         WHERE run_id = $1 AND node_id = 'worker'
-         ORDER BY id`,
-        [run.id],
-      );
-      assert.deepEqual(
-        dispatches.rows.map((row) => row.status),
-        ["completed", "active"],
-        "pausing the re-entry removes its pending dispatch",
-      );
-
       await publishOutput(firstGroup.rows[1], { again: false });
-      dispatches = await client.query(
-        `SELECT ticket_id::text AS ticket_id, status
-         FROM workflow_dispatches
-         WHERE run_id = $1 AND node_id = 'worker'
-         ORDER BY id`,
-        [run.id],
-      );
-      assert.deepEqual(
-        dispatches.rows.map((row) => row.status),
-        ["completed", "completed"],
-        "the other in-flight dispatch satisfies the overlapping group when it completes",
-      );
-      assert.equal(
-        dispatches.rows.filter((row) => row.ticket_id === firstGroup.rows[1].ticket_id).length,
-        1,
-        "the overlapping ticket keeps its original dispatch",
-      );
-      const terminalRequest = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-terminal" });
-      assert.equal(terminalRequest?.nodeId, "terminal");
-      await publishOutput(
-        await dispatchFor(run.id, "terminal", firstGroup.rows[1].ticket_id),
-        { artifact: "overlap terminal" },
-      );
-      assert.equal(
-        (await getWorkflowRun(pool, run.id)).status,
-        "running",
-        "a paused causal re-entry still prevents early completion",
-      );
-
-      await resumeWorkflowThread(pool, run.id, firstGroup.rows[0].ticket_id);
-      const sequential = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-c" });
-      assert.equal(sequential?.ticketId, firstGroup.rows[0].ticket_id);
-      assert.equal(
-        await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-d" }),
-        null,
-      );
-
-      await publishOutput(
-        await dispatchFor(run.id, "worker", firstGroup.rows[0].ticket_id),
-        { again: false },
-      );
-      const finalTerminal = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-terminal-final" });
-      assert.equal(finalTerminal?.nodeId, "terminal");
-      await publishOutput(
-        await dispatchFor(run.id, "terminal", firstGroup.rows[0].ticket_id),
-        { artifact: "sequential terminal" },
-      );
+      for (;;) {
+        const request = await dispatchNextWorkflowNode(pool, runtime, { workerId: "overlap-drain" });
+        if (!request) break;
+        assert.equal(String(request.runId), String(run.id), "drain stays inside this run");
+        await publishOutput(
+          await dispatchFor(run.id, request.nodeId, request.ticketId),
+          request.nodeId === "worker" ? { again: false } : { artifact: "drained" },
+        );
+      }
       assert.equal((await getWorkflowRun(pool, run.id)).status, "completed");
     });
 
@@ -1074,42 +980,6 @@ test("FACT-10 durable workflow engine", async (t) => {
         [run.id],
       );
       assert.equal(implDispatches.rows[0].count, 2, "two implement dispatches materialized");
-
-      // Replay/no-op: re-materialization without a new insert must not clobber
-      // a reassignment that happened after the original dispatch.
-      await client.query(
-        "UPDATE tickets SET assignee_agent_id = $2 WHERE id = $1",
-        [ticketIds[0], agents.worker],
-      );
-      await resumeWorkflowThread(pool, run.id, ticketIds[0]);
-      const afterReplay = await client.query(
-        "SELECT assignee_agent_id FROM tickets WHERE id = $1",
-        [ticketIds[0]],
-      );
-      assert.equal(
-        String(afterReplay.rows[0].assignee_agent_id),
-        String(agents.worker),
-        "replay without a new insert leaves the reassignment untouched",
-      );
-      const replayDispatches = await client.query(
-        "SELECT count(*)::int AS count FROM workflow_dispatches WHERE run_id = $1 AND node_id = 'implement'",
-        [run.id],
-      );
-      assert.equal(replayDispatches.rows[0].count, 2, "replay inserted no new dispatch");
-
-      // A genuinely new ticket-scoped dispatch (pause deletes the pending one,
-      // resume re-materializes) transfers ownership again.
-      await pauseWorkflowThread(pool, run.id, ticketIds[0], "reassignment check");
-      await resumeWorkflowThread(pool, run.id, ticketIds[0]);
-      const afterReinsert = await client.query(
-        "SELECT assignee_agent_id FROM tickets WHERE id = $1",
-        [ticketIds[0]],
-      );
-      assert.equal(
-        String(afterReinsert.rows[0].assignee_agent_id),
-        String(agents.implement),
-        "a real re-inserted dispatch transfers ownership again",
-      );
     });
   } finally {
     await Promise.all([client.end(), pool.end()]);

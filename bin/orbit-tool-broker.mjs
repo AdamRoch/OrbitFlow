@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   chmod,
@@ -10,37 +9,30 @@ import {
 import http from "node:http";
 import path from "node:path";
 import pg from "pg";
-import {
-  createCodingTool,
-  createCostEventStore,
-  createExecutionIdentityStore,
-  createRunWorkspaceService,
-} from "../coding-adapter/src/index.js";
+import { createCodingTool } from "../coding-adapter/src/codingTool.js";
+import { createCostEventStore } from "../coding-adapter/src/costEvents.js";
 import {
   CliFailureError,
   createPublicErrorResponse,
   WorkspaceError,
 } from "../coding-adapter/src/errors.js";
+import { createExecutionIdentityStore } from "../coding-adapter/src/executionIdentityStore.js";
+import { createRunWorkspaceService } from "../coding-adapter/src/runWorkspaceService.js";
+import { readJson, requireExactKeys, requiredEnv, writeJson } from "../coding-adapter/src/shared.js";
+import { PLATFORM_TOOL_COMMANDS, PlatformToolError, dispatchPlatformTool } from "../src/lib/platform-tools/dispatch.ts";
 import {
   immutableDispatchContext,
   loadOpenClawToolContext,
   validateOpenClawToolContext,
 } from "../src/lib/runtime/openclaw-tool-context.mjs";
-import { buildPlatformCommandInput } from "../src/lib/runtime/platform-tool-broker-input.mjs";
 import {
   createWorkspaceArchive,
   replaceWorkspaceFromArchive,
 } from "../src/lib/runtime/workspace-archive.mjs";
+import { stableJson } from "../src/lib/workflow/graph-contract.ts";
 
 const { Pool } = pg;
-const PLATFORM_COMMANDS = new Set([
-  "list_projects",
-  "create_ticket",
-  "update_ticket",
-  "set_ticket_dependencies",
-  "post_message",
-  "list_tickets",
-]);
+const PLATFORM_COMMANDS = new Set(PLATFORM_TOOL_COMMANDS);
 const RESULT_COMMANDS = new Set(["submit_result"]);
 const CODING_COMMANDS = new Set(["start_run_workspace", "delegate_coding_task"]);
 const SOCKET = process.env.ORBITFLOW_TOOL_BROKER_SOCKET?.trim() || null;
@@ -143,7 +135,7 @@ async function handleRequest(request, response) {
   try {
     let result;
     if (PLATFORM_COMMANDS.has(body.command)) {
-      result = invokePlatformCommand(body.command, body.input, context, loaded.context);
+      result = await invokePlatformCommand(body.command, body.input, context, loaded.context);
     } else if (body.command === "submit_result") {
       result = await submitResult(body.input, context);
     } else if (body.command === "start_run_workspace") {
@@ -312,18 +304,27 @@ function monitorActiveDispatch(context, callerSignal) {
   };
 }
 
-function invokePlatformCommand(command, supplied, context, fullContext) {
-  const input = buildPlatformCommandInput(command, supplied, context, fullContext);
-  const child = spawnSync("/app/bin/orbit-agent-tools.mjs", [command, JSON.stringify(input)], {
-    env: boundedEnvironment({ DATABASE_URL }),
-    encoding: "utf8",
-    maxBuffer: 2 * 1024 * 1024,
-  });
-  if (child.error) throw child.error;
+async function invokePlatformCommand(command, supplied, context, fullContext) {
+  const requiresActiveTicket = command === "update_ticket" || command === "post_message";
+  if (requiresActiveTicket && context.ticketId === null) {
+    throw new Error(`${command} requires a ticket-bound dispatch`);
+  }
+  const forceActiveTicket = requiresActiveTicket
+    || (command === "set_ticket_dependencies" && context.ticketId !== null);
+  const input = {
+    ...supplied,
+    agentId: context.agentId,
+    runId: context.runId,
+    ...(forceActiveTicket ? { ticketId: fullContext.ticketId } : {}),
+  };
   try {
-    return JSON.parse(child.stdout);
-  } catch {
-    throw new Error("platform tool returned malformed JSON");
+    return { ok: true, command, result: await dispatchPlatformTool(pool, command, input) };
+  } catch (error) {
+    const known = error instanceof PlatformToolError;
+    return {
+      ok: false,
+      error: { code: known ? error.code : "internal", message: (known ? error.message : "internal server error").slice(0, 256) },
+    };
   }
 }
 
@@ -412,45 +413,8 @@ function cancellationError(signal) {
     : new CliFailureError("coding delegation was cancelled");
 }
 
-async function readJson(request, limit) {
-  let contents = "";
-  for await (const chunk of request) {
-    contents += chunk;
-    if (Buffer.byteLength(contents) > limit) throw new Error("broker request is too large");
-  }
-  return JSON.parse(contents);
-}
-
-function requireExactKeys(value, expected) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be one JSON object");
-  const actual = Object.keys(value).sort();
-  const sorted = [...expected].sort();
-  if (actual.length !== sorted.length || actual.some((key, index) => key !== sorted[index])) {
-    throw new Error("request has unexpected fields");
-  }
-}
-
-function boundedEnvironment(values) {
-  return Object.fromEntries(Object.entries({
-    PATH: "/usr/local/bin:/usr/bin:/bin",
-    NODE_ENV: "production",
-    ...values,
-  }).filter(([, value]) => typeof value === "string" && value !== ""));
-}
-
 function failure(error) {
   return { ok: false, error: { code: "invalid_context", message: String(error?.message ?? error).slice(0, 256) } };
-}
-
-function writeJson(response, status, value) {
-  response.writeHead(status, { "content-type": "application/json" });
-  response.end(`${JSON.stringify(value)}\n`);
-}
-
-function requiredEnv(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }
 
 function internalUrl(value) {
@@ -466,14 +430,6 @@ function positiveInteger(value, field) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) throw new Error(`${field} is too large`);
   return parsed;
-}
-
-function stableJson(value) {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 process.on("SIGTERM", () => server.close(() => pool.end().finally(() => process.exit(0))));

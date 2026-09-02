@@ -4,8 +4,8 @@
 //
 // See ../DECISION.md for why opencode was picked over claude/codex.
 
-import { spawn as nodeSpawn } from "node:child_process";
-import { chownSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { devNull } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,7 +19,7 @@ import {
   isDatabaseCost,
   isDatabaseTokenCount,
 } from "./usage.js";
-import { getOwnedWorkspace, removeOwnedWorkspace } from "./workspace.js";
+import { chownTree } from "./shared.js";
 import {
   MissingCredentialsError,
   CliFailureError,
@@ -33,8 +33,8 @@ export const OPEN_CODE_VERSION = "1.18.4";
 export const OPEN_CODE_BINARY = fileURLToPath(
   new URL(
     process.platform === "win32"
-      ? "../node_modules/.bin/opencode.cmd"
-      : "../node_modules/.bin/opencode",
+      ? "../../node_modules/.bin/opencode.cmd"
+      : "../../node_modules/.bin/opencode",
     import.meta.url
   )
 );
@@ -52,19 +52,17 @@ const MAX_WORKSPACE_SCAN_BYTES = 50 * 1024 * 1024;
 const EVENT_TYPES = new Set(["step_start", "step_finish", "text", "reasoning", "tool_use", "error"]);
 
 export function createOpenCodeAdapter({
-  spawn = nodeSpawn,
   apiKeyEnvVar = "OPENROUTER_API_KEY",
   model = OPEN_CODE_DEFAULT_MODEL,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   killGraceMs = DEFAULT_KILL_GRACE_MS,
   killWaitMs = DEFAULT_KILL_WAIT_MS,
-  childStartHandshakeMs,
   binary = OPEN_CODE_BINARY,
   env = process.env,
-  workspaceAuthority = createTemporaryWorkspaceAuthority(),
-  beforeCredential,
+  workspaceAuthority,
   executionIdentity,
 } = {}) {
+  if (!workspaceAuthority) throw new CliFailureError("a workspace authority is required");
   async function delegate_coding_task(task, workspace, { signal } = {}) {
     if (signal?.aborted) {
       throw new CliFailureError("coding delegation cancelled because run workspace is being deleted");
@@ -81,7 +79,6 @@ export function createOpenCodeAdapter({
     try {
       try {
         const result = await runAnchoredBoundary({
-          spawn,
           binary,
           task,
           model,
@@ -91,11 +88,9 @@ export function createOpenCodeAdapter({
           isolatedState,
           workspaceHandle,
           workspaceAuthority,
-          beforeCredential,
           timeoutMs,
           killGraceMs,
           killWaitMs,
-          childStartHandshakeMs,
           secrets,
           signal,
           executionIdentity,
@@ -129,7 +124,7 @@ async function createIsolatedState(toolPath, executionIdentity) {
   const root = ownership.root;
   if (executionIdentity) {
     validateExecutionIdentity(executionIdentity);
-    chownTree(root, executionIdentity.uid, executionIdentity.gid);
+    await chownTree(root, executionIdentity.uid, executionIdentity.gid);
   }
   return {
     ownership,
@@ -153,7 +148,6 @@ async function createIsolatedState(toolPath, executionIdentity) {
 }
 
 function runAnchoredBoundary({
-  spawn,
   binary,
   task,
   model,
@@ -163,11 +157,9 @@ function runAnchoredBoundary({
   isolatedState,
   workspaceHandle,
   workspaceAuthority,
-  beforeCredential,
   timeoutMs,
   killGraceMs,
   killWaitMs,
-  childStartHandshakeMs,
   secrets,
   signal,
   executionIdentity,
@@ -199,8 +191,7 @@ function runAnchoredBoundary({
     let stderrTail = "";
     let stdoutTail = "";
     let credentialSent = false;
-    const overallTimeoutMs =
-      timeoutMs + killGraceMs + killWaitMs + (childStartHandshakeMs ?? 0) + 10_000;
+    const overallTimeoutMs = timeoutMs + killGraceMs + killWaitMs + 10_000;
     const settle = (callback, value) => {
       if (settled) return;
       settled = true;
@@ -279,7 +270,6 @@ function runAnchoredBoundary({
               timeoutMs,
               killGraceMs,
               killWaitMs,
-              childStartHandshakeMs,
             },
           });
           return;
@@ -294,9 +284,6 @@ function runAnchoredBoundary({
               new CliFailureError("coding execution boundary inherited a provider credential"),
             );
             return;
-          }
-          if (typeof beforeCredential === "function") {
-            await beforeCredential(workspaceHandle);
           }
           if (!(await workspaceAuthority.assertCurrent(workspaceHandle))) {
             abortAndFail(
@@ -355,16 +342,6 @@ function validateExecutionIdentity(value) {
   }
 }
 
-function chownTree(target, uid, gid) {
-  const stat = lstatSync(target);
-  if (stat.isDirectory()) {
-    for (const entry of readdirSync(target)) {
-      chownTree(path.join(target, entry), uid, gid);
-    }
-  }
-  chownSync(target, uid, gid);
-}
-
 function workspaceIdentity(handle) {
   const device = handle.record?.workspaceDevice ?? handle.workspaceDevice;
   const inode = handle.record?.workspaceInode ?? handle.workspaceInode;
@@ -418,7 +395,6 @@ export async function executeAnchoredOpenCode({
   timeoutMs,
   killGraceMs,
   killWaitMs,
-  childStartHandshakeMs,
   onCliStart,
   signal,
 }) {
@@ -438,13 +414,12 @@ export async function executeAnchoredOpenCode({
     ".",
     "--auto",
   ];
-  const result = await runProcess(nodeSpawn, binary, args, {
+  const result = await runProcess(binary, args, {
     cwd: ".",
     env,
     timeoutMs,
     killGraceMs,
     killWaitMs,
-    childStartHandshakeMs,
     secrets,
     onCliStart,
     signal,
@@ -504,20 +479,9 @@ export function redactBoundaryPayload(payload, credential) {
 }
 
 function runProcess(
-  spawn,
   binary,
   args,
-  {
-    cwd,
-    env,
-    timeoutMs,
-    killGraceMs,
-    killWaitMs,
-    childStartHandshakeMs,
-    secrets,
-    onCliStart,
-    signal,
-  },
+  { cwd, env, timeoutMs, killGraceMs, killWaitMs, secrets, onCliStart, signal },
 ) {
   return new Promise((resolve, reject) => {
     let child;
@@ -551,7 +515,6 @@ function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
-      clearTimeout(handshakeTimer);
       signal?.removeEventListener("abort", abortForDeletion);
       protocol.end();
       resolve({
@@ -567,12 +530,10 @@ function runProcess(
     };
 
     let timeoutTimer;
-    let handshakeTimer;
     let timeoutArmed = false;
     const armTimeout = () => {
       if (timeoutArmed || terminating || settled) return;
       timeoutArmed = true;
-      clearTimeout(handshakeTimer);
       timeoutTimer = setTimeout(() => {
         beginTermination(null, { timeout: true });
       }, timeoutMs);
@@ -582,7 +543,6 @@ function runProcess(
       terminating = true;
       timedOut = timeout;
       clearTimeout(timeoutTimer);
-      clearTimeout(handshakeTimer);
       void terminateProcessTree(child, closeState, { killGraceMs, killWaitMs })
         .then(() => finish(closeState.exitCode, closeState.signal ?? "SIGKILL", processError))
         .catch((error) =>
@@ -610,13 +570,7 @@ function runProcess(
         abortForDeletion();
         return;
       }
-      if (Number.isSafeInteger(childStartHandshakeMs) && childStartHandshakeMs > 0) {
-        handshakeTimer = setTimeout(() => {
-          beginTermination(new CliFailureError("coding CLI child-start handshake timed out"));
-        }, childStartHandshakeMs);
-      } else {
-        armTimeout();
-      }
+      armTimeout();
     };
 
     signal?.addEventListener("abort", abortForDeletion, { once: true });
@@ -624,7 +578,6 @@ function runProcess(
 
     child.stdout?.on("data", (chunk) => {
       const text = chunk.toString();
-      if (childStartHandshakeMs) armTimeout();
       stdoutScanner.write(text);
       protocol.write(text);
       stdoutLog = appendBounded(stdoutLog, text, MAX_LOG_CHARS + overlap);
@@ -1077,34 +1030,6 @@ async function containCredentialExposure(workspaceAuthority, workspaceHandle) {
   } catch {
     throw new CliFailureError("failed to contain contaminated workspace");
   }
-}
-
-function createTemporaryWorkspaceAuthority() {
-  return {
-    async resolve(workspace) {
-      const ownership = getOwnedWorkspace(workspace);
-      if (!ownership) {
-        throw new CliFailureError(
-          "workspace must be created by createIsolatedGitWorkspace in this process",
-        );
-      }
-      const stat = lstatSync(ownership.workspace);
-      return {
-        workspace: ownership.workspace,
-        workspaceDevice: String(stat.dev),
-        workspaceInode: String(stat.ino),
-        ownership,
-      };
-    },
-    async assertCurrent(handle) {
-      return getOwnedWorkspace(handle.workspace) === handle.ownership;
-    },
-    async containCredentialExposure(handle) {
-      if (!(await removeOwnedWorkspace(handle.ownership))) {
-        throw new Error("workspace ownership changed");
-      }
-    },
-  };
 }
 
 function computeDiff(workspace, baseCommit, gitHome) {

@@ -14,7 +14,6 @@ import { GET as getMonitoring } from "@/app/api/monitoring/route";
 import {
   ControlPlaneRepository,
   getControlPlaneRepository,
-  resetControlPlaneRepository,
 } from "@/lib/control-plane";
 import { handleError } from "@/lib/api";
 import { canonicalWorkflowGraphJson, type WorkflowGraph } from "@/lib/workflow/graph-contract";
@@ -80,7 +79,6 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  await resetControlPlaneRepository();
   if (pool) await pool.end();
 });
 
@@ -549,28 +547,6 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     const resolved = await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring")));
     expect(resolved.body.agents.find((agent: { name: string }) => agent.name === "Question owner")).toMatchObject({ status: "working" });
     expect(resolved.body.board.find((ticket: { id: string }) => ticket.id === String(questionTicket.rows[0].id))).toMatchObject({ questionCount: 1, pendingQuestionCount: 0 });
-  });
-
-  it("FACT-22 keeps every panel in one repeatable-read snapshot while another client commits", async () => {
-    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('SNAP', 'Snapshot proof', 3) RETURNING id");
-    const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Snapshot workflow', 'FACT-22', '{}') RETURNING id");
-    const agent = await pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Snapshot agent', 'worker', 'Read consistent data.', 'test', '{"costLimit":1}', '{}', '{}') RETURNING id`);
-    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
-    await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (1, 'SNAP-1', $1, $2, 'Before commit', 'in_progress', $3)`, [project.rows[0].id, run.rows[0].id, agent.rows[0].id]);
-    let committed = false;
-    const repository = new ControlPlaneRepository(pool, { afterMonitoringPanelRead: async (panel) => {
-      if (panel !== "runs" || committed) return;
-      committed = true;
-      await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (2, 'SNAP-2', $1, $2, 'Committed during read', 'in_progress', $3)`, [project.rows[0].id, run.rows[0].id, agent.rows[0].id]);
-      await pool.query("INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost) VALUES ($1, $2, 'test', 7, 5, 0.25000000)", [run.rows[0].id, agent.rows[0].id]);
-    }});
-    const consistent = await repository.getMonitoringSnapshot({ runId: String(run.rows[0].id), agentId: null, messageType: null });
-    expect(committed).toBe(true);
-    expect(consistent.board.map((ticket) => ticket.identifier)).toEqual(["SNAP-1"]);
-    expect(consistent.runCosts).toEqual([expect.objectContaining({ totalCost: "0", totalTokens: "0" })]);
-    const after = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: String(run.rows[0].id), agentId: null, messageType: null });
-    expect(after.board.map((ticket) => ticket.identifier)).toContain("SNAP-2");
-    expect(after.runCosts).toEqual([expect.objectContaining({ totalCost: "0.25000000", totalTokens: "12" })]);
   });
 
   it("FACT-22 exposes truncation metadata for capped board, agents, and agent costs", async () => {

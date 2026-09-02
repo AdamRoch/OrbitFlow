@@ -2,20 +2,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 
-export function inspectProcessGroup(
-  processGroupId,
-  signal = process.kill,
-  inspectTable = inspectProcessTable,
-) {
+export function inspectProcessGroup(processGroupId) {
   try {
-    signal(-processGroupId, 0);
+    process.kill(-processGroupId, 0);
     return Object.freeze({ state: "alive", code: null });
   } catch (error) {
     if (error?.code === "ESRCH") {
       return Object.freeze({ state: "absent", code: "ESRCH" });
     }
     const code = typeof error?.code === "string" ? error.code : "UNKNOWN";
-    const tableState = inspectTable(processGroupId);
+    const tableState = inspectProcessTable(processGroupId);
     if (tableState === "absent") {
       return Object.freeze({ state: "absent", code: `${code}_CONFIRMED_ABSENT` });
     }
@@ -62,22 +58,18 @@ function inspectLinuxProc(processGroupId) {
   return unreadable ? "uninspectable" : "absent";
 }
 
-export function signalProcessGroup(processGroupId, signalName, signal = process.kill) {
+export function signalProcessGroup(processGroupId, signalName) {
   try {
-    signal(-processGroupId, signalName);
+    process.kill(-processGroupId, signalName);
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
 }
 
-export async function waitForProcessGroupAbsence(
-  processGroupId,
-  timeoutMs,
-  { inspect = inspectProcessGroup } = {},
-) {
+export async function waitForProcessGroupAbsence(processGroupId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   do {
-    const result = inspect(processGroupId);
+    const result = inspectProcessGroup(processGroupId);
     if (result.state === "absent") return;
     if (result.state === "uninspectable") {
       throw new Error(`process group liveness is uninspectable (${result.code})`);
@@ -85,7 +77,7 @@ export async function waitForProcessGroupAbsence(
     await delay(Math.min(20, Math.max(1, deadline - Date.now())));
   } while (Date.now() < deadline);
 
-  const result = inspect(processGroupId);
+  const result = inspectProcessGroup(processGroupId);
   if (result.state === "absent") return;
   if (result.state === "uninspectable") {
     throw new Error(`process group liveness is uninspectable (${result.code})`);
@@ -93,18 +85,15 @@ export async function waitForProcessGroupAbsence(
   throw new Error("process group remained alive");
 }
 
-export async function terminateProcessGroup(
-  processGroupId,
-  { killGraceMs, killWaitMs, signal = process.kill, inspect = inspectProcessGroup },
-) {
-  signalProcessGroup(processGroupId, "SIGTERM", signal);
+export async function terminateProcessGroup(processGroupId, { killGraceMs, killWaitMs }) {
+  signalProcessGroup(processGroupId, "SIGTERM");
   try {
-    await waitForProcessGroupAbsence(processGroupId, killGraceMs, { inspect });
+    await waitForProcessGroupAbsence(processGroupId, killGraceMs);
     return;
   } catch (error) {
     if (!String(error?.message).includes("remained alive")) throw error;
   }
 
-  signalProcessGroup(processGroupId, "SIGKILL", signal);
-  await waitForProcessGroupAbsence(processGroupId, killWaitMs, { inspect });
+  signalProcessGroup(processGroupId, "SIGKILL");
+  await waitForProcessGroupAbsence(processGroupId, killWaitMs);
 }

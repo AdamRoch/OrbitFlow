@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { types } from "pg";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { parseAgentGuardrails } from "../guardrails.ts";
-import { insertMessage, type JsonObject, type MessageRow, type MessageType } from "../postgres/message-bus.ts";
+import { insertMessage, inTransaction, iso, type JsonObject, type MessageRow, type MessageType } from "../postgres/message-bus.ts";
+import { stableJson } from "../workflow/graph-contract.ts";
 
 export const PLATFORM_TOOL_COMMANDS = [
   "list_projects",
@@ -350,20 +351,8 @@ function parseInput(command: PlatformToolCommand, value: unknown): ParsedInput {
   };
 }
 
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
-}
-
 function requestHash(input: InvocationInput): string {
   return createHash("sha256").update(stableJson(input)).digest("hex");
-}
-
-function iso(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  return String(value).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
 }
 
 function ticketFromRow(row: Row): TicketDTO {
@@ -690,21 +679,6 @@ async function listProjects(client: PoolClient, input: ListProjectsInput): Promi
   return { projects: rows, nextCursor: result.rows.length > input.limit ? rows.at(-1)?.id ?? null : null };
 }
 
-async function transaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await operation(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 /**
  * FACT-23 blocked actions are rejected before any mutation. The rejection is
  * itself durable: one system message per first attempt, recorded through the
@@ -756,7 +730,7 @@ export async function dispatchPlatformTool(
     throw new PlatformToolError("unknown_command", "command must be a supported platform tool command");
   }
   const input = parseInput(command, value);
-  const result = await transaction(pool, async (client) => {
+  const result = await inTransaction(pool, async (client) => {
     const agent = await requireAttribution(client, input);
     const { blockedActions } = parseAgentGuardrails(agent.guardrails);
     const guarded = (operation: () => Promise<PlatformToolResult>) =>

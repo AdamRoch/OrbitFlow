@@ -6,6 +6,7 @@ import path from "node:path";
 import { createOpenCodeAdapter } from "../coding-adapter/src/openCodeAdapter.js";
 import { createPublicErrorResponse, CliFailureError } from "../coding-adapter/src/errors.js";
 import { runSafeGit } from "../coding-adapter/src/git.js";
+import { readJson, requireExactKeys, requiredEnv, writeJson } from "../coding-adapter/src/shared.js";
 import {
   createWorkspaceArchive,
   extractWorkspaceArchive,
@@ -44,9 +45,9 @@ async function handleRequest(request, response) {
     writeJson(response, 404, { ok: false, error: { code: "invalid_request", message: "not found" } });
     return;
   }
-  const body = await readJson(request, MAX_REQUEST_BYTES);
+  const body = await readJson(request, MAX_REQUEST_BYTES, CliFailureError);
   if (request.url === "/v1/cancel") {
-    requireExactKeys(body, ["operationId"]);
+    requireExactKeys(body, ["operationId"], CliFailureError);
     requireOperationId(body.operationId);
     const operation = operations.get(body.operationId);
     if (operation) {
@@ -68,7 +69,7 @@ async function handleRequest(request, response) {
     "runId",
     "task",
     "workspaceArchive",
-  ]);
+  ], CliFailureError);
   validateDelegation(body);
   if (operations.has(body.operationId)) throw new CliFailureError("coding operation already exists");
   const controller = new AbortController();
@@ -223,24 +224,6 @@ function requireOperationId(value) {
   }
 }
 
-async function readJson(request, limit) {
-  let contents = "";
-  for await (const chunk of request) {
-    contents += chunk;
-    if (Buffer.byteLength(contents) > limit) throw new CliFailureError("coding executor request is too large");
-  }
-  return JSON.parse(contents);
-}
-
-function requireExactKeys(value, expected) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CliFailureError("coding executor request is invalid");
-  const actual = Object.keys(value).sort();
-  const sorted = [...expected].sort();
-  if (actual.length !== sorted.length || actual.some((key, index) => key !== sorted[index])) {
-    throw new CliFailureError("coding executor request has unexpected fields");
-  }
-}
-
 function positiveInteger(value) {
   if (!/^[1-9][0-9]*$/.test(value)) throw new CliFailureError("coding executor integer is invalid");
   const parsed = Number(value);
@@ -248,13 +231,3 @@ function positiveInteger(value) {
   return parsed;
 }
 
-function requiredEnv(name) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
-
-function writeJson(response, status, value) {
-  response.writeHead(status, { "content-type": "application/json" });
-  response.end(`${JSON.stringify(value)}\n`);
-}

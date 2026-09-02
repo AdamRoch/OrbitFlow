@@ -1,5 +1,16 @@
 import { NextResponse } from "next/server";
-import { ValidationError } from "./validate";
+import type { UpdateResult } from "./control-plane/types";
+
+/** Shared application validation error mapped at the HTTP boundary. */
+export class ValidationError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null = null,
+  ) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
 
 export interface ApiErrorBody {
   error: { message: string; code: string | null };
@@ -86,4 +97,20 @@ export interface RouteContext<
   T extends Record<string, string> = { id: string },
 > {
   params: Promise<T>;
+}
+
+export function resultResponse<T>(result: UpdateResult<T>): NextResponse {
+  if (result.kind === "updated") return ok(result.value);
+  if (result.kind === "not_found") return notFound();
+  return conflict("resource has changed since expectedUpdatedAt", "stale_update");
+}
+
+export function resourceResponse(
+  result: "attached" | "detached" | "agent_not_found" | "skill_not_found",
+  status = 200,
+): NextResponse {
+  if (result === "agent_not_found") return notFound("agent not found");
+  if (result === "skill_not_found") return notFound("skill not found");
+  if (result === "attached") return ok({ attached: true }, status as 200 | 201);
+  return noContent();
 }

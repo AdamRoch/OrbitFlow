@@ -91,28 +91,3 @@ export async function validateConfiguredAgentModels(pool, catalog) {
     );
   }
 }
-
-export async function smokeOpenRouterProviderBoundary({
-  catalog,
-  fetchImpl = fetch,
-  baseUrl = catalog.baseUrl,
-}) {
-  const prefix = "openrouter/";
-  if (!catalog.primaryModel.startsWith(prefix)) {
-    throw new Error(`configured primary model must start with ${prefix}`);
-  }
-  const providerModel = catalog.primaryModel.slice(prefix.length);
-  const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: providerModel,
-      messages: [{ role: "user", content: "credential-free model routing smoke" }],
-      max_tokens: 1,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`OpenRouter provider-boundary smoke failed with HTTP ${response.status}`);
-  }
-  return { configuredModel: catalog.primaryModel, providerModel };
-}

@@ -87,22 +87,19 @@ docker compose --profile telegram up --build
 ```
 
 Set `TELEGRAM_BOT_TOKEN` in `.env` before running that command. The default
-`docker compose up --build` topology does not start a Telegram consumer. The
-one-shot coding-adapter wrapper is also opt-in; its boundary is in [the Compose
-runbook](docs/fact-7-docker-compose.md).
+`docker compose up --build` topology does not start a Telegram consumer.
 
 | Variable | Class | Used by | Notes |
 | --- | --- | --- | --- |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Required | Compose PostgreSQL, migrator, app, engine, tool broker | Set all three in `.env`; `POSTGRES_PASSWORD` must be a local secret. |
 | `ORBITFLOW_OPERATOR_USERNAME`, `ORBITFLOW_OPERATOR_PASSWORD` | Required | Web app | HTTP Basic credentials for every web page and API except `/api/health`. If either variable is unset, the web app responds with 503. |
 | `ORBITFACTORY_APP_PORT`, `ORBITFACTORY_ENGINE_HOST_PORT` | Required | Compose host port bindings | Select localhost ports for the app and readiness endpoint. |
-| `OPENROUTER_API_KEY` | Provider credential, required by default Compose | OpenClaw gateway, coding executor; opt-in coding adapter | The only evaluator provider credential in the shipped Compose topology. It is not passed to the engine or tool broker. |
+| `OPENROUTER_API_KEY` | Provider credential, required by default Compose | OpenClaw gateway, coding executor | The only evaluator provider credential in the shipped Compose topology. It is not passed to the engine or tool broker. |
 | `TELEGRAM_BOT_TOKEN` | Optional provider credential | `telegram` profile | Required only when enabling the grammY long-poll adapter. |
 | `ORBITFLOW_TELEGRAM_ALLOWED_CHAT_IDS` | Optional access control | `telegram` profile | Comma-separated Telegram chat ids allowed to start runs. Unset or blank allows every chat. |
-| `ORBITFACTORY_CODING_ADAPTER_BINARY` | Optional / proof override | `coding-adapter` profile | Defaults to `opencode`; the proof selects its committed fake binary with this setting. |
 | `ORBITFLOW_WORKSPACE_ROOT`, `ORBITFLOW_RUNTIME_ROOT` | Compose-supplied | Engine, tool broker, coding executor | Internal mounted paths, not values to put in the normal `.env`. Dispatch attribution is persisted by the engine and verified by the broker. |
 | `ORBITFLOW_OPENCODE_MODEL`, `ORBITFLOW_CODING_TIMEOUT_MS` | Optional runtime tuning | Tool broker, coding executor | Configuration of the pinned coding CLI boundary. |
-| `ORBITFLOW_OPENCODE_BINARY`, `ORBITFLOW_ENABLE_REAL_OPENCODE_PROOF`, `ORBITFLOW_ENABLE_REAL_OPENCLAW_CODING_PROOF`, `ORBITFLOW_FACT11_REAL_PROVIDER_PROOF` | Proof-only | Targeted proof harnesses | Not part of normal startup; the real-provider gates require credentials and can spend provider credit. |
+| `ORBITFLOW_OPENCODE_BINARY`, `ORBITFLOW_FACT11_REAL_PROVIDER_PROOF` | Proof-only | Targeted proof harnesses | Not part of normal startup; the real-provider gates require credentials and can spend provider credit. |
 
 ## Why this runtime and stack
 
@@ -199,10 +196,8 @@ single-process boundary.
 
 ## Useful proof and reference points
 
-- `npm test` runs the app, Phase 0, and coding-adapter suites without a provider call.
-- `bash scripts/fact-7-compose-proof.sh` is the disposable clean-Compose gate.
+- `npm test` runs the app and Phase 0 suites without a provider call.
 - `npm run fact9:proof`, `npm run fact10:proof`, and `npm run fact11:proof` cover the bus, engine, and runtime adapter.
-- `npm run fact42:postgres-proof` covers the PostgreSQL-only ticket and Monitoring data path.
 - `npm run fact31:proof` covers production Compose readiness, migration freshness, and restart recovery without a provider call.
 - `npm run fact34:proof` covers the deterministic Software Factory question, rejection, correction, approval, and local Telegram boundary.
 - `npm run fact49:proof` covers planner dependency targets and bound-ticket target enforcement through the real OpenClaw wrapper, Unix-socket broker, and disposable Compose topology.

@@ -4,9 +4,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
-import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
+import { consumeNextMessage, insertMessage } from "../../src/lib/postgres/message-bus.ts";
 import {
-  consumeNextWorkflowMessage,
+  routeWorkflowMessage,
   dispatchNextWorkflowNode,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import {
@@ -58,7 +58,7 @@ test("FACT-25 PostgreSQL scheduling", async () => {
     const at = new Date("2026-08-11T09:00:00.000Z");
     async function consumeThrough(messageId, consumerId) {
       for (let attempt = 0; attempt < 20; attempt += 1) {
-        const consumed = await consumeNextWorkflowMessage(pool, { consumerId });
+        const consumed = await consumeNextMessage(pool, routeWorkflowMessage, { consumerId });
         if (consumed?.message.id === messageId) return;
       }
       assert.fail(`did not consume scheduled message ${messageId}`);

@@ -1,7 +1,5 @@
-import type {
-  JsonObject as MessageJsonObject,
-} from "./postgres/message-bus.ts";
-import type { JsonObject, JsonValue } from "./workflow/graph.ts";
+import { nonBlank, type JsonObject as MessageJsonObject } from "./postgres/message-bus.ts";
+import type { JsonObject, JsonValue } from "./workflow/graph-contract.ts";
 
 export type ChannelIntakeDecision =
   | { kind: "needs_clarification"; question: string }
@@ -21,13 +19,6 @@ function object(value: unknown, field: string): Record<string, JsonValue> {
     throw new TypeError(`${field} must be an object`);
   }
   return value as Record<string, JsonValue>;
-}
-
-function nonBlank(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new TypeError(`${field} must be a non-blank string`);
-  }
-  return value.trim();
 }
 
 function stringList(value: unknown, field: string, required: boolean): string[] {

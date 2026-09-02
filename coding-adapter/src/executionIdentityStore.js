@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   chmod,
-  chown,
-  lchown,
   link,
   lstat,
   mkdir,
@@ -15,6 +13,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { WorkspaceError } from "./errors.js";
+import { chownTree, normalizeId } from "./shared.js";
 
 const RECORD_VERSION = 2;
 
@@ -22,8 +21,6 @@ export function createExecutionIdentityStore({
   workspaceRoot,
   uidMin = 20_000,
   uidCount = 40_000,
-  gidForUid = (uid) => uid,
-  applyOwnership = chownTree,
 } = {}) {
   if (typeof workspaceRoot !== "string" || !path.isAbsolute(workspaceRoot)) {
     throw new WorkspaceError("execution identity workspace root must be absolute");
@@ -33,9 +30,6 @@ export function createExecutionIdentityStore({
   }
   if (!Number.isSafeInteger(uidCount) || uidCount < 1 || uidMin + uidCount > 2 ** 31) {
     throw new WorkspaceError("execution identity UID count is invalid");
-  }
-  if (typeof gidForUid !== "function" || typeof applyOwnership !== "function") {
-    throw new WorkspaceError("execution identity ownership policy is invalid");
   }
 
   const identityRoot = path.join(workspaceRoot, ".orbitflow", "executor-identities");
@@ -61,7 +55,7 @@ export function createExecutionIdentityStore({
   function ensure(runIdValue, workspace) {
     return serialize(async () => {
       await initialize();
-      const runId = normalizeRunId(runIdValue);
+      const runId = normalizeId(runIdValue, "runId");
       const expectedWorkspace = await requireExpectedRunWorkspace(workspaceRoot, runId, workspace);
       const allocations = await readAllocations(identityRoot);
       const opaqueUids = new Set(
@@ -78,11 +72,7 @@ export function createExecutionIdentityStore({
         if (matching[0].record?.state !== "active") {
           throw new WorkspaceError("coding execution identity reservation is incomplete");
         }
-        return validateActiveIdentity(matching[0].record, runId, expectedWorkspace, {
-          uidMin,
-          uidCount,
-          gidForUid,
-        });
+        return validateActiveIdentity(matching[0].record, runId, expectedWorkspace, { uidMin, uidCount });
       }
 
       const used = new Set(allocations.map((allocation) => allocation.uid));
@@ -90,10 +80,7 @@ export function createExecutionIdentityStore({
       for (let offset = 0; offset < uidCount; offset += 1) {
         const uid = uidMin + ((start + offset) % uidCount);
         if (used.has(uid)) continue;
-        const gid = gidForUid(uid);
-        if (!Number.isSafeInteger(gid) || gid < 1) {
-          throw new WorkspaceError("coding execution GID is invalid");
-        }
+        const gid = uid;
         const reservation = {
           version: RECORD_VERSION,
           state: "reserved",
@@ -117,7 +104,7 @@ export function createExecutionIdentityStore({
           throw error;
         }
 
-        await applyOwnership(expectedWorkspace, uid, gid);
+        await chownTree(expectedWorkspace, uid, gid);
         await chmod(expectedWorkspace, 0o700);
         const stat = await lstat(expectedWorkspace);
         if (
@@ -143,18 +130,14 @@ export function createExecutionIdentityStore({
 
   async function requireIdentity(runIdValue, workspace) {
     await initialize();
-    const runId = normalizeRunId(runIdValue);
+    const runId = normalizeId(runIdValue, "runId");
     const expectedWorkspace = await requireExpectedRunWorkspace(workspaceRoot, runId, workspace);
     const matching = (await readAllocations(identityRoot))
       .filter((allocation) => allocation.runId === runId);
     if (matching.length !== 1 || matching[0].record?.state !== "active") {
       throw new WorkspaceError("run workspace has no active coding execution identity");
     }
-    return validateActiveIdentity(matching[0].record, runId, expectedWorkspace, {
-      uidMin,
-      uidCount,
-      gidForUid,
-    });
+    return validateActiveIdentity(matching[0].record, runId, expectedWorkspace, { uidMin, uidCount });
   }
 
   return Object.freeze({ ensure, require: requireIdentity, identityRoot });
@@ -165,29 +148,18 @@ async function readAllocations(identityRoot) {
   const used = new Set();
   for (const entry of await readdir(identityRoot)) {
     const uidMatch = entry.match(/^uid-([1-9][0-9]*)\.json$/);
-    const legacyMatch = entry.match(/^run-([1-9][0-9]*)\.json$/);
-    if (!uidMatch && !legacyMatch) {
+    if (!uidMatch) {
       if (entry.endsWith(".json")) {
         throw new WorkspaceError("coding execution identity allocation state is invalid");
       }
       continue;
     }
-    if (uidMatch) {
-      const uid = Number(uidMatch[1]);
-      if (used.has(uid)) {
-        throw new WorkspaceError("coding execution identity allocation state is invalid");
-      }
-      used.add(uid);
-      allocations.push(await readUidAllocation(path.join(identityRoot, entry), uid, entry));
-      continue;
-    }
-    const record = parseIdentity(await readFile(path.join(identityRoot, entry), "utf8"));
-    validatePermanentRecord(record);
-    if (legacyMatch[1] !== record.runId || used.has(record.uid)) {
+    const uid = Number(uidMatch[1]);
+    if (used.has(uid)) {
       throw new WorkspaceError("coding execution identity allocation state is invalid");
     }
-    used.add(record.uid);
-    allocations.push({ entry, uid: record.uid, runId: record.runId, record });
+    used.add(uid);
+    allocations.push(await readUidAllocation(path.join(identityRoot, entry), uid, entry));
   }
   return allocations;
 }
@@ -220,7 +192,7 @@ async function validateActiveIdentity(record, runId, workspace, range) {
     record.workspace !== workspace ||
     record.uid < range.uidMin ||
     record.uid >= range.uidMin + range.uidCount ||
-    record.gid !== range.gidForUid(record.uid)
+    record.gid !== record.uid
   ) {
     throw new WorkspaceError("coding execution identity is invalid");
   }
@@ -253,24 +225,11 @@ function validatePermanentRecord(value) {
   const activeIdentity =
     /^\d+$/.test(value?.workspaceDevice ?? "") &&
     /^\d+$/.test(value?.workspaceInode ?? "");
-  const valid = common && (
-    (value.version === RECORD_VERSION && value.state === "reserved") ||
-    (value.version === RECORD_VERSION && value.state === "active" && activeIdentity) ||
-    (value.version === 1 && value.state === undefined && activeIdentity)
+  const valid = common && value.version === RECORD_VERSION && (
+    value.state === "reserved" || (value.state === "active" && activeIdentity)
   );
   if (!valid) {
     throw new WorkspaceError("coding execution identity record is invalid");
-  }
-  if (value.version === 1) value.state = "active";
-}
-
-function parseIdentity(value) {
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-    return parsed;
-  } catch {
-    throw new WorkspaceError("coding execution identity record is malformed");
   }
 }
 
@@ -334,14 +293,6 @@ async function requireExpectedRunWorkspace(workspaceRoot, runId, workspace) {
   return expected;
 }
 
-function normalizeRunId(value) {
-  const text = typeof value === "bigint" ? value.toString() : String(value ?? "");
-  if (!/^[1-9][0-9]*$/.test(text)) {
-    throw new WorkspaceError("execution identity runId must be a positive integer");
-  }
-  return text;
-}
-
 function identityPath(identityRoot, uid) {
   return path.join(identityRoot, `uid-${uid}.json`);
 }
@@ -355,15 +306,4 @@ async function workspaceContainsOwnedPath(target, uids) {
     if (await workspaceContainsOwnedPath(path.join(target, entry), uids)) return true;
   }
   return false;
-}
-
-async function chownTree(target, uid, gid) {
-  const stat = await lstat(target);
-  if (stat.isDirectory()) {
-    for (const entry of await readdir(target)) {
-      await chownTree(path.join(target, entry), uid, gid);
-    }
-  }
-  if (stat.isSymbolicLink()) await lchown(target, uid, gid);
-  else await chown(target, uid, gid);
 }

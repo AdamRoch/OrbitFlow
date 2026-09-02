@@ -9,8 +9,14 @@ import {
   MessageEnvelopeError,
   consumeNextMessage,
   insertMessage,
-  startMessageBusWorker,
+  runMessageBusWorker,
 } from "../../src/lib/postgres/message-bus.ts";
+
+function startMessageBusWorker(pool, handler, options) {
+  const controller = new AbortController();
+  const done = runMessageBusWorker(pool, handler, { ...options, signal: controller.signal });
+  return { async stop() { controller.abort(); await done; } };
+}
 
 const { Client, Pool } = pg;
 const migrationDirectory = fileURLToPath(

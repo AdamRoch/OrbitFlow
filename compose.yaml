@@ -166,26 +166,6 @@ services:
         condition: service_healthy
     networks: [control]
 
-  # This standalone proof boundary is deliberately opt-in. Production provider
-  # credentials are scoped to openclaw and coding-executor; engine and
-  # tool-broker receive none.
-  coding-adapter:
-    profiles: ["coding-adapter"]
-    build:
-      context: .
-      target: engine
-    environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
-      # The proof selects its committed fake binary through its isolated
-      # --env-file. Evaluators omit this optional value and use `opencode`.
-      ORBITFACTORY_CODING_ADAPTER_BINARY: ${ORBITFACTORY_CODING_ADAPTER_BINARY:-opencode}
-    entrypoint: ["/usr/local/bin/orbitflow-coding-adapter-entrypoint"]
-    command: []
-    depends_on:
-      engine:
-        condition: service_healthy
-    networks: [control, provider]
-
 networks:
   control: {}
   provider: {}

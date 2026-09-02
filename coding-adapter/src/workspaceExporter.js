@@ -13,6 +13,7 @@ import path from "node:path";
 import { createRunWorkspaceService } from "./runWorkspaceService.js";
 import { WorkspaceError } from "./errors.js";
 import { requireDeploymentManifest } from "./deploymentManifest.js";
+import { normalizeId } from "./shared.js";
 
 const EXPORT_DIRECTORY_PREFIX = "factory-run-";
 
@@ -26,7 +27,7 @@ export async function exportAcceptedFactoryWorkspace({
   if (!pool || typeof pool.connect !== "function") {
     throw new WorkspaceError("a PostgreSQL pool is required for workspace export");
   }
-  const runId = normalizeRunId(runIdValue);
+  const runId = normalizeId(runIdValue, "runId");
   const destination = await requireDestinationRoot(destinationRoot);
   const normalizedOwner = normalizeOwner(owner);
   const service = createRunWorkspaceService({ pool, workspaceRoot });
@@ -325,14 +326,6 @@ function normalizeOwner(owner) {
     throw new WorkspaceError("export owner must contain nonnegative integer uid and gid values");
   }
   return owner;
-}
-
-function normalizeRunId(value) {
-  const runId = typeof value === "bigint" ? value.toString() : String(value ?? "");
-  if (!/^[1-9]\d*$/.test(runId)) {
-    throw new WorkspaceError("run id must be a positive integer");
-  }
-  return runId;
 }
 
 function isContained(root, target) {

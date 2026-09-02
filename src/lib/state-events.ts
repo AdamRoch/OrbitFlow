@@ -30,15 +30,6 @@ export interface StateEvent {
   occurredAt: string;
 }
 
-type StateEventIdentifier = string | number | null;
-
-export type StateEventInput = Omit<StateEvent, "schemaVersion" | "occurredAt" | "runId" | "agentId" | "ticketId"> & {
-  runId: StateEventIdentifier;
-  agentId: StateEventIdentifier;
-  ticketId: StateEventIdentifier;
-  occurredAt?: string;
-};
-
 export type StateEventListener = (event: StateEvent) => void;
 
 const eventTypes = new Set<string>(STATE_EVENT_TYPES);
@@ -79,14 +70,4 @@ export function parseStateEvent(value: unknown): StateEvent | null {
     ticketId,
     occurredAt: event.occurredAt,
   };
-}
-
-export function createStateEvent(input: StateEventInput): StateEvent {
-  const event = parseStateEvent({
-    schemaVersion: 1,
-    ...input,
-    occurredAt: input.occurredAt ?? new Date().toISOString(),
-  });
-  if (!event) throw new TypeError("state event has an invalid envelope");
-  return event;
 }

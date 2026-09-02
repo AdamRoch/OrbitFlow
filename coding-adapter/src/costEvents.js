@@ -1,4 +1,5 @@
 import { PersistenceError } from "./errors.js";
+import { normalizeId } from "./shared.js";
 import {
   isDatabaseCost,
   isDatabaseTokenCount,
@@ -11,8 +12,8 @@ export function createCostEventStore({ pool } = {}) {
   }
 
   async function verifyAttribution({ runId, agentId }) {
-    const normalizedRunId = normalizeId(runId);
-    const normalizedAgentId = normalizeId(agentId);
+    const normalizedRunId = normalizeId(runId, "runId", PersistenceError);
+    const normalizedAgentId = normalizeId(agentId, "agentId", PersistenceError);
     try {
       const result = await pool.query(
         `SELECT 1
@@ -28,8 +29,8 @@ export function createCostEventStore({ pool } = {}) {
   }
 
   async function recordDelegation({ runId, agentId, model, usage }) {
-    const normalizedRunId = normalizeId(runId);
-    const normalizedAgentId = normalizeId(agentId);
+    const normalizedRunId = normalizeId(runId, "runId", PersistenceError);
+    const normalizedAgentId = normalizeId(agentId, "agentId", PersistenceError);
     if (typeof model !== "string" || model.trim() === "") {
       throw new PersistenceError("coding-tool model is required for cost attribution");
     }
@@ -96,10 +97,4 @@ function validateUsage(usage) {
   if (usage.costUsd !== null && !isDatabaseCost(usage.costUsd)) {
     throw new PersistenceError("coding-tool usage is malformed");
   }
-}
-
-function normalizeId(value) {
-  const text = typeof value === "bigint" ? value.toString() : String(value ?? "");
-  if (!/^[1-9]\d*$/.test(text)) throw new PersistenceError("run and agent ids must be positive integers");
-  return text;
 }

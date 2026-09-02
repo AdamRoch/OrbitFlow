@@ -1,8 +1,7 @@
-import { handleError, notFound, ok, parseJson, type RouteContext } from "@/lib/api";
+import { handleError, notFound, ok, parseJson, ValidationError, type RouteContext } from "@/lib/api";
 import { getControlPlanePool, getControlPlaneRepository } from "@/lib/control-plane";
 import { parseId } from "@/lib/control-plane/validate";
 import { triggerScheduleManually } from "@/lib/postgres/scheduling";
-import { ValidationError } from "@/lib/validate";
 
 /** Demo trigger: the supplied key makes retries resolve to the same cron_tick. */
 export async function POST(request: Request, context: RouteContext) {

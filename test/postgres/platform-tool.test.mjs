@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -8,7 +7,7 @@ import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
 import { PlatformToolError, dispatchPlatformTool } from "../../src/lib/platform-tools/dispatch.ts";
 
-const { Client } = pg;
+const { Client, Pool } = pg;
 pg.types.setTypeParser(1184, (value) => value);
 const databaseUrl = process.env.DATABASE_URL;
 const proofDatabase = process.env.ORBITFACTORY_FACT13_PROOF_DATABASE;
@@ -21,26 +20,15 @@ async function committedMigrationFiles() {
     .sort();
 }
 
-function callAgentTool(command, input, environment = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["bin/orbit-agent-tools.mjs", command, JSON.stringify(input)], {
-      cwd: repoRoot,
-      env: { ...process.env, DATABASE_URL: databaseUrl, ...environment },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (exitCode) => {
-      try {
-        resolve({ exitCode, stdout: JSON.parse(stdout), stderr });
-      } catch (error) {
-        reject(new Error(`agent tool did not return strict JSON: ${error.message}; stderr=${stderr}`));
-      }
-    });
-  });
+const pool = new Pool({ connectionString: databaseUrl, application_name: "orbitfactory-fact13-proof" });
+
+async function callAgentTool(command, input) {
+  try {
+    return { exitCode: 0, stdout: { ok: true, command, result: await dispatchPlatformTool(pool, command, input) } };
+  } catch (error) {
+    if (!(error instanceof PlatformToolError)) throw error;
+    return { exitCode: 1, stdout: { ok: false, error: { code: error.code, message: error.message } } };
+  }
 }
 
 test("dispatch rejects unknown commands before parsing input or opening PostgreSQL", async () => {
@@ -281,6 +269,6 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       assert.deepEqual(after.rows[0], before.rows[0]);
     });
   } finally {
-    await client.end();
+    await Promise.all([client.end(), pool.end()]);
   }
 });

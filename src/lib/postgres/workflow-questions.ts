@@ -1,5 +1,5 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { insertMessage, type DatabaseId, type JsonObject, type MessageRow } from "./message-bus.ts";
+import { insertMessage, inTransaction, messageFromRow, positiveId, type DatabaseId, type MessageRow } from "./message-bus.ts";
 
 export type QuestionRoute = "agent" | "human-via-channel" | "human-via-UI";
 export type QuestionBoundary = "worker" | "before" | "after";
@@ -21,13 +21,6 @@ export interface WorkflowQuestionRecord {
   answeredAt: Date | null;
 }
 
-function id(value: DatabaseId, field: string): string {
-  if (typeof value === "bigint" && value > BigInt(0)) return String(value);
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
-  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) return value;
-  throw new TypeError(`${field} must be a positive integer`);
-}
-
 export function boundedAnswer(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError("answer must be a non-blank string");
   if (value.trim().length > 12_000) throw new TypeError("answer exceeds 12000 characters");
@@ -45,24 +38,15 @@ function fromRow(row: QueryResultRow): WorkflowQuestionRecord {
   };
 }
 
-export async function listPendingWorkflowQuestions(pool: Pool): Promise<WorkflowQuestionRecord[]> {
-  const result = await pool.query(
-    "SELECT * FROM workflow_questions WHERE status = 'pending' ORDER BY created_at, id",
-  );
-  return result.rows.map(fromRow);
-}
-
 /** UI answers enter the same bus route as Telegram and agent answers. */
 export async function answerWorkflowQuestionFromUi(
   pool: Pool,
   questionIdValue: DatabaseId,
   input: { answer: string; approved?: boolean },
 ): Promise<{ question: WorkflowQuestionRecord; message: MessageRow; replayed: boolean }> {
-  const questionId = id(questionIdValue, "questionId");
+  const questionId = positiveId(questionIdValue, "questionId");
   const answer = boundedAnswer(input.answer);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
+  return inTransaction(pool, async (client) => {
     const result = await client.query(
       "SELECT * FROM workflow_questions WHERE id = $1 FOR UPDATE",
       [questionId],
@@ -72,7 +56,6 @@ export async function answerWorkflowQuestionFromUi(
     if (row.route !== "human-via-UI") throw new TypeError("workflow question is not routed to the UI");
     if (row.status === "answered") {
       const existing = await client.query("SELECT * FROM messages WHERE id = $1", [row.answer_message_id]);
-      await client.query("COMMIT");
       return { question: fromRow(row), message: messageFromRow(existing.rows[0]), replayed: true };
     }
     const message = await insertMessage(client, {
@@ -84,23 +67,8 @@ export async function answerWorkflowQuestionFromUi(
       payload: { questionId, answer, ...(input.approved === undefined ? {} : { approved: input.approved }) },
       handoffBrief: answer,
     });
-    await client.query("COMMIT");
     return { question: fromRow(row), message, replayed: false };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-function messageFromRow(row: QueryResultRow): MessageRow {
-  return {
-    id: row.id, runId: row.run_id, ticketId: row.ticket_id,
-    sequenceNumber: row.sequence_number, sender: row.sender, recipient: row.recipient,
-    type: row.type, payload: row.payload as JsonObject, handoffBrief: row.handoff_brief,
-    tokenUsage: row.token_usage as JsonObject | null, createdAt: row.created_at, updatedAt: row.updated_at,
-  };
+  });
 }
 
 /** Resolve an explicit Telegram reply to the durable question whose outbound message it replies to. */

@@ -4,9 +4,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
-import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
+import { consumeNextMessage, insertMessage } from "../../src/lib/postgres/message-bus.ts";
 import {
-  consumeNextWorkflowMessage,
+  routeWorkflowMessage,
   dispatchNextWorkflowNode,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import {
@@ -109,7 +109,7 @@ test("FACT-15 Telegram adapter", async () => {
       const run = await client.query("SELECT status, trigger_type FROM workflow_runs WHERE id = $1", [accepted.runId]);
       assert.deepEqual(run.rows[0], { status: "pending", trigger_type: "channel" });
 
-      const consumed = await consumeNextWorkflowMessage(pool, { consumerId: "fact15-inbound" });
+      const consumed = await consumeNextMessage(pool, routeWorkflowMessage, { consumerId: "fact15-inbound" });
       assert.equal(consumed?.message.id, accepted.messageId);
       const dispatch = await client.query(
         "SELECT status, source_message_id, input FROM workflow_dispatches WHERE run_id = $1",

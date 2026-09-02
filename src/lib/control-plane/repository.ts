@@ -20,7 +20,8 @@ import type {
   MonitoringMessageDTO,
   MonitoringSnapshot,
 } from "./types";
-import { ValidationError } from "../validate";
+import { ValidationError } from "../api";
+import { inTransaction, iso } from "../postgres/message-bus.ts";
 import { parseOpenClawModelCatalog } from "../runtime/openclaw-model-catalog.mjs";
 import openClawConfig from "../../../docker/openclaw/openclaw.json";
 
@@ -59,15 +60,6 @@ async function requireAvailableModel(model: string): Promise<void> {
       "unavailable_model",
     );
   }
-}
-
-function iso(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  // `pg` preserves timestamptz precision as text for optimistic concurrency.
-  // PostgreSQL emits `YYYY-MM-DD HH:MM:SS.ffffff+00`; ISO-8601 uses `T`
-  // and a colon in the UTC offset. Return a value clients can send back as
-  // the mandatory PATCH precondition without losing microsecond precision.
-  return String(value).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
 }
 
 function object(value: unknown): JsonObject {
@@ -144,11 +136,6 @@ const MONITORING_LIMIT = 200;
 const RUN_LIMIT = 100;
 const LOG_LIMIT = 3;
 
-export interface ControlPlaneRepositoryOptions {
-  /** Test seam for proving that all monitoring panels share one database snapshot. */
-  afterMonitoringPanelRead?: (panel: "runs" | "board" | "trail" | "agents" | "run-costs" | "agent-costs") => Promise<void>;
-}
-
 function monitoringMessageFromRow(row: Row): MonitoringMessageDTO {
   return {
     id: String(row.id),
@@ -198,21 +185,10 @@ async function one<T>(queryable: Queryable, text: string, values: unknown[] = []
 }
 
 export class ControlPlaneRepository {
-  constructor(private readonly pool: Pool, private readonly options: ControlPlaneRepositoryOptions = {}) {}
+  constructor(private readonly pool: Pool) {}
 
-  async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const value = await operation(client);
-      await client.query("COMMIT");
-      return value;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+  transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    return inTransaction(this.pool, operation);
   }
 
   async listAgents(): Promise<AgentDTO[]> {
@@ -478,7 +454,6 @@ export class ControlPlaneRepository {
          ORDER BY run.created_at DESC, run.id DESC LIMIT $2`,
         [filters.runId, RUN_LIMIT + 1],
       );
-      await this.options.afterMonitoringPanelRead?.("runs");
       const retainedRuns = runs.rows.slice(0, RUN_LIMIT);
       const runsTruncated = runs.rows.length > RUN_LIMIT;
       const runIds = retainedRuns.map((row) => String(row.id));
@@ -497,7 +472,6 @@ export class ControlPlaneRepository {
          ORDER BY ticket.priority DESC, ticket.updated_at DESC, ticket.id DESC LIMIT $3`,
         [scopedRuns, filters.agentId, MONITORING_LIMIT + 1],
       );
-      await this.options.afterMonitoringPanelRead?.("board");
       const pendingQuestions = await client.query<Row>(
         `SELECT question.*, ticket.identifier AS ticket_identifier
          FROM workflow_questions AS question
@@ -521,7 +495,6 @@ export class ControlPlaneRepository {
          ORDER BY message.created_at DESC, message.id DESC LIMIT $4`,
         [scopedRuns, filters.agentId, filters.messageType, MONITORING_LIMIT + 1],
       );
-      await this.options.afterMonitoringPanelRead?.("trail");
       const agents = await client.query<Row>(
         `WITH participating_agents AS (
            SELECT DISTINCT ticket.assignee_agent_id AS agent_id FROM tickets AS ticket
@@ -559,7 +532,6 @@ export class ControlPlaneRepository {
          ORDER BY agent.name, agent.id LIMIT $4`,
         [scopedRuns, LOG_LIMIT + 1, filters.agentId, MONITORING_LIMIT + 1],
       );
-      await this.options.afterMonitoringPanelRead?.("agents");
       const agentOptions = await client.query<Row>(
         `WITH participating_agents AS (
            SELECT DISTINCT ticket.assignee_agent_id AS agent_id FROM tickets AS ticket
@@ -582,7 +554,6 @@ export class ControlPlaneRepository {
          ORDER BY run.created_at DESC, run.id DESC LIMIT $3`,
         [scopedRuns, filters.agentId, RUN_LIMIT + 1],
       );
-      await this.options.afterMonitoringPanelRead?.("run-costs");
       const agentCosts = await client.query<Row>(
         `WITH participating_agents AS (
            SELECT DISTINCT ticket.run_id, ticket.assignee_agent_id AS agent_id FROM tickets AS ticket
@@ -605,7 +576,6 @@ export class ControlPlaneRepository {
          ORDER BY run.created_at DESC, participant.run_id DESC, agent.name, agent.id LIMIT $3`,
         [scopedRuns, filters.agentId, MONITORING_LIMIT + 1],
       );
-      await this.options.afterMonitoringPanelRead?.("agent-costs");
       await client.query("COMMIT");
 
       return {

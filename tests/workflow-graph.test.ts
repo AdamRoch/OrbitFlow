@@ -4,7 +4,7 @@ import {
   evaluateGraph,
   parseWorkflowGraph,
   predicateMatches,
-} from "../src/lib/workflow/graph";
+} from "../src/lib/workflow/graph-contract";
 import { parseWorkflowGraph as parseControlPlaneWorkflowGraph } from "../src/lib/workflow/graph-contract";
 
 const graphValue = {

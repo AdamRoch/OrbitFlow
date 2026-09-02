@@ -1,5 +1,0 @@
-command=npm audit --omit=dev
-started_utc=2026-08-13T16:20:53Z
-found 0 vulnerabilities
-exit_code=0
-finished_utc=2026-08-13T16:20:54Z

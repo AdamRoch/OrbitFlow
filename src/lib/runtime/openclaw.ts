@@ -5,12 +5,15 @@ import path from "node:path";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
   insertMessage,
+  nonBlank,
+  positiveId,
   type JsonObject,
   type JsonValue,
   type Queryable,
 } from "../postgres/message-bus.ts";
 import { parseAgentGuardrails } from "../guardrails.ts";
 import { writeOpenClawWorkspace } from "./openclaw-workspace.ts";
+import { isObject, stableJson } from "../workflow/graph-contract.ts";
 
 export const EXPECTED_OPENCLAW_VERSION = "2026.4.15";
 export const DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS = 13 * 60 * 1_000;
@@ -38,24 +41,26 @@ function blockedActionLines(guardrails: unknown): string[] {
   ];
 }
 
-type ErrorCode =
-  | "agent_not_found"
-  | "run_not_found"
-  | "ticket_context_invalid"
-  | "openclaw_version_mismatch"
-  | "openclaw_configuration_failed"
-  | "openclaw_turn_failed"
-  | "openclaw_timeout"
-  | "openclaw_malformed_output"
-  | "openclaw_usage_invalid"
-  | "openclaw_session_mismatch"
-  | "openclaw_terminated"
-  | "openclaw_termination_failed"
-  | "openclaw_invocation_conflict"
-  | "openclaw_invocation_indeterminate"
-  | "openclaw_session_lock_timeout"
-  | "openclaw_session_lock_unavailable"
-  | "runtime_persistence_failed";
+const ERROR_CODES = [
+  "agent_not_found",
+  "run_not_found",
+  "ticket_context_invalid",
+  "openclaw_version_mismatch",
+  "openclaw_configuration_failed",
+  "openclaw_turn_failed",
+  "openclaw_timeout",
+  "openclaw_malformed_output",
+  "openclaw_usage_invalid",
+  "openclaw_session_mismatch",
+  "openclaw_terminated",
+  "openclaw_termination_failed",
+  "openclaw_invocation_conflict",
+  "openclaw_invocation_indeterminate",
+  "openclaw_session_lock_timeout",
+  "openclaw_session_lock_unavailable",
+  "runtime_persistence_failed",
+] as const;
+type ErrorCode = (typeof ERROR_CODES)[number];
 
 export class RuntimeAdapterError extends Error {
   readonly code: ErrorCode;
@@ -172,14 +177,12 @@ export interface RuntimeAdapterOptions {
   runtimeRoot: string;
   openClawCommand?: string;
   openClawCommandArguments?: readonly string[];
-  expectedOpenClawVersion?: string;
   wakeTimeoutMs?: number;
   terminationGraceMs?: number;
   gatewayEnvironment?: Readonly<Record<string, string | undefined>>;
   runtimeUrl?: string;
   runtimeToken?: string;
   availableModels?: readonly string[];
-  retryMalformedOutput?: boolean;
 }
 
 interface CommandResult {
@@ -217,21 +220,6 @@ interface InvocationReceiptRow extends QueryResultRow {
   payload: JsonObject;
 }
 
-function positiveId(value: string | number | bigint, field: string): string {
-  const normalized = String(value);
-  if (!/^[1-9][0-9]*$/.test(normalized)) {
-    throw new TypeError(`${field} must be a positive integer`);
-  }
-  return normalized;
-}
-
-function nonBlank(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new TypeError(`${field} must be a non-blank string`);
-  }
-  return value.trim();
-}
-
 function timeout(value: number | undefined, fallback: number): number {
   const chosen = value ?? fallback;
   if (
@@ -244,21 +232,6 @@ function timeout(value: number | undefined, fallback: number): number {
     );
   }
   return chosen;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function stableJson(value: JsonValue): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (isObject(value)) {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key] as JsonValue)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function parseJsonDocument(primary: string): unknown {
@@ -681,25 +654,7 @@ function storedAttempts(value: unknown): number {
 }
 
 function isErrorCode(value: unknown): value is ErrorCode {
-  return typeof value === "string" && [
-    "agent_not_found",
-    "run_not_found",
-    "ticket_context_invalid",
-    "openclaw_version_mismatch",
-    "openclaw_configuration_failed",
-    "openclaw_turn_failed",
-    "openclaw_timeout",
-    "openclaw_malformed_output",
-    "openclaw_usage_invalid",
-    "openclaw_session_mismatch",
-    "openclaw_terminated",
-    "openclaw_termination_failed",
-    "openclaw_invocation_conflict",
-    "openclaw_invocation_indeterminate",
-    "openclaw_session_lock_timeout",
-    "openclaw_session_lock_unavailable",
-    "runtime_persistence_failed",
-  ].includes(value);
+  return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);
 }
 
 export class OpenClawRuntimeAdapter {
@@ -708,14 +663,12 @@ export class OpenClawRuntimeAdapter {
   private readonly stateDirectory: string;
   private readonly command: string;
   private readonly commandArguments: readonly string[];
-  private readonly expectedVersion: string;
   private readonly wakeTimeoutMs: number;
   private readonly terminationGraceMs: number;
   private readonly gatewayEnvironment: Readonly<Record<string, string | undefined>>;
   private readonly runtimeUrl: string | null;
   private readonly runtimeToken: string | null;
   private readonly availableModels: ReadonlySet<string> | null;
-  private readonly retryMalformedOutput: boolean;
   private readonly activeCommands = new Map<string, Set<RunningCommand>>();
   private readonly externallyTerminatedCommands = new WeakSet<ChildProcess>();
   private versionProof: Promise<void> | null = null;
@@ -727,7 +680,6 @@ export class OpenClawRuntimeAdapter {
     this.stateDirectory = path.join(this.runtimeRoot, "state");
     this.command = options.openClawCommand ?? "openclaw";
     this.commandArguments = options.openClawCommandArguments ?? [];
-    this.expectedVersion = options.expectedOpenClawVersion ?? EXPECTED_OPENCLAW_VERSION;
     this.wakeTimeoutMs = timeout(options.wakeTimeoutMs, DEFAULT_OPENCLAW_WAKE_TIMEOUT_MS);
     this.terminationGraceMs = timeout(
       options.terminationGraceMs,
@@ -748,7 +700,6 @@ export class OpenClawRuntimeAdapter {
     this.availableModels = options.availableModels
       ? new Set(options.availableModels)
       : null;
-    this.retryMalformedOutput = options.retryMalformedOutput ?? true;
     const rejectedEnvironment = Object.keys(this.gatewayEnvironment).filter(
       (name) => !OPENCLAW_GATEWAY_ENVIRONMENT.has(name),
     );
@@ -761,15 +712,6 @@ export class OpenClawRuntimeAdapter {
     if (allowInsecurePrivateWs !== undefined && allowInsecurePrivateWs !== "1") {
       throw new TypeError("OPENCLAW_ALLOW_INSECURE_PRIVATE_WS must be exactly 1 when supplied");
     }
-  }
-
-  async syncAgent(agentIdValue: string | number | bigint): Promise<SynchronizedAgent> {
-    const agentId = positiveId(agentIdValue, "agentId");
-    return await this.withConfigurationLock(async () => {
-      await this.ensureVersion();
-      const agent = await this.loadAgent(agentId);
-      return await this.syncAgentRow(agent);
-    });
   }
 
   async wakeAgent(input: WakeAgentInput): Promise<WakeAgentResult> {
@@ -940,11 +882,7 @@ export class OpenClawRuntimeAdapter {
                   launchedGatewayRunId = null;
                   continue;
                 }
-                if (
-                  error instanceof MalformedOutputError &&
-                  attempts === 1 &&
-                  this.retryMalformedOutput
-                ) {
+                if (error instanceof MalformedOutputError && attempts === 1) {
                   preservePriorWorkOnRetry = error.safeDetails.metaReplayInvalid === true;
                   continue;
                 }
@@ -1008,17 +946,6 @@ export class OpenClawRuntimeAdapter {
         throw error;
       }
     });
-  }
-
-  async terminateAgent(agentIdValue: string | number | bigint): Promise<void> {
-    const agentId = positiveId(agentIdValue, "agentId");
-    const result = await this.pool.query<Pick<AgentRow, "openclaw_ref">>(
-      "SELECT openclaw_ref FROM agents WHERE id = $1",
-      [agentId],
-    );
-    const ref = result.rows[0]?.openclaw_ref;
-    if (!ref) return;
-    await this.terminateRef(ref);
   }
 
   private async loadAgent(agentId: string): Promise<AgentRow> {
@@ -1793,10 +1720,10 @@ export class OpenClawRuntimeAdapter {
         );
       }
       const version = result.stdout.match(/(?:OpenClaw\s+)?(\d{4}\.\d+\.\d+)/)?.[1];
-      if (result.exitCode !== 0 || version !== this.expectedVersion) {
+      if (result.exitCode !== 0 || version !== EXPECTED_OPENCLAW_VERSION) {
         throw new RuntimeAdapterError(
           "openclaw_version_mismatch",
-          `OpenClaw ${this.expectedVersion} is required`,
+          `OpenClaw ${EXPECTED_OPENCLAW_VERSION} is required`,
           { observedVersion: version ?? null },
         );
       }

@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 
 import http from "node:http";
-import {
-  loadOpenClawToolContext,
-} from "../src/lib/runtime/openclaw-tool-context.mjs";
-import { validateOpenClawToolInput } from "../src/lib/runtime/openclaw-tool-input.mjs";
+import { loadOpenClawToolContext } from "../src/lib/runtime/openclaw-tool-context.mjs";
 
 const PLATFORM_COMMANDS = new Set([
   "list_projects",
@@ -21,6 +18,7 @@ const BROKER_URL = process.env.ORBITFLOW_TOOL_BROKER_URL?.trim() || null;
 const BROKER_TOKEN = process.env.ORBITFLOW_TOOL_BROKER_TOKEN?.trim() || null;
 const AGENT_WORKSPACE_ROOT = process.env.ORBITFLOW_AGENT_WORKSPACE_ROOT
   ?? "/var/lib/orbitflow/runtime/workspaces";
+const RESERVED_FIELDS = new Set(["agentId", "runId", "ticketId", "workspace", "command"]);
 
 if (BROKER_URL !== null && BROKER_TOKEN === null) {
   throw new Error("ORBITFLOW_TOOL_BROKER_TOKEN is required with ORBITFLOW_TOOL_BROKER_URL");
@@ -43,7 +41,12 @@ try {
   if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) {
     throw new Error("json-input must be one JSON object");
   }
-  validateOpenClawToolInput(command, supplied);
+  for (const field of Object.keys(supplied)) {
+    const plannerDependencyTarget = command === "set_ticket_dependencies" && field === "ticketId";
+    if (RESERVED_FIELDS.has(field) && !plannerDependencyTarget) {
+      throw new Error(`${field} is bound by the active dispatch`);
+    }
+  }
 
   const { context, workspace } = await loadOpenClawToolContext({
     agentWorkspaceRoot: AGENT_WORKSPACE_ROOT,

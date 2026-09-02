@@ -1,6 +1,5 @@
-import { handleError, noContent, notFound, ok, parseJson, type RouteContext } from "@/lib/api";
+import { handleError, noContent, notFound, ok, parseJson, resultResponse, type RouteContext } from "@/lib/api";
 import { getControlPlaneRepository } from "@/lib/control-plane";
-import { resultResponse } from "@/lib/control-plane/http";
 import { parseId, parseUpdateSkill } from "@/lib/control-plane/validate";
 
 export async function GET(_request: Request, context: RouteContext) {

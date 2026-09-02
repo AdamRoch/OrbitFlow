@@ -1,20 +1,23 @@
 # FACT-13 platform tool surface
 
-`bin/orbit-agent-tools.mjs` is the production agent CLI. It accepts six commands
-and a single JSON argument:
+`bin/orbit-openclaw-tool.mjs` is the production agent CLI. It accepts six
+platform commands and a single JSON argument, and forwards each over the Unix
+socket to the tool broker, which binds the active dispatch's agent, run, and
+ticket before calling `dispatchPlatformTool`:
 
 ```sh
-node bin/orbit-agent-tools.mjs create_ticket '{"agentId":"1","runId":"1","projectId":"1","title":"Investigate queue","idempotencyKey":"turn-12-create-1"}'
-node bin/orbit-agent-tools.mjs update_ticket '{"agentId":"1","runId":"1","ticketId":"1","expectedUpdatedAt":"2026-08-10T12:00:00Z","status":"todo","idempotencyKey":"turn-12-update-1"}'
-node bin/orbit-agent-tools.mjs set_ticket_dependencies '{"agentId":"1","runId":"1","ticketId":"1","blockerTicketIds":["2"],"idempotencyKey":"turn-12-dependencies-1"}'
-node bin/orbit-agent-tools.mjs post_message '{"agentId":"1","runId":"1","ticketId":"1","recipient":"agent:reviewer","type":"question","payload":{"question":"Should this be split?"},"idempotencyKey":"turn-12-question-1"}'
-node bin/orbit-agent-tools.mjs list_projects '{"agentId":"1","runId":"1","idempotencyKey":"turn-12-projects-1"}'
-node bin/orbit-agent-tools.mjs list_tickets '{"agentId":"1","runId":"1","idempotencyKey":"turn-12-list-1"}'
+orbit-openclaw-tool create_ticket '{"projectId":"1","title":"Investigate queue","idempotencyKey":"turn-12-create-1"}'
+orbit-openclaw-tool update_ticket '{"expectedUpdatedAt":"2026-08-10T12:00:00Z","status":"todo","idempotencyKey":"turn-12-update-1"}'
+orbit-openclaw-tool set_ticket_dependencies '{"ticketId":"1","blockerTicketIds":["2"],"idempotencyKey":"turn-12-dependencies-1"}'
+orbit-openclaw-tool post_message '{"recipient":"agent:reviewer","type":"question","payload":{"question":"Should this be split?"},"idempotencyKey":"turn-12-question-1"}'
+orbit-openclaw-tool list_projects '{"idempotencyKey":"turn-12-projects-1"}'
+orbit-openclaw-tool list_tickets '{"idempotencyKey":"turn-12-list-1"}'
 ```
 
-The CLI emits one bounded JSON response to stdout and does not require an API
-credential. `DATABASE_URL` is its only configuration. Every command requires
-an idempotency key and agent/run attribution. A ticket-bound broker invocation
+The CLI emits one bounded JSON response to stdout and needs neither an API
+credential nor `DATABASE_URL`; only the broker holds database access. Every
+command requires an idempotency key; agent and run attribution come from the
+active dispatch. A ticket-bound broker invocation
 injects the active dispatch's ticket id. A planner has no active ticket, so its
 dependency command supplies a target ticket id that PostgreSQL validates
 separately. Ticket creation derives the new ticket attribution in the same

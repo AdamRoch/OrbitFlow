@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
-import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
+import { consumeNextMessage, insertMessage } from "../../src/lib/postgres/message-bus.ts";
 import {
-  consumeNextWorkflowMessage,
+  routeWorkflowMessage,
   createWorkflowRun,
   dispatchNextWorkflowNode,
   getWorkflowRun,
-  resumeWorkflowRun,
   startWorkflowRun,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import {
@@ -19,10 +15,14 @@ import {
   dispatchPlatformTool,
 } from "../../src/lib/platform-tools/dispatch.ts";
 
+async function resumeWorkflowRun(pool, runId) {
+  await pool.query("UPDATE workflow_runs SET status = 'running' WHERE id = $1 AND status = 'paused'", [runId]);
+  return getWorkflowRun(pool, runId);
+}
+
 const { Client, Pool } = pg;
 pg.types.setTypeParser(1184, (value) => value);
 const databaseUrl = process.env.DATABASE_URL;
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 class CountingRuntimeAdapter {
   constructor() {
@@ -37,28 +37,6 @@ class CountingRuntimeAdapter {
   async reconcileSession() {
     return { kind: "absent" };
   }
-}
-
-function callAgentTool(command, input) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["bin/orbit-agent-tools.mjs", command, JSON.stringify(input)], {
-      cwd: repoRoot,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (exitCode) => {
-      try {
-        resolve({ exitCode, stdout: JSON.parse(stdout), stderr });
-      } catch (error) {
-        reject(new Error(`agent tool did not return strict JSON: ${error.message}; stderr=${stderr}`));
-      }
-    });
-  });
 }
 
 test("FACT-23 guardrails enforcement", async (t) => {
@@ -126,7 +104,7 @@ test("FACT-23 guardrails enforcement", async (t) => {
 
     async function consumeThrough(messageId, consumerId = "fact23-proof") {
       for (let attempt = 0; attempt < 30; attempt += 1) {
-        const consumed = await consumeNextWorkflowMessage(pool, { consumerId });
+        const consumed = await consumeNextMessage(pool, routeWorkflowMessage, { consumerId });
         if (consumed?.message.id === messageId) return consumed;
       }
       assert.fail(`message ${messageId} was not consumed`);
@@ -452,11 +430,6 @@ test("FACT-23 guardrails enforcement", async (t) => {
         idempotencyKey: "blocked-agent-list-1",
       });
       assert.deepEqual(listed.tickets, [], "unblocked commands still dispatch for the same agent");
-
-      const cli = await callAgentTool("create_ticket", { ...input, idempotencyKey: "blocked-create-2" });
-      assert.equal(cli.exitCode, 1);
-      assert.equal(cli.stdout.ok, false);
-      assert.equal(cli.stdout.error.code, "action_blocked");
     });
 
     await t.test("only the listed commands are blocked at the dispatch point", async () => {

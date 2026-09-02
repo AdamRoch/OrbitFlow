@@ -26,5 +26,4 @@ destinations, symlinks or special files inside the workspace, escaping paths,
 and changes observed during the copy are refused.
 
 This is deliberately not a source browser, selective artifact exporter, or
-download service. To repeat the disposable PostgreSQL and Compose-style volume
-proof, run `npm run fact38:proof`.
+download service.

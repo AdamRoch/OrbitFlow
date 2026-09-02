@@ -32,7 +32,7 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
   assert.ok(databaseUrl, "DATABASE_URL must point to the disposable proof database");
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
-  const hub = new StateEventHub({ connectionString: databaseUrl, reconnectDelayMs: 250 });
+  const hub = new StateEventHub({ connectionString: databaseUrl });
   const first = [];
   const second = [];
   const stopFirst = hub.subscribe((event) => first.push(event));

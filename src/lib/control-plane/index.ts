@@ -28,13 +28,5 @@ export function getControlPlanePool(): Pool {
   return pool!;
 }
 
-/** Test-only lifecycle hook; production workers retain their pool. */
-export async function resetControlPlaneRepository(): Promise<void> {
-  const current = pool;
-  pool = null;
-  repository = null;
-  if (current) await current.end();
-}
-
 export { ControlPlaneRepository } from "./repository";
 export * from "./types";

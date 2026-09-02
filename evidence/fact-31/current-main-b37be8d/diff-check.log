@@ -1,4 +1,0 @@
-command=git diff --check b37be8d2f9bd0904e0d97595b85b810f6f34c81a^..b37be8d2f9bd0904e0d97595b85b810f6f34c81a
-started_utc=2026-08-13T16:15:01Z
-exit_code=0
-finished_utc=2026-08-13T16:15:01Z

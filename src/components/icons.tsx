@@ -39,14 +39,6 @@ export function AlienIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function StarIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...base} {...props}>
-      <path d="M12 3.5l1.7 5.1L19 10l-5.3 1.4L12 16.5l-1.7-5L5 10l5.3-1.4z" />
-    </svg>
-  );
-}
-
 export function CometIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>

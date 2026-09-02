@@ -17,7 +17,7 @@ import {
 export interface OpenClawEngineAdapterOptions {
   pool: Pool;
   openclaw: OpenClawRuntimeAdapter;
-  workspaceTools?: (agentId: string, nodeId: string, ticketId: string | null, runId: string) => string | null;
+  workspaceTools: (agentId: string, nodeId: string, ticketId: string | null, runId: string) => string | null;
 }
 
 interface WorkerQuestionEvent {
@@ -165,7 +165,7 @@ export class OpenClawEngineAdapter implements RuntimeAdapter {
   constructor(options: OpenClawEngineAdapterOptions) {
     this.pool = options.pool;
     this.openclaw = options.openclaw;
-    this.workspaceTools = options.workspaceTools ?? (() => null);
+    this.workspaceTools = options.workspaceTools;
   }
 
   async startSession(request: RuntimeDispatchRequest): Promise<RuntimeStartResult> {

@@ -4,7 +4,7 @@ import {
   type WorkflowGraph,
 } from "@/lib/workflow/graph-contract";
 import { canonicalWorkflowGraphJson } from "@/lib/workflow/graph-contract";
-import { evaluateGraph, type GraphEvaluation } from "@/lib/workflow/graph";
+import { evaluateGraph, type GraphEvaluation } from "@/lib/workflow/graph-contract";
 
 function assertDispatch(evaluation: GraphEvaluation, expectedNodeId: string): void {
   expect(evaluation.kind).toBe("dispatch");

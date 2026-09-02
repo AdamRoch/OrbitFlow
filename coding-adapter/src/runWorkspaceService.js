@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSafeGit } from "./git.js";
 import { WorkspaceError } from "./errors.js";
+import { normalizeId } from "./shared.js";
 
 const CONTROL_DIRECTORY = ".orbitflow";
 const QUARANTINE_DIRECTORY = "quarantine";
@@ -23,12 +24,7 @@ const RECORD_VERSION = 1;
 const DELETION_CHANNEL = "orbitflow_workspace_deletion";
 const CLEANUP_BOUNDARY = fileURLToPath(new URL("./workspaceCleanupBoundary.js", import.meta.url));
 
-export function createRunWorkspaceService({
-  pool,
-  workspaceRoot,
-  beforeDelegationJoin,
-  beforeCleanupBoundary,
-} = {}) {
+export function createRunWorkspaceService({ pool, workspaceRoot } = {}) {
   if (!pool || typeof pool.query !== "function") {
     throw new WorkspaceError("a PostgreSQL pool is required for run workspaces");
   }
@@ -116,9 +112,6 @@ export function createRunWorkspaceService({
       await client.query("SELECT pg_notify($1, $2)", [DELETION_CHANNEL, runId]);
       const deletion = delegationCoordinator.beginDeletion(runId);
       deletionRunId = runId;
-      if (typeof beforeDelegationJoin === "function") {
-        await beforeDelegationJoin({ runId, activeCount: deletion.activeCount });
-      }
       await deletion.join();
       await client.query("BEGIN");
       inTransaction = true;
@@ -143,9 +136,6 @@ export function createRunWorkspaceService({
       );
       assertDirectChild(root.disposal, disposalPath);
       await rename(owned.path, disposalPath);
-      if (typeof beforeCleanupBoundary === "function") {
-        await beforeCleanupBoundary({ path: disposalPath, identity: owned.identity });
-      }
       await removeOwnedDirectory(disposalPath, owned.identity);
       await removeOwnedRecord(root, runId, entry);
 
@@ -732,12 +722,6 @@ function assertDirectChild(parent, target) {
   if (path.dirname(target) !== parent || !target.startsWith(`${parent}${path.sep}`)) {
     throw new WorkspaceError("workspace path escaped its configured parent");
   }
-}
-
-function normalizeId(value, field) {
-  const text = typeof value === "bigint" ? value.toString() : String(value ?? "");
-  if (!/^[1-9]\d*$/.test(text)) throw new WorkspaceError(`${field} must be a positive integer`);
-  return text;
 }
 
 function parseJson(value, label) {

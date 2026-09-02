@@ -1,6 +1,6 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { insertMessage, type JsonObject, type MessageRow } from "./postgres/message-bus.ts";
-import { asJsonObject, parseWorkflowGraph, workflowEntryNodeId } from "./workflow/graph.ts";
+import { asJsonObject, parseWorkflowGraph, workflowEntryNodeId } from "./workflow/graph-contract.ts";
 
 const STATUS_REQUEST = /^(?:how(?:'s| is) (?:it|the (?:run|work)) going(?:[?!.,].*)?|(?:run )?status[?!.,]*|progress[?!.,]*|what(?:'s| is) (?:the )?(?:run )?status[?!.,]*)$/i;
 

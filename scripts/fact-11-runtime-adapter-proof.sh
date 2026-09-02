@@ -1,51 +1,14 @@
 #!/usr/bin/env bash
+# FACT-11: exact OpenClaw version and the offline agent create/edit path, then
+# the runtime adapter contract against disposable PostgreSQL.
 set -euo pipefail
 
-container_name="orbitfactory-fact11-postgres-proof"
-database_name="orbitfactory_fact11_proof"
-database_user="orbitfactory"
-database_password="fact11-local-proof"
 expected_openclaw_version="2026.4.15"
-created_container="false"
 openclaw_runtime=""
-
 cleanup() {
-  test_status=$?
-  cleanup_failed="false"
-  trap - EXIT
-
-  if [[ "$created_container" == "true" ]]; then
-    if ! docker rm --force "$container_name"; then
-      echo "Failed to remove disposable container: $container_name" >&2
-      cleanup_failed="true"
-    fi
-    if docker container inspect "$container_name" >/dev/null 2>&1; then
-      echo "Disposable container still exists after cleanup: $container_name" >&2
-      cleanup_failed="true"
-    fi
-  fi
-
-  if [[ -n "$openclaw_runtime" ]]; then
-    case "$openclaw_runtime" in
-      /tmp/orbitflow-fact11-openclaw-cli.*)
-        if [[ -d "$openclaw_runtime" ]]; then
-          find "$openclaw_runtime" -depth -delete
-        fi
-        ;;
-      *)
-        echo "Refusing to clean unexpected OpenClaw proof path: $openclaw_runtime" >&2
-        cleanup_failed="true"
-        ;;
-    esac
-  fi
-
-  if [[ "$test_status" -ne 0 ]]; then
-    exit "$test_status"
-  fi
-  if [[ "$cleanup_failed" == "true" ]]; then
-    exit 1
-  fi
-  exit 0
+  case "$openclaw_runtime" in
+    /tmp/orbitflow-fact11-openclaw-cli.*) [[ -d "$openclaw_runtime" ]] && find "$openclaw_runtime" -depth -delete ;;
+  esac
 }
 trap cleanup EXIT
 
@@ -108,43 +71,4 @@ node -e '
 ' "$openclaw_runtime/created.json" "$openclaw_runtime/listed.json" "$openclaw_runtime/updated.json"
 echo "Exact-version offline agent create and edit path: passed"
 
-if docker container inspect "$container_name" >/dev/null 2>&1; then
-  echo "Refusing to touch existing container: $container_name" >&2
-  exit 1
-fi
-
-docker run --detach --rm \
-  --name "$container_name" \
-  --env "POSTGRES_DB=$database_name" \
-  --env "POSTGRES_USER=$database_user" \
-  --env "POSTGRES_PASSWORD=$database_password" \
-  --health-cmd "pg_isready -U $database_user -d $database_name" \
-  --health-interval 1s \
-  --health-timeout 3s \
-  --health-retries 30 \
-  --publish 127.0.0.1::5432 \
-  postgres:16-alpine >/dev/null
-created_container="true"
-
-for _ in {1..30}; do
-  health="$(docker inspect --format '{{.State.Health.Status}}' "$container_name")"
-  if [[ "$health" == "healthy" ]]; then
-    break
-  fi
-  if [[ "$health" == "unhealthy" ]]; then
-    echo "Disposable PostgreSQL container became unhealthy" >&2
-    exit 1
-  fi
-  sleep 1
-done
-
-if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container_name")" != "healthy" ]]; then
-  echo "Disposable PostgreSQL container did not become healthy" >&2
-  exit 1
-fi
-
-host_port="$(docker port "$container_name" 5432/tcp | sed 's/.*://')"
-export DATABASE_URL="postgresql://$database_user:$database_password@127.0.0.1:$host_port/$database_name"
-export ORBITFACTORY_FACT11_PROOF_DATABASE="$database_name"
-
-npm run test:runtime-adapter
+scripts/with-postgres.sh -- env ORBITFACTORY_FACT11_PROOF_DATABASE=proof npm run test:runtime-adapter

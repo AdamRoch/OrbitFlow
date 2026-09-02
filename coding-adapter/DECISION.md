@@ -81,7 +81,7 @@ proof harnesses.
 
 ## Structured failures (`src/errors.js`)
 
-`PUBLIC_ERROR_RESPONSE_SCHEMA` is the authoritative executable-tool response
+`PUBLIC_ERROR_CODES` is the authoritative executable-tool response
 schema. Its code enum contains `internal_failure`, `missing_credentials`,
 `cli_failure`, `timeout`, `malformed_output`, `output_too_large`,
 `credential_exposure`, `workspace_invalid`, `persistence_failure`, and

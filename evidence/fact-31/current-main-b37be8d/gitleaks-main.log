@@ -1,7 +1,0 @@
-command=gitleaks git --redact --no-banner --log-opts=b37be8d2f9bd0904e0d97595b85b810f6f34c81a^..b37be8d2f9bd0904e0d97595b85b810f6f34c81a .
-started_utc=2026-08-13T16:15:01Z
-11:15AM INF 1 commits scanned.
-11:15AM INF scanned ~15350 bytes (15.35 KB) in 54.5ms
-11:15AM INF no leaks found
-exit_code=0
-finished_utc=2026-08-13T16:15:01Z

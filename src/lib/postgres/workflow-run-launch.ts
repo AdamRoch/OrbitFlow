@@ -4,7 +4,7 @@ import {
   parseWorkflowGraph,
   type JsonObject,
   type WorkflowGraph,
-} from "../workflow/graph.ts";
+} from "../workflow/graph-contract.ts";
 
 export type WorkflowRunTrigger = "channel" | "ui" | "cron";
 

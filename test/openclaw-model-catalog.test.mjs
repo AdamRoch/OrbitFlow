@@ -10,7 +10,6 @@ import { promisify } from "node:util";
 import {
   loadOpenClawModelCatalog,
   parseOpenClawModelCatalog,
-  smokeOpenRouterProviderBoundary,
   validateConfiguredAgentModels,
 } from "../src/lib/runtime/openclaw-model-catalog.mjs";
 
@@ -38,40 +37,6 @@ test("FACT-35 agent validation names every unavailable database reference clearl
     ),
     /agent "Factory Planner" references unavailable model "openrouter\/missing\/model".*registered models:/,
   );
-});
-
-test("FACT-35 provider-boundary smoke routes the committed model without credentials", async () => {
-  const catalog = await loadOpenClawModelCatalog(CONFIG_URL);
-  let observed;
-  const server = http.createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    observed = {
-      url: request.url,
-      authorization: request.headers.authorization,
-      body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-    };
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"choices":[]}');
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-
-  try {
-    const address = server.address();
-    const result = await smokeOpenRouterProviderBoundary({
-      catalog,
-      baseUrl: `http://127.0.0.1:${address.port}/api/v1`,
-    });
-    assert.equal(result.configuredModel, catalog.primaryModel);
-    assert.equal(observed.url, "/api/v1/chat/completions");
-    assert.equal(observed.authorization, undefined);
-    assert.equal(observed.body.model, catalog.primaryModel.replace(/^openrouter\//, ""));
-    assert.equal(observed.body.max_tokens, 1);
-  } finally {
-    await new Promise((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
-  }
 });
 
 test("FACT-35 OpenClaw config application replaces stale runtime model state", async () => {

@@ -1,8 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
-  consumeNextMessage,
   insertMessage,
+  inTransaction,
+  messageFromRow,
+  nonBlank,
+  positiveId,
   runMessageBusWorker,
   type DatabaseId,
   type JsonObject as MessageJsonObject,
@@ -21,7 +24,7 @@ import {
   type JsonObject,
   type WorkflowGraph,
   type WorkflowNode,
-} from "../workflow/graph.ts";
+} from "../workflow/graph-contract.ts";
 import { telegramInboundForEngine } from "../telegram/adapter.ts";
 import { cronTickForEngine, startScheduleWorker, type ScheduleWorker } from "./scheduling.ts";
 import {
@@ -62,14 +65,6 @@ export interface WorkflowRunRecord {
   workflowVersion: Date | string;
   retryOfRunId: string | null;
   retryBlockedReason: string | null;
-}
-
-export interface WorkflowThreadState {
-  id: string;
-  runId: string;
-  ticketId: string | null;
-  status: "running" | "paused";
-  pauseReason: string | null;
 }
 
 export interface RuntimeDispatchRequest {
@@ -127,22 +122,6 @@ const DEFAULT_DISPATCH_LEASE_MS = 300_000;
 const MIN_INTERVAL_MS = 10;
 const MAX_INTERVAL_MS = 3_600_000;
 
-function positiveId(value: DatabaseId, field: string): string {
-  if (typeof value === "bigint" && value > BigInt(0)) return value.toString();
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
-    return String(value);
-  }
-  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) return value;
-  throw new TypeError(`${field} must be a positive integer`);
-}
-
-function nonBlank(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new TypeError(`${field} must be a non-blank string`);
-  }
-  return value.trim();
-}
-
 function interval(value: number | undefined, fallback: number, field: string): number {
   const resolved = value ?? fallback;
   if (
@@ -174,21 +153,6 @@ function runFromRow(row: QueryResultRow): WorkflowRunRecord {
     retryOfRunId: row.retry_of_run_id,
     retryBlockedReason: row.retry_blocked_reason,
   };
-}
-
-async function inTransaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>) {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await operation(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 export async function createWorkflowRun(
@@ -806,37 +770,6 @@ export async function startWorkflowRun(
   return inTransaction(pool, (transaction) => startWorkflowRunInTransaction(transaction, runId));
 }
 
-async function transitionRun(
-  pool: Pool,
-  runIdValue: DatabaseId,
-  from: WorkflowRunStatus,
-  to: WorkflowRunStatus,
-): Promise<WorkflowRunRecord> {
-  const runId = positiveId(runIdValue, "runId");
-  const result = await pool.query(
-    `UPDATE workflow_runs
-     SET status = $3, updated_at = clock_timestamp()
-     WHERE id = $1 AND status = $2
-     RETURNING *`,
-    [runId, from, to],
-  );
-  if (result.rows[0]) return runFromRow(result.rows[0]);
-  const existing = await getWorkflowRun(pool, runId);
-  if (!existing) throw new WorkflowStateError(`workflow run ${runId} not found`);
-  if (existing.status === to) return existing;
-  throw new WorkflowStateError(
-    `workflow run ${runId} cannot transition from ${existing.status} to ${to}`,
-  );
-}
-
-export async function pauseWorkflowRun(pool: Pool, runId: DatabaseId) {
-  return transitionRun(pool, runId, "running", "paused");
-}
-
-export async function resumeWorkflowRun(pool: Pool, runId: DatabaseId) {
-  return transitionRun(pool, runId, "paused", "running");
-}
-
 export async function cancelWorkflowRun(
   pool: Pool,
   runIdValue: DatabaseId,
@@ -958,110 +891,6 @@ export async function retryWorkflowRun(
     });
     return startWorkflowRunInTransaction(transaction, String(inserted.id));
   });
-}
-
-function threadFromRow(row: QueryResultRow): WorkflowThreadState {
-  return {
-    id: row.id,
-    runId: row.run_id,
-    ticketId: row.ticket_id,
-    status: row.status,
-    pauseReason: row.pause_reason,
-  };
-}
-
-async function setWorkflowThreadState(
-  pool: Pool,
-  runIdValue: DatabaseId,
-  ticketIdValue: DatabaseId | null,
-  status: "running" | "paused",
-  pauseReason: string | null,
-): Promise<WorkflowThreadState> {
-  const runId = positiveId(runIdValue, "runId");
-  const ticketId = ticketIdValue === null ? null : positiveId(ticketIdValue, "ticketId");
-  return inTransaction(pool, async (transaction) => {
-    const run = await transaction.query<{ status: WorkflowRunStatus }>(
-      "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE",
-      [runId],
-    );
-    if (!run.rows[0]) throw new WorkflowStateError(`workflow run ${runId} not found`);
-    if (!["running", "paused"].includes(run.rows[0].status)) {
-      throw new WorkflowStateError(
-        `workflow run ${runId} cannot change a thread while ${run.rows[0].status}`,
-      );
-    }
-    if (ticketId) {
-      const ticket = await transaction.query(
-        "SELECT id FROM tickets WHERE id = $1 AND run_id = $2 FOR KEY SHARE",
-        [ticketId, runId],
-      );
-      if (!ticket.rows[0]) {
-        throw new WorkflowStateError(`ticket ${ticketId} does not belong to run ${runId}`);
-      }
-    }
-    const changed = await transaction.query(
-      `INSERT INTO workflow_thread_states (run_id, ticket_id, status, pause_reason)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT ON CONSTRAINT workflow_thread_states_identity_unique
-       DO UPDATE SET status = EXCLUDED.status,
-                     pause_reason = EXCLUDED.pause_reason,
-                     updated_at = clock_timestamp()
-       RETURNING *`,
-      [runId, ticketId, status, pauseReason],
-    );
-    if (ticketId) {
-      if (status === "paused") {
-        await transaction.query(
-          `DELETE FROM workflow_dispatches
-           WHERE run_id = $1 AND ticket_id = $2
-             AND fanout_group_id IS NOT NULL AND status = 'pending'`,
-          [runId, ticketId],
-        );
-      }
-      const nodes = await transaction.query<{ node_id: string }>(
-        `SELECT DISTINCT fanout.node_id
-         FROM workflow_fanout_members AS member
-         JOIN workflow_fanout_groups AS fanout ON fanout.id = member.fanout_group_id
-         WHERE fanout.run_id = $1 AND member.ticket_id = $2
-         ORDER BY fanout.node_id`,
-        [runId, ticketId],
-      );
-      for (const node of nodes.rows) {
-        await materializeFanoutCapacity(transaction, runId, node.node_id);
-      }
-    }
-    return threadFromRow(changed.rows[0]);
-  });
-}
-
-export async function pauseWorkflowThread(
-  pool: Pool,
-  runId: DatabaseId,
-  ticketId: DatabaseId | null,
-  reason: string,
-) {
-  return setWorkflowThreadState(pool, runId, ticketId, "paused", nonBlank(reason, "reason"));
-}
-
-export async function resumeWorkflowThread(
-  pool: Pool,
-  runId: DatabaseId,
-  ticketId: DatabaseId | null,
-) {
-  return setWorkflowThreadState(pool, runId, ticketId, "running", null);
-}
-
-export async function listWorkflowThreadStates(
-  pool: Pool,
-  runIdValue: DatabaseId,
-): Promise<WorkflowThreadState[]> {
-  const result = await pool.query(
-    `SELECT * FROM workflow_thread_states
-     WHERE run_id = $1
-     ORDER BY ticket_id NULLS FIRST, id`,
-    [positiveId(runIdValue, "runId")],
-  );
-  return result.rows.map(threadFromRow);
 }
 
 interface ClaimedDispatch {
@@ -1925,13 +1754,7 @@ async function routeAnswerMessage(transaction: PoolClient, message: MessageRow):
     });
   } else if (question.boundary === "after") {
     const outputMessage = await transaction.query("SELECT * FROM messages WHERE id = $1", [question.output_message_id]);
-    const source = outputMessage.rows[0];
-    const sourceMessage: MessageRow = {
-      id: source.id, runId: source.run_id, ticketId: source.ticket_id,
-      sequenceNumber: source.sequence_number, sender: source.sender, recipient: source.recipient,
-      type: source.type, payload: source.payload, handoffBrief: source.handoff_brief,
-      tokenUsage: source.token_usage, createdAt: source.created_at, updatedAt: source.updated_at,
-    };
+    const sourceMessage = messageFromRow(outputMessage.rows[0]);
     const parsed = parseOutputMessage(sourceMessage);
     const evaluation = evaluateGraph(graph, question.node_id, parsed.output);
     if (evaluation.kind === "dispatch") {
@@ -2357,13 +2180,6 @@ async function routeChannelInbound(
     if (!(error instanceof WorkflowGraphError) && !(error instanceof TypeError)) throw error;
     await failRun(transaction, message.runId, "channel_inbound_invalid", boundedReason(error));
   }
-}
-
-export async function consumeNextWorkflowMessage(
-  pool: Pool,
-  options: { consumerId: string; signal?: AbortSignal },
-) {
-  return consumeNextMessage(pool, routeWorkflowMessage, options);
 }
 
 export async function runWorkflowDispatchWorker(

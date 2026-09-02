@@ -71,12 +71,6 @@ alternatives, then fails before provider execution. OpenClaw config application
 also replaces persisted model catalog/default state while retaining the mutable
 per-agent list.
 
-Run `npm run fact35:proof` for fresh-install and upgrade PostgreSQL coverage,
-negative configuration validation, and a credential-free local HTTP smoke. The
-smoke sends the catalog-derived provider model to a disposable fake OpenRouter
-boundary with `max_tokens: 1`; it never contacts OpenRouter or uses a provider
-key, so it spends no paid tokens.
-
 FACT-11 itself uses the existing `agents.memory`, `agents.openclaw_ref`,
 `messages`, `cost_events`, and workflow-run aggregate columns. FACT-34 adds
 `0023-openclaw-dispatch-inputs.sql` so the production engine can persist the

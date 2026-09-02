@@ -1,11 +1,6 @@
-export interface ProductionWorkspaceToolsOptions {
-  tool?: string;
-}
+const tool = "/app/bin/orbit-openclaw-tool.mjs";
 
-export function createProductionWorkspaceTools(
-  options: ProductionWorkspaceToolsOptions = {},
-): (agentId: string, nodeId: string, ticketId: string | null, runId: string) => string {
-  const tool = options.tool ?? "/app/bin/orbit-openclaw-tool.mjs";
+export function createProductionWorkspaceTools(): (agentId: string, nodeId: string, ticketId: string | null, runId: string) => string {
 
   return (_agentId, nodeId, ticketId, _runId) => [
     `# OrbitFlow tools for ${nodeId}`,

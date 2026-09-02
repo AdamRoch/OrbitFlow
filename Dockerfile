@@ -24,13 +24,12 @@ WORKDIR /app
 
 COPY --from=build --chown=node:node /app ./
 COPY --chown=root:root docker/app-entrypoint.sh /usr/local/bin/orbitflow-app-entrypoint
-COPY --chown=root:root docker/coding-adapter-entrypoint.sh /usr/local/bin/orbitflow-coding-adapter-entrypoint
 COPY --chown=root:root docker/engine-entrypoint.sh /usr/local/bin/orbitflow-engine-entrypoint
 COPY --chown=root:root docker/tool-broker-entrypoint.sh /usr/local/bin/orbitflow-tool-broker-entrypoint
 COPY --chown=root:root docker/coding-executor-entrypoint.sh /usr/local/bin/orbitflow-coding-executor-entrypoint
 COPY --chown=root:root docker/platform-entrypoint.sh /usr/local/bin/orbitflow-platform-entrypoint
 
-RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-coding-adapter-entrypoint /usr/local/bin/orbitflow-engine-entrypoint /usr/local/bin/orbitflow-tool-broker-entrypoint /usr/local/bin/orbitflow-coding-executor-entrypoint /usr/local/bin/orbitflow-platform-entrypoint
+RUN chmod 755 /usr/local/bin/orbitflow-app-entrypoint /usr/local/bin/orbitflow-engine-entrypoint /usr/local/bin/orbitflow-tool-broker-entrypoint /usr/local/bin/orbitflow-coding-executor-entrypoint /usr/local/bin/orbitflow-platform-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-app-entrypoint"]
 CMD ["npm", "run", "start"]
@@ -46,18 +45,14 @@ RUN apt-get update \
 RUN groupadd --gid 19000 orbitflow-broker-client \
     && usermod --append --groups orbitflow-broker-client node
 
-RUN npm ci --prefix coding-adapter --omit=dev
-
 COPY --from=openclaw-base /app /opt/openclaw
 
-RUN chmod 755 /app/scripts/fact-7-fake-opencode.mjs
-RUN chmod 755 /app/scripts/fact-34-isolation-opencode.mjs
-RUN chown root:root /app/bin/orbit-agent-tools.mjs /app/bin/orbit-coding-tool.mjs /app/bin/orbit-openclaw-tool.mjs /app/bin/orbit-tool-broker.mjs /app/bin/orbit-coding-executor.mjs \
-    && chmod 750 /app/bin/orbit-agent-tools.mjs /app/bin/orbit-coding-tool.mjs /app/bin/orbit-tool-broker.mjs /app/bin/orbit-coding-executor.mjs \
+RUN chown root:root /app/bin/orbit-openclaw-tool.mjs /app/bin/orbit-tool-broker.mjs /app/bin/orbit-coding-executor.mjs \
+    && chmod 750 /app/bin/orbit-tool-broker.mjs /app/bin/orbit-coding-executor.mjs \
     && chmod 755 /app/bin/orbit-openclaw-tool.mjs
 RUN install -d -o node -g node -m 700 /var/lib/orbitflow
 
-ENV PATH=/app/coding-adapter/node_modules/.bin:$PATH
+ENV PATH=/app/node_modules/.bin:$PATH
 
 ENTRYPOINT ["/usr/local/bin/orbitflow-engine-entrypoint"]
 CMD ["node", "--experimental-strip-types", "src/runtime/engine.ts"]

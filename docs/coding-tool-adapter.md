@@ -1,16 +1,15 @@
 # CodingToolAdapter v1 runbook
 
 FACT-12 productionizes the FACT-3 OpenCode decision without adding a second
-adapter. The implementation remains in `coding-adapter/`; the platform-facing
-entry point is `bin/orbit-coding-tool.mjs`.
+adapter. The implementation remains in `coding-adapter/`; the runtime entry
+points are `bin/orbit-tool-broker.mjs` and `bin/orbit-coding-executor.mjs`.
 
 ## Runtime contract
 
-The tool reads exactly one JSON object from standard input and writes exactly
-one JSON response to standard output. The provider credential is never placed
-in an argument list. OpenCode receives the task in its documented CLI position.
-The same executable also accepts `<command> <json-input>` for the allowlisted
-OpenClaw gateway boundary; both forms enter the same validation and adapter.
+The OpenClaw wrapper `bin/orbit-openclaw-tool.mjs` accepts `<command> <json-input>`
+and forwards it over the broker Unix socket. The broker validates the request
+and calls the adapter. The provider credential is never placed in an argument
+list. OpenCode receives the task in its documented CLI position.
 
 Start a run workspace after its `workflow_runs` row exists:
 
@@ -30,7 +29,7 @@ redacted details and a nonzero process exit. Usage persistence happens before a
 success response, so a failed `cost_events` write never looks successful.
 
 The authoritative public error response schema is
-`coding-adapter/src/errors.js` `PUBLIC_ERROR_RESPONSE_SCHEMA`. Its complete code
+`coding-adapter/src/errors.js` `PUBLIC_ERROR_CODES`. Its complete code
 enum is:
 
 | Code | Meaning |
@@ -140,34 +139,15 @@ PostgreSQL `BIGINT`; cost must be finite, nonnegative, and fit `NUMERIC(18,8)`.
 
 ## Local proof
 
-Install both dependency sets, then run the deterministic suite and disposable
-PostgreSQL/filesystem proof:
-
 ```sh
 npm ci
-npm --prefix coding-adapter ci
 npm test
-npm run fact12:proof
+npm run fact34:proof
 ```
 
-`fact12:proof` creates one exact disposable PostgreSQL container and one exact
-temporary workspace root, proves sequential committed state, cost attribution,
-unknown-versus-zero usage, structured failures, credential containment, and
-path attacks, then removes only those named resources.
-
-The real provider paths are executable but off by default:
-
-```sh
-ORBITFLOW_ENABLE_REAL_OPENCODE_PROOF=1 npm run fact12:proof
-ORBITFLOW_ENABLE_REAL_OPENCLAW_CODING_PROOF=1 npm run fact12:proof
-```
-
-Each gate requires `OPENROUTER_API_KEY` and can spend provider credit. The first
-runs the production adapter through pinned real OpenCode. The second runs a real
-OpenClaw 2026.4.15 agent and fails before the request if that exact supported
-version is unavailable. It invokes the production CLI through `exec`; its
-nested coding operation uses the deterministic fake so the proof isolates the
-OpenClaw tool boundary. With neither gate set, no provider request is made.
+`fact34:proof` starts the disposable Compose topology with a committed fake
+OpenCode binary and proves the wrapper, broker, executor, and workspace
+isolation boundary without a provider call.
 
 ## Trust boundary
 

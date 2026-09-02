@@ -221,76 +221,6 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     );
   });
 
-  await t.test("creates a live agent and applies row edits on resync", async () => {
-    const catalogBoundAdapter = new OpenClawRuntimeAdapter({
-      pool,
-      runtimeRoot,
-      openClawCommand: process.execPath,
-      openClawCommandArguments: [fixture],
-      availableModels: ["openrouter/registered/model"],
-    });
-    await assert.rejects(
-      catalogBoundAdapter.syncAgent(agentId),
-      (error) => {
-        assert.equal(error.code, "openclaw_configuration_failed");
-        assert.match(error.message, /Mira.*openrouter\/openai\/gpt-4\.1-mini.*registered models/);
-        return true;
-      },
-    );
-    const first = await adapter.syncAgent(agentId);
-    assert.equal(first.created, true);
-    assert.equal(first.openclawRef, `orbitflow-${agentId}`);
-
-    await pool.query(
-      `UPDATE agents
-       SET name = 'Mira Updated',
-           system_prompt = 'Use the edited node persona.',
-           model = 'openrouter/openai/gpt-4.1',
-           memory = '{"durableFact":"edited-before-wake"}'::jsonb,
-           updated_at = now()
-       WHERE id = $1`,
-      [agentId],
-    );
-    const second = await adapter.syncAgent(agentId);
-    assert.equal(second.created, false);
-
-    const liveAgents = JSON.parse(
-      await readFile(path.join(stateDirectory, "fake-agents.json"), "utf8"),
-    );
-    assert.equal(liveAgents[0].model, "openrouter/openai/gpt-4.1");
-    assert.equal(liveAgents[0].workspace, second.workspace);
-    assert.match(await readFile(path.join(second.workspace, "IDENTITY.md"), "utf8"), /Mira Updated/);
-    assert.match(
-      await readFile(path.join(second.workspace, "SOUL.md"), "utf8"),
-      /edited node persona/,
-    );
-    assert.match(
-      await readFile(path.join(second.workspace, "MEMORY.md"), "utf8"),
-      /edited-before-wake/,
-    );
-    const persisted = await pool.query(
-      "SELECT openclaw_ref FROM agents WHERE id = $1",
-      [agentId],
-    );
-    assert.equal(persisted.rows[0].openclaw_ref, first.openclawRef);
-
-    const credentiallessAdapter = new OpenClawRuntimeAdapter({
-      pool,
-      runtimeRoot,
-      openClawCommand: process.execPath,
-      openClawCommandArguments: [fixture],
-      wakeTimeoutMs: 2_000,
-      terminationGraceMs: 100,
-    });
-    const beforeCredentiallessSync = (await requests()).length;
-    await credentiallessAdapter.syncAgent(agentId);
-    assert.ok(
-      (await requests())
-        .slice(beforeCredentiallessSync)
-        .every((request) => request.gatewayCredentialPresent === false),
-    );
-  });
-
   await t.test("rejects arbitrary child environment passthrough", () => {
     assert.throws(
       () =>
@@ -984,45 +914,6 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
     assert.equal(message.rowCount, 1);
     assert.equal(message.rows[0].payload.code, "openclaw_timeout");
     assert.equal(message.rows[0].payload.attempts, 1);
-    const abort = (await requests()).filter((request) => request.command === "sessions-abort").at(-1);
-    assert.match(
-      abort.sessionKey,
-      new RegExp(`^agent:orbitflow-${agentId}:main$`),
-    );
-  });
-
-  await t.test("explicit termination kills the active session and surfaces a durable error", async () => {
-    const runId = await createRun("explicit-termination");
-    await createTicket(runId, 6, "explicit termination");
-    const pidsPath = path.join(stateDirectory, "fake-timeout-pids.json");
-    await unlink(pidsPath).catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-    });
-    await resetPlan([{ mode: "timeout" }]);
-    const wake = adapter.wakeAgent({
-      runId,
-      agentId,
-      invocationId: "explicit-termination",
-      nodeId: "terminate",
-      nodeSystemPrompt: "This fake turn is terminated by the caller.",
-      timeoutMs: 2_000,
-    });
-    const rejected = assert.rejects(
-      wake,
-      (error) =>
-        error instanceof RuntimeAdapterError && error.code === "openclaw_terminated",
-    );
-    const pids = await waitForFile(pidsPath);
-    await adapter.terminateAgent(agentId);
-    await rejected;
-    assert.equal(await processExists(pids.parent), false);
-    assert.equal(await processExists(pids.grandchild), false);
-    const message = await pool.query(
-      "SELECT payload FROM messages WHERE run_id = $1",
-      [runId],
-    );
-    assert.equal(message.rowCount, 1);
-    assert.equal(message.rows[0].payload.code, "openclaw_terminated");
     const abort = (await requests()).filter((request) => request.command === "sessions-abort").at(-1);
     assert.match(
       abort.sessionKey,

@@ -1,4 +1,5 @@
-import { ValidationError } from "../validate";
+import cron from "node-cron";
+import { ValidationError } from "../api";
 import type {
   CreateAgentInput,
   CreateSkillInput,
@@ -93,40 +94,10 @@ function createFields(body: Record<string, unknown>, accepted: readonly string[]
   }
 }
 
-/**
- * FACT-19 accepts the portable five-field cron subset used by the future
- * scheduler: minute hour day-of-month month day-of-week. Each field permits
- * a wildcard, a bounded number, a range, a comma-list, and a step.
- */
-function validCronField(field: string, min: number, max: number): boolean {
-  const validNumber = (value: string) => /^\d+$/.test(value) && Number(value) >= min && Number(value) <= max;
-  return field.split(",").every((entry) => {
-    const [base, step, extra] = entry.split("/");
-    if (!base || extra !== undefined || (step !== undefined && (!/^\d+$/.test(step) || Number(step) < 1 || Number(step) > max - min + 1))) return false;
-    if (base === "*") return true;
-    const [start, end, rangeExtra] = base.split("-");
-    if (!start || rangeExtra !== undefined) return false;
-    return end === undefined ? validNumber(start) : validNumber(start) && validNumber(end) && Number(start) <= Number(end);
-  });
-}
-
-export function isAcceptedCronExpression(value: string): boolean {
-  const fields = value.trim().split(/\s+/);
-  return fields.length === 5
-    && validCronField(fields[0]!, 0, 59)
-    && validCronField(fields[1]!, 0, 23)
-    && validCronField(fields[2]!, 1, 31)
-    && validCronField(fields[3]!, 1, 12)
-    && validCronField(fields[4]!, 0, 7);
-}
-
 function requiredCronExpression(value: unknown): string {
   const cronExpression = requiredString(value, "cronExpression");
-  if (!isAcceptedCronExpression(cronExpression)) {
-    throw new ValidationError(
-      "cronExpression must use the five-field numeric cron grammar (minute hour day-of-month month day-of-week)",
-      "invalid_cron",
-    );
+  if (!cron.validate(cronExpression)) {
+    throw new ValidationError("cronExpression must be a valid cron expression", "invalid_cron");
   }
   return cronExpression;
 }

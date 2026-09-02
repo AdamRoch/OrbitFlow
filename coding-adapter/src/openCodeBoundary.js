@@ -108,12 +108,6 @@ function validateConfig(value) {
       throw new Error(`boundary ${field} is malformed`);
     }
   }
-  if (
-    value.childStartHandshakeMs !== undefined &&
-    (!Number.isSafeInteger(value.childStartHandshakeMs) || value.childStartHandshakeMs < 1)
-  ) {
-    throw new Error("boundary childStartHandshakeMs is malformed");
-  }
   if (!value.openCodeEnv || typeof value.openCodeEnv !== "object" || Array.isArray(value.openCodeEnv)) {
     throw new Error("boundary OpenCode environment is malformed");
   }

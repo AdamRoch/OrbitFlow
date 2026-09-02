@@ -1,7 +1,2 @@
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-/** Merge Tailwind classes sensibly (conditional + de-duped). */
-export function cn(...inputs: ClassValue[]): string {
-  return twMerge(clsx(inputs));
-}
+/** Merge Tailwind classes; twMerge drops falsy inputs and resolves conflicts. */
+export { twMerge as cn } from "tailwind-merge";

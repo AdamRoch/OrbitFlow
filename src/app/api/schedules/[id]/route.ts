@@ -1,6 +1,5 @@
-import { handleError, noContent, notFound, parseJson, type RouteContext } from "@/lib/api";
+import { handleError, noContent, notFound, parseJson, resultResponse, type RouteContext } from "@/lib/api";
 import { getControlPlaneRepository } from "@/lib/control-plane";
-import { resultResponse } from "@/lib/control-plane/http";
 import { parseId, parseUpdateSchedule } from "@/lib/control-plane/validate";
 
 /** FACT-19 can manage agent schedules only; workflow schedules stay out of scope. */

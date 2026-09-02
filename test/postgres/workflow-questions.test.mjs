@@ -4,9 +4,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migratePostgres } from "../../scripts/migrate-postgres.mjs";
-import { insertMessage } from "../../src/lib/postgres/message-bus.ts";
+import { consumeNextMessage, insertMessage } from "../../src/lib/postgres/message-bus.ts";
 import {
-  consumeNextWorkflowMessage, createWorkflowRun, dispatchNextWorkflowNode,
+  routeWorkflowMessage, createWorkflowRun, dispatchNextWorkflowNode,
   getWorkflowRun, startWorkflowRun,
 } from "../../src/lib/postgres/workflow-engine.ts";
 import { answerWorkflowQuestionFromUi } from "../../src/lib/postgres/workflow-questions.ts";
@@ -105,7 +105,7 @@ test("FACT-24 durable question, escalation, and approval mechanism", async () =>
 
     async function consumeThrough(messageId, database = pool) {
       for (let attempt = 0; attempt < 80; attempt += 1) {
-        const consumed = await consumeNextWorkflowMessage(database, { consumerId: `fact24-${messageId}` });
+        const consumed = await consumeNextMessage(database, routeWorkflowMessage, { consumerId: `fact24-${messageId}` });
         if (consumed?.message.id === messageId) return;
       }
       assert.fail(`message ${messageId} was not consumed`);

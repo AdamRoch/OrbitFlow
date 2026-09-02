@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { insertMessage, type JsonObject, type MessageRow } from "./message-bus.ts";
 import { insertValidatedWorkflowRun } from "./workflow-run-launch.ts";
+import { insertMessage, inTransaction, nonBlank, positiveId, type JsonObject, type MessageRow } from "./message-bus.ts";
 
 export type ScheduleTickResult =
   | { kind: "created"; scheduleId: string; tickKey: string; runId: string; messageId: string }
@@ -20,32 +20,6 @@ interface ScheduleRow extends QueryResultRow {
   agent_id: string | null;
   task_prompt: string | null;
   enabled: boolean;
-}
-
-function positiveId(value: string | number | bigint, field: string): string {
-  const text = String(value);
-  if (!/^[1-9]\d*$/.test(text)) throw new TypeError(`${field} must be a positive integer`);
-  return text;
-}
-
-function nonBlank(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${field} must be a non-blank string`);
-  return value.trim();
-}
-
-async function transaction<T>(pool: Pool, action: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await action(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 function minuteKey(at: Date): string {
@@ -110,7 +84,7 @@ export async function publishScheduleTick(
   const scheduleId = positiveId(input.scheduleId, "scheduleId");
   const tickKey = nonBlank(input.tickKey, "tickKey");
   const at = input.at ?? new Date();
-  return transaction(pool, async (client) => {
+  return inTransaction(pool, async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`orbitflow:schedule:${scheduleId}:${tickKey}`]);
     const scheduleResult = await client.query<ScheduleRow>("SELECT * FROM schedules WHERE id = $1 FOR UPDATE", [scheduleId]);
     const schedule = scheduleResult.rows[0];
