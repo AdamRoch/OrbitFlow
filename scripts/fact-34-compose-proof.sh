@@ -7,6 +7,7 @@ project="orbitfactory-fact34-proof-$$"
 app_port="$((43000 + ($$ % 1000)))"
 engine_port="$((44000 + ($$ % 1000)))"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact34-env.XXXXXX")"
+proof_model="$(node -p 'JSON.parse(require("fs").readFileSync("docker/openclaw/openclaw.json", "utf8")).agents.defaults.model.primary')"
 started=false
 cancel_log=""
 
@@ -41,6 +42,8 @@ printf '%s\n' \
   'POSTGRES_DB=orbitfactory_fact34_compose' \
   'POSTGRES_USER=orbitfactory' \
   'POSTGRES_PASSWORD=local' \
+  'ORBITFLOW_OPERATOR_USERNAME=proof' \
+  'ORBITFLOW_OPERATOR_PASSWORD=proof' \
   'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' \
   "ORBITFACTORY_APP_PORT=$app_port" \
   "ORBITFACTORY_ENGINE_HOST_PORT=$engine_port" >"$env_file"
@@ -172,7 +175,7 @@ compose exec -T coding-executor node -e '
 for proof_agent in "orbitflow-$agent_id" "orbitflow-$agent_id-deny-unlisted" "orbitflow-$agent_id-deny-assignment"; do
   if ! agent_setup="$(compose exec -T --user node openclaw node /opt/openclaw/openclaw.mjs agents add \
     "$proof_agent" --workspace "$agent_workspace" \
-    --model openrouter/openai/gpt-4.1-mini --non-interactive --json 2>&1)"; then
+    --model "$proof_model" --non-interactive --json 2>&1)"; then
     printf 'Agent-side proof setup failed: %s\n' "$agent_setup" >&2
     exit 1
   fi

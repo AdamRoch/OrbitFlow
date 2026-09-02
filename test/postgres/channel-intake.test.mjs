@@ -268,14 +268,27 @@ test("FACT-16 orchestrator channel intake", async () => {
       assert.equal(inbound.kind, "accepted");
       await consumeThrough(inbound.messageId, "fact16-invalid");
       const runtime = new FakeRuntime();
-      await dispatchNextWorkflowNode(pool, runtime, { workerId: "fact16-invalid" });
-      await publishIntake(await activeDispatch(inbound.runId, "orchestrator"), {
-        status: "ready",
-        spec: { objective: "Build a calendar", acceptanceCriteria: [], constraints: [] },
-      }, "fact16-invalid");
-      const failed = await client.query("SELECT status, failure_reason FROM workflow_runs WHERE id = $1", [inbound.runId]);
-      assert.equal(failed.rows[0].status, "failed");
-      assert.match(failed.rows[0].failure_reason, /acceptanceCriteria must be a non-empty array/);
+      // Two contract violations get a corrective re-wake; the third fails the run.
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        await dispatchNextWorkflowNode(pool, runtime, { workerId: `fact16-invalid-${attempt}` });
+        await publishIntake(await activeDispatch(inbound.runId, "orchestrator"), {
+          status: "ready",
+          spec: { objective: "Build a calendar", acceptanceCriteria: [], constraints: [] },
+        }, `fact16-invalid-${attempt}`);
+        const state = await client.query(
+          `SELECT run.status, run.failure_reason, intake.correction_count
+           FROM workflow_runs AS run JOIN channel_intakes AS intake ON intake.run_id = run.id
+           WHERE run.id = $1`,
+          [inbound.runId],
+        );
+        if (attempt < 3) {
+          assert.equal(state.rows[0].status, "running", `correction ${attempt} re-wakes the orchestrator`);
+          assert.equal(state.rows[0].correction_count, attempt);
+        } else {
+          assert.equal(state.rows[0].status, "failed");
+          assert.match(state.rows[0].failure_reason, /acceptanceCriteria must be a non-empty array/);
+        }
+      }
       const planner = await client.query(
         "SELECT count(*)::int AS count FROM workflow_dispatches WHERE run_id = $1 AND node_id = 'planner'",
         [inbound.runId],

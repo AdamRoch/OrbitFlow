@@ -1,4 +1,7 @@
 import pg from "pg";
+import { loadOpenClawModelCatalog } from "../src/lib/runtime/openclaw-model-catalog.mjs";
+
+const proofModel = (await loadOpenClawModelCatalog()).primaryModel;
 import {
   createWorkflowRun,
   startWorkflowRun,
@@ -25,7 +28,7 @@ try {
        ) VALUES (
          'FACT-31 Production Worker', 'implementer',
          'Complete the assigned production-engine proof ticket.',
-         'openrouter/openai/gpt-4.1-mini', '{}', '{}', '{}'
+         '${proofModel}', '{}', '{}', '{}'
        ) RETURNING id::text`,
     );
     const graph = {

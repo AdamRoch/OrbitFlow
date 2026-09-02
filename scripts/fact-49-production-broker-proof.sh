@@ -5,6 +5,7 @@ trap 'printf "FACT-49 production broker proof failed at line %s\n" "$LINENO" >&2
 
 project="orbitfactory-fact49-proof-$$"
 env_file="$(mktemp "${TMPDIR:-/tmp}/orbitfactory-fact49-env.XXXXXX")"
+proof_model="$(node -p 'JSON.parse(require("fs").readFileSync("docker/openclaw/openclaw.json", "utf8")).agents.defaults.model.primary')"
 started=false
 
 cleanup() {
@@ -90,6 +91,8 @@ printf '%s\n' \
   'POSTGRES_DB=orbitfactory_fact49_compose' \
   'POSTGRES_USER=orbitfactory' \
   'POSTGRES_PASSWORD=local' \
+  'ORBITFLOW_OPERATOR_USERNAME=proof' \
+  'ORBITFLOW_OPERATOR_PASSWORD=proof' \
   'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' >"$env_file"
 
 compose() {
@@ -182,7 +185,7 @@ node -e 'const value=JSON.parse(process.argv[1]);const ticket=value.tickets.find
 planner_workspace="/var/lib/orbitflow/runtime/workspaces/orbitflow-$planner_id"
 compose exec -T --user node openclaw node /opt/openclaw/openclaw.mjs agents add \
   "orbitflow-$planner_id" --workspace "$planner_workspace" \
-  --model openrouter/openai/gpt-4.1-mini --non-interactive --json >/dev/null
+  --model "$proof_model" --non-interactive --json >/dev/null
 if ! planner_result="$(agent_proof "orbitflow-$planner_id" fact49-planner FACT49_PLANNER 2>&1)"; then
   printf 'Planner wrapper/broker invocation failed: %s\n' "$planner_result" >&2
   exit 1
@@ -211,7 +214,7 @@ bound_workspace="/var/lib/orbitflow/runtime/workspaces/orbitflow-$implementer_id
 for bound_agent_ref in "orbitflow-$implementer_id" "orbitflow-$implementer_id-attribution"; do
   compose exec -T --user node openclaw node /opt/openclaw/openclaw.mjs agents add \
     "$bound_agent_ref" --workspace "$bound_workspace" \
-    --model openrouter/openai/gpt-4.1-mini --non-interactive --json >/dev/null
+    --model "$proof_model" --non-interactive --json >/dev/null
 done
 if ! bound_result="$(agent_proof "orbitflow-$implementer_id" fact49-bound FACT49_BOUND 2>&1)"; then
   printf 'Bound wrapper/broker invocation failed: %s\n' "$bound_result" >&2

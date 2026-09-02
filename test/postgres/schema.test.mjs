@@ -25,8 +25,25 @@ async function committedMigrationFiles() {
 }
 
 const expectedColumns = {
-  schema_migrations: ["version", "checksum", "applied_at"],
-  projects: ["id", "key", "name", "next_number", "created_at", "updated_at"],
+  agent_skills: ["id", "agent_id", "skill_id", "created_at", "updated_at"],
+  agent_tool_invocations: [
+    "agent_id",
+    "run_id",
+    "idempotency_key",
+    "request_hash",
+    "response",
+    "created_at",
+    "updated_at",
+  ],
+  agent_wake_events: [
+    "id",
+    "run_id",
+    "agent_id",
+    "dispatch_id",
+    "lease_generation",
+    "created_at",
+    "updated_at",
+  ],
   agents: [
     "id",
     "name",
@@ -42,49 +59,91 @@ const expectedColumns = {
     "created_at",
     "updated_at",
   ],
-  workflow_questions: [
-    "id", "run_id", "ticket_id", "originating_dispatch_id", "question_message_id",
-    "answer_message_id", "outbound_message_id", "kind", "boundary", "route",
-    "target_agent_id", "question_text", "status", "created_at", "answered_at", "updated_at",
-  ],
-  skills: [
-    "id",
-    "name",
-    "description",
-    "procedure",
+  channel_completion_events: [
+    "run_id",
+    "completion_message_id",
+    "final_outbound_message_id",
     "created_at",
-    "updated_at",
+    "reported_at",
   ],
-  agent_skills: [
-    "id",
-    "agent_id",
-    "skill_id",
-    "created_at",
-    "updated_at",
-  ],
-  workflows: [
-    "id",
-    "name",
-    "description",
-    "graph",
-    "is_template",
-    "created_at",
-    "updated_at",
-  ],
-  workflow_runs: [
-    "id",
+  channel_intakes: [
+    "run_id",
     "workflow_id",
+    "provider",
+    "conversation_key",
     "status",
-    "trigger_type",
-    "spec",
-    "started_at",
-    "ended_at",
-    "total_tokens",
-    "total_cost",
+    "last_inbound_message_id",
+    "last_question",
+    "clarification_count",
+    "validated_spec",
     "created_at",
     "updated_at",
+    "correction_count",
+  ],
+  cost_events: [
+    "id",
+    "run_id",
+    "agent_id",
+    "model",
+    "tokens_in",
+    "tokens_out",
+    "computed_cost",
+    "created_at",
+    "updated_at",
+    "cache_read_tokens",
+    "cache_write_tokens",
+  ],
+  dependencies: [
+    "id",
+    "project_id",
+    "blocker_ticket_id",
+    "blocked_ticket_id",
+    "created_at",
+    "updated_at",
+  ],
+  message_consumer_runs: ["run_id", "next_sequence_number", "last_consumed_at"],
+  message_consumptions: ["message_id", "consumer_id", "consumed_at"],
+  message_enqueues: ["message_id", "enqueued_at"],
+  message_ready_runs: ["run_id", "message_id", "ready_at"],
+  messages: [
+    "id",
+    "run_id",
+    "ticket_id",
+    "sequence_number",
+    "sender",
+    "recipient",
+    "type",
+    "payload",
+    "handoff_brief",
+    "token_usage",
+    "created_at",
+    "updated_at",
+  ],
+  openclaw_dispatch_inputs: ["dispatch_id", "runtime_generation", "wake_input", "created_at"],
+  projects: ["id", "key", "name", "next_number", "created_at", "updated_at"],
+  result_submissions: ["dispatch_id", "runtime_generation", "output", "created_at"],
+  schedule_agent_workflows: ["schedule_id", "workflow_id", "created_at"],
+  schedule_ticks: ["id", "schedule_id", "tick_key", "run_id", "message_id", "created_at"],
+  schedules: [
+    "id",
+    "cron_expression",
+    "workflow_id",
+    "agent_id",
+    "task_prompt",
+    "enabled",
+    "created_at",
+    "updated_at",
+  ],
+  schema_migrations: ["version", "checksum", "applied_at"],
+  skills: ["id", "name", "description", "procedure", "created_at", "updated_at"],
+  telegram_inbound_updates: ["update_id", "run_id", "message_id", "received_at"],
+  telegram_outbound_deliveries: [
+    "message_id",
+    "status",
+    "telegram_message_id",
+    "claimed_at",
+    "sent_at",
     "failure_reason",
-    "graph_snapshot",
   ],
   tickets: [
     "id",
@@ -100,80 +159,6 @@ const expectedColumns = {
     "assignee_agent_id",
     "created_at",
     "updated_at",
-  ],
-  dependencies: [
-    "id",
-    "project_id",
-    "blocker_ticket_id",
-    "blocked_ticket_id",
-    "created_at",
-    "updated_at",
-  ],
-  messages: [
-    "id",
-    "run_id",
-    "ticket_id",
-    "sequence_number",
-    "sender",
-    "recipient",
-    "type",
-    "payload",
-    "handoff_brief",
-    "token_usage",
-    "created_at",
-    "updated_at",
-  ],
-  message_consumer_runs: [
-    "run_id",
-    "next_sequence_number",
-    "last_consumed_at",
-  ],
-  message_enqueues: ["message_id", "enqueued_at"],
-  message_ready_runs: ["run_id", "message_id", "ready_at"],
-  message_consumptions: ["message_id", "consumer_id", "consumed_at"],
-  telegram_inbound_updates: ["update_id", "run_id", "message_id", "received_at"],
-  telegram_outbound_deliveries: ["message_id", "status", "telegram_message_id", "claimed_at", "sent_at", "failure_reason"],
-  channel_intakes: [
-    "run_id", "workflow_id", "provider", "conversation_key", "status",
-    "last_inbound_message_id", "last_question", "clarification_count",
-    "validated_spec", "created_at", "updated_at",
-  ],
-  channel_completion_events: [
-    "run_id", "completion_message_id", "final_outbound_message_id", "created_at", "reported_at",
-  ],
-  agent_tool_invocations: ["agent_id", "run_id", "idempotency_key", "request_hash", "response", "created_at", "updated_at"],
-  agent_wake_events: [
-    "id",
-    "run_id",
-    "agent_id",
-    "dispatch_id",
-    "lease_generation",
-    "created_at",
-    "updated_at",
-  ],
-  openclaw_dispatch_inputs: [
-    "dispatch_id",
-    "runtime_generation",
-    "wake_input",
-    "created_at",
-  ],
-  workflow_fanout_groups: [
-    "id",
-    "run_id",
-    "source_message_id",
-    "node_id",
-    "agent_id",
-    "agent_model",
-    "node_config",
-    "max_concurrency",
-    "created_at",
-    "updated_at",
-  ],
-  workflow_fanout_members: [
-    "fanout_group_id",
-    "position",
-    "ticket_id",
-    "created_at",
   ],
   workflow_dispatches: [
     "id",
@@ -200,43 +185,62 @@ const expectedColumns = {
     "updated_at",
     "answering_question_id",
   ],
-  workflow_thread_states: [
+  workflow_fanout_groups: [
+    "id",
+    "run_id",
+    "source_message_id",
+    "node_id",
+    "agent_id",
+    "agent_model",
+    "node_config",
+    "max_concurrency",
+    "created_at",
+    "updated_at",
+  ],
+  workflow_fanout_members: ["fanout_group_id", "position", "ticket_id", "created_at"],
+  workflow_questions: [
     "id",
     "run_id",
     "ticket_id",
+    "originating_dispatch_id",
+    "question_message_id",
+    "answer_message_id",
+    "outbound_message_id",
+    "kind",
+    "boundary",
+    "route",
+    "target_agent_id",
+    "question_text",
     "status",
-    "pause_reason",
     "created_at",
+    "answered_at",
     "updated_at",
   ],
-  schedules: [
+  workflow_runs: [
     "id",
-    "cron_expression",
     "workflow_id",
-    "agent_id",
-    "task_prompt",
-    "enabled",
+    "status",
+    "trigger_type",
+    "spec",
+    "started_at",
+    "ended_at",
+    "total_tokens",
+    "total_cost",
     "created_at",
     "updated_at",
+    "failure_reason",
+    "graph_snapshot",
+    "workflow_version",
+    "retry_of_run_id",
+    "retry_request_key",
+    "retry_blocked_reason",
   ],
-  schedule_ticks: ["id", "schedule_id", "tick_key", "run_id", "message_id", "created_at"],
-  schedule_agent_workflows: ["schedule_id", "workflow_id", "created_at"],
-  cost_events: [
-    "id",
-    "run_id",
-    "agent_id",
-    "model",
-    "tokens_in",
-    "tokens_out",
-    "computed_cost",
-    "created_at",
-    "updated_at",
-    "cache_read_tokens",
-    "cache_write_tokens",
-  ],
+  workflow_thread_states: ["id", "run_id", "ticket_id", "status", "pause_reason", "created_at", "updated_at"],
+  workflows: ["id", "name", "description", "graph", "is_template", "created_at", "updated_at"],
 };
 
 const expectedEnums = {
+  channel_intake_status: ["collecting", "ready", "failed"],
   message_type: [
     "output",
     "feedback",
@@ -247,31 +251,16 @@ const expectedEnums = {
     "cron_tick",
     "system",
   ],
-  ticket_status: ["backlog", "todo", "in_progress", "done", "canceled"],
-  workflow_run_status: [
-    "pending",
-    "running",
-    "paused",
-    "completed",
-    "failed",
-    "canceled",
-  ],
-  workflow_trigger_type: ["channel", "ui", "cron"],
-  workflow_dispatch_status: [
-    "pending",
-    "dispatching",
-    "reconciling",
-    "active",
-    "completed",
-    "failed",
-  ],
-  workflow_thread_status: ["running", "paused"],
   telegram_outbound_delivery_status: ["sending", "sent", "indeterminate"],
-  channel_intake_status: ["collecting", "ready", "failed"],
-  workflow_question_kind: ["question", "approval"],
+  ticket_status: ["backlog", "todo", "in_progress", "done", "canceled"],
+  workflow_dispatch_status: ["pending", "dispatching", "reconciling", "active", "completed", "failed"],
   workflow_question_boundary: ["worker", "before", "after"],
+  workflow_question_kind: ["question", "approval"],
   workflow_question_route: ["agent", "human-via-channel", "human-via-UI"],
   workflow_question_status: ["pending", "answered"],
+  workflow_run_status: ["pending", "running", "paused", "completed", "failed", "canceled"],
+  workflow_thread_status: ["running", "paused"],
+  workflow_trigger_type: ["channel", "ui", "cron"],
 };
 
 const requiredConstraints = [
@@ -609,7 +598,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       assert.deepEqual(restored.rows, baseline.rows);
     });
 
-    await t.test("matches tables, columns, native types, constraints, keys, and indexes", async () => {
+    await t.test("matches tables, columns, native types, constraints, keys, and indexes", async (inner) => {
       const columns = await client.query(`
         SELECT table_name,
                array_agg(column_name::text ORDER BY ordinal_position) AS columns
@@ -823,6 +812,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
           "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         workflow_thread_states_ticket_id_fkey:
           "REFERENCES tickets(id) ON DELETE RESTRICT",
+        workflow_runs_retry_of_run_id_fkey: "REFERENCES workflow_runs(id) ON DELETE RESTRICT",
         workflow_runs_workflow_id_fkey:
           "REFERENCES workflows(id) ON DELETE RESTRICT",
       };
@@ -846,7 +836,7 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
         await readPlatformToolInvocationIndexKeys(client),
       );
 
-      await t.test("rejects an expression-first invocation run index", async () => {
+      await inner.test("rejects an expression-first invocation run index", async () => {
         await client.query("DROP INDEX idx_agent_tool_invocations_run_id");
         try {
           await client.query(`
@@ -931,14 +921,14 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
       );
       const run = await client.query(
         `INSERT INTO workflow_runs (
-           workflow_id, status, trigger_type, spec, started_at
-         ) VALUES ($1, 'running', 'ui', '{"task": "Build FACT-6"}', now())
+           workflow_id, status, trigger_type, spec, started_at, workflow_version
+         ) VALUES ($1, 'running', 'ui', '{"task": "Build FACT-6"}', now(), now())
          RETURNING id`,
         [workflow.rows[0].id],
       );
       const otherRun = await client.query(
-        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-         VALUES ($1, 'running', 'cron', '{"task": "Other run"}')
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+         VALUES ($1, 'running', 'cron', '{"task": "Other run"}', now())
          RETURNING id`,
         [workflow.rows[0].id],
       );
@@ -1118,8 +1108,8 @@ test("FACT-6 PostgreSQL migration and schema contract", async (t) => {
 
     await t.test("does not let a consumer cursor skip an earlier late commit", async () => {
       const run = await client.query(
-        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-         VALUES ($1, 'running', 'ui', '{"task": "Concurrent append proof"}')
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+         VALUES ($1, 'running', 'ui', '{"task": "Concurrent append proof"}', now())
          RETURNING id`,
         [ids.workflow],
       );

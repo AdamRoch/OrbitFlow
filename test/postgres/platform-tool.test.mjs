@@ -65,8 +65,8 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       "INSERT INTO workflows (name, description, graph) VALUES ('FACT-13 proof', 'CLI proof workflow', '{}'::jsonb) RETURNING id",
     );
     const run = await client.query(
-      `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-       VALUES ($1, 'running', 'ui', '{"proof":"fact-13"}'::jsonb) RETURNING id`,
+      `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+       VALUES ($1, 'running', 'ui', '{"proof":"fact-13"}'::jsonb, now()) RETURNING id`,
       [workflow.rows[0].id],
     );
     const attribution = { agentId: String(agent.rows[0].id), runId: String(run.rows[0].id) };
@@ -142,8 +142,8 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
         "INSERT INTO workflows (name, description, graph) VALUES ('FACT-44 response proof', 'Ticket response proof', '{}') RETURNING id",
       );
       const proofRun = await client.query(
-        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-         VALUES ($1, 'running', 'ui', '{"proof":"fact-44"}'::jsonb) RETURNING id`,
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+         VALUES ($1, 'running', 'ui', '{"proof":"fact-44"}'::jsonb, now()) RETURNING id`,
         [proofWorkflow.rows[0].id],
       );
       const proofAttribution = { ...attribution, runId: String(proofRun.rows[0].id) };
@@ -183,21 +183,21 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       assert.ok(updated.stdout.result.ticket.blockerTicketIds.every((id) => typeof id === "string"));
     });
 
-    await t.test("post_message accepts question and list_tickets returns the run-scoped record", async () => {
+    await t.test("post_message accepts feedback and list_tickets returns the run-scoped record", async () => {
       const ticket = await client.query("SELECT id FROM tickets LIMIT 1");
       const question = await callAgentTool("post_message", {
         ...attribution,
         ticketId: String(ticket.rows[0].id),
         recipient: "agent:reviewer",
-        type: "question",
-        payload: { question: "Should the worker retry this action?" },
+        type: "feedback",
+        payload: { note: "Should the worker retry this action?" },
         handoffBrief: "Need a reviewer decision before proceeding.",
         idempotencyKey: "agent-turn-1-question",
       });
       assert.equal(question.exitCode, 0);
-      assert.equal(question.stdout.result.message.type, "question");
+      assert.equal(question.stdout.result.message.type, "feedback");
       assert.deepEqual(question.stdout.result.message.payload, {
-        question: "Should the worker retry this action?",
+        note: "Should the worker retry this action?",
         agentId: attribution.agentId,
         runId: attribution.runId,
         ticketId: String(ticket.rows[0].id),
@@ -230,7 +230,7 @@ test("FACT-13 production agent CLI persists attributed ticket and message mutati
       assert.equal(missingAgent.exitCode, 1);
       assert.equal(missingAgent.stdout.error.code, "invalid_id");
       const invalidTicket = await callAgentTool("post_message", {
-        ...attribution, ticketId: "999999", recipient: "agent:reviewer", type: "question", payload: {}, idempotencyKey: "agent-turn-invalid-ticket",
+        ...attribution, ticketId: "999999", recipient: "agent:reviewer", type: "feedback", payload: {}, idempotencyKey: "agent-turn-invalid-ticket",
       });
       assert.equal(invalidTicket.exitCode, 1);
       assert.equal(invalidTicket.stdout.error.code, "ticket_not_found");

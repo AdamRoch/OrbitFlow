@@ -108,7 +108,11 @@ test("FACT-25 PostgreSQL scheduling", async () => {
     await test("seeded daily standup receives ticket movement and spend then routes through Telegram outbound", async () => {
       const seeded = await client.query("SELECT * FROM schedules WHERE task_prompt LIKE 'Daily standup:%'");
       assert.equal(seeded.rowCount, 1);
-      const contextRun = await client.query("INSERT INTO workflow_runs (workflow_id, trigger_type, spec) VALUES ($1, 'ui', '{}'::jsonb) RETURNING id", [workflow.rows[0].id]);
+      await client.query(
+        "UPDATE agents SET channel_binding = '{\"provider\":\"telegram\",\"chatId\":\"9001\"}' WHERE id = $1",
+        [seeded.rows[0].agent_id],
+      );
+      const contextRun = await client.query("INSERT INTO workflow_runs (workflow_id, trigger_type, spec, workflow_version) VALUES ($1, 'ui', '{}'::jsonb, now()) RETURNING id", [workflow.rows[0].id]);
       await insertMessage(pool, {
         runId: contextRun.rows[0].id, sender: "telegram:chat:9001", recipient: "agent:1", type: "channel_inbound",
         payload: { provider: "telegram", updateId: "1", messageId: "1", chat: { id: "9001", type: "private" }, text: "hello" }, handoffBrief: "hello",

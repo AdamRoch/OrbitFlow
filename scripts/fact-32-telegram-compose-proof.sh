@@ -83,6 +83,8 @@ write_env_file() {
 POSTGRES_DB=orbitflow_fact32_proof
 POSTGRES_USER=orbitflow
 POSTGRES_PASSWORD=fact32-local-password
+ORBITFLOW_OPERATOR_USERNAME=proof
+ORBITFLOW_OPERATOR_PASSWORD=proof
 OPENROUTER_API_KEY=not-a-real-key-for-fact32-proof
 TELEGRAM_BOT_TOKEN=$telegram_token
 ORBITFACTORY_APP_PORT=$((41000 + ($$ % 1000)))

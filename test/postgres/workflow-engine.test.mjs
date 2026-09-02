@@ -160,7 +160,7 @@ test("FACT-10 durable workflow engine", async (t) => {
         runId: dispatch.run_id,
         ticketId: dispatch.ticket_id,
         sender: `agent:${dispatch.agent_id}`,
-        recipient: "system:workflow-engine",
+        recipient: "workflow-engine",
         type: "output",
         payload: {
           dispatchId: dispatch.id,
@@ -223,7 +223,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       const firstOutput = await insertMessage(pool, {
         runId: run.id,
         sender: "agent:implement",
-        recipient: "system:workflow-engine",
+        recipient: "workflow-engine",
         type: "output",
         payload: {
           dispatchId: implementOne.id,
@@ -268,7 +268,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       const duplicate = await insertMessage(pool, {
         runId: run.id,
         sender: "agent:test",
-        recipient: "system:workflow-engine",
+        recipient: "workflow-engine",
         type: "output",
         payload: {
           dispatchId: approvedDispatch.id,
@@ -565,15 +565,18 @@ test("FACT-10 durable workflow engine", async (t) => {
         "SELECT updated_at FROM tickets WHERE id = $1",
         [fixture.blocker],
       );
-      const terminalEvent = await dispatchPlatformTool(pool, "update_ticket", {
-        agentId: agents.worker,
-        runId: fixture.run.id,
-        ticketId: fixture.blocker,
-        expectedUpdatedAt: terminalTicket.rows[0].updated_at,
-        title: "terminal update stays terminal",
-        idempotencyKey: "fact51-terminal-noop",
-      });
-      await consumeThrough(terminalEvent.message.id, "fact51-terminal");
+      await assert.rejects(
+        () => dispatchPlatformTool(pool, "update_ticket", {
+          agentId: agents.worker,
+          runId: fixture.run.id,
+          ticketId: fixture.blocker,
+          expectedUpdatedAt: terminalTicket.rows[0].updated_at,
+          title: "terminal update stays terminal",
+          idempotencyKey: "fact51-terminal-noop",
+        }),
+        (error) => error.code === "run_not_active",
+        "a completed run refuses further ticket mutations",
+      );
       dependentDispatches = await client.query(
         `SELECT count(*)::int AS count
          FROM workflow_dispatches
@@ -852,7 +855,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       const output = await insertMessage(pool, {
         runId: run.id,
         sender: "agent:worker",
-        recipient: "system:workflow-engine",
+        recipient: "workflow-engine",
         type: "output",
         payload: {
           dispatchId: dispatch.id,
@@ -887,7 +890,7 @@ test("FACT-10 durable workflow engine", async (t) => {
       const malformed = await insertMessage(pool, {
         runId: malformedRun.run.id,
         sender: "agent:worker",
-        recipient: "system:workflow-engine",
+        recipient: "workflow-engine",
         type: "output",
         payload: {
           dispatchId: dispatch.id,

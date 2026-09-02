@@ -89,8 +89,8 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
 
     async function createRun(name) {
       const result = await client.query(
-        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-         VALUES ($1, 'running', 'ui', jsonb_build_object('proof', $2::text))
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+         VALUES ($1, 'running', 'ui', jsonb_build_object('proof', $2::text), now())
          RETURNING id`,
         [workflowId, name],
       );
@@ -893,14 +893,14 @@ test("FACT-9 durable PostgreSQL message bus", async (t) => {
       );
 
       await client.query(
-        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-         SELECT $1, 'running', 'ui', jsonb_build_object('plan_idle', series)
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+         SELECT $1, 'running', 'ui', jsonb_build_object('plan_idle', series), now()
          FROM generate_series(1, 20000) AS series`,
         [workflowId],
       );
       await client.query(
-        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-         SELECT $1, 'running', 'ui', jsonb_build_object('plan_active', series)
+        `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+         SELECT $1, 'running', 'ui', jsonb_build_object('plan_active', series), now()
          FROM generate_series(1, 20000) AS series`,
         [workflowId],
       );

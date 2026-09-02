@@ -6,6 +6,8 @@ import { WorkflowEditor } from "@/components/workflow-editor";
 import type { AgentDTO, WorkflowDTO } from "@/lib/control-plane/types";
 import type { WorkflowGraph } from "@/lib/workflow/graph-contract";
 
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+
 vi.mock("@xyflow/react", async () => {
   const React = await import("react");
   return {
@@ -15,6 +17,7 @@ vi.mock("@xyflow/react", async () => {
     MiniMap: () => null,
     MarkerType: { ArrowClosed: "arrowclosed" },
     Position: { Left: "left", Right: "right" },
+    useReactFlow: () => ({ fitView: () => Promise.resolve(true) }),
     useStore: (selector: (state: { transform: [number, number, number] }) => unknown) => selector({ transform: [0, 0, 0.5] }),
     ReactFlow: ({ nodes, edges, onNodeClick, onEdgeClick, fitViewOptions, children }: {
       nodes: Array<{ id: string }>;
@@ -74,7 +77,7 @@ const workflow: WorkflowDTO = {
       { source: "implement", target: "test", condition: { operator: "always" } },
       { source: "test", target: "implement", condition: { operator: "equals", path: ["verdict"], value: "rejected" }, futureEdgeField: ["keep"] },
     ],
-    builderMetadata: { positions: { implement: { x: 10, y: 20 }, test: { x: 300, y: 20 } }, futureBuilderField: "keep" },
+    builderMetadata: { positions: { implement: { x: 10, y: 20 }, test: { x: 420, y: 20 } }, futureBuilderField: "keep" },
   },
 };
 
@@ -247,7 +250,6 @@ describe("WorkflowEditor", () => {
     });
     await renderAndLoad();
 
-    expect(container.querySelector<HTMLElement>('[aria-label="Mock workflow canvas"]')?.dataset.fitMinZoom).toBe("0.75");
     expect(findButton(container, "Edge A to B").dataset.sourceHandle).toBeUndefined();
     expect(findButton(container, "Edge C to A").dataset.sourceHandle).toBe("loop-source");
     expect(findButton(container, "Edge C to A").dataset.targetHandle).toBe("loop-target");

@@ -5,6 +5,7 @@ services:
 
   telegram-api-stub:
     image: node:22.22.2-bookworm-slim
+    networks: [control]
     command: ["node", "test/runtime/fixtures/fake-telegram-api.mjs"]
     environment:
       FAKE_TELEGRAM_ACCEPTED_TOKEN: fact32-present-token

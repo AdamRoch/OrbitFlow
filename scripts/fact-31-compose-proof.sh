@@ -35,6 +35,8 @@ printf '%s\n' \
   'POSTGRES_DB=orbitfactory_fact31_proof' \
   'POSTGRES_USER=orbitfactory' \
   'POSTGRES_PASSWORD=fact31-local-proof' \
+  'ORBITFLOW_OPERATOR_USERNAME=proof' \
+  'ORBITFLOW_OPERATOR_PASSWORD=proof' \
   'OPENROUTER_API_KEY=not-a-real-key-no-provider-call' \
   >"$env_file"
 

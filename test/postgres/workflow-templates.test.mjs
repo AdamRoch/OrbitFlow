@@ -40,6 +40,20 @@ const POST_CURRENT_MAIN_MIGRATIONS = Object.freeze([
   "0023-openclaw-dispatch-inputs.sql",
   "0024-factory-agent-model-catalog.sql",
   "0025-factory-project.sql",
+  "0026-remove-ticket-labels.sql",
+  "0027-workflow-dispatch-ticket-ownership.sql",
+  "0028-factory-orchestrator-intake-output.sql",
+  "0029-factory-tool-handoff.sql",
+  "0030-factory-worker-question-handoff.sql",
+  "0031-replace-gpt-4-1-mini.sql",
+  "0032-use-glm-5-3-flash.sql",
+  "0033-factory-output-modes.sql",
+  "0034-workflow-run-controls.sql",
+  "0035-intake-corrections.sql",
+  "0036-orchestrator-model.sql",
+  "0037-submit-result-tool.sql",
+  "0038-factory-tester-rejection.sql",
+  "0039-factory-implementer-delegation-guidance.sql",
 ]);
 
 test("FACT-21 clean install: seeds both templates on a fresh database", async () => {
@@ -341,7 +355,7 @@ test("FACT-21 no-overwrite: 0013 preserves custom definitions while later migrat
       [existingCoder.rows[0].id],
     );
     assert.equal(coder.rows[0].role, "custom-role");
-    assert.equal(coder.rows[0].system_prompt, "Custom system prompt");
+    assert.match(coder.rows[0].system_prompt, /^Custom system prompt/, "later migrations append shared guidance after the custom prompt");
     const catalog = await loadOpenClawModelCatalog();
     assert.equal(coder.rows[0].model, catalog.primaryModel);
 
@@ -350,7 +364,7 @@ test("FACT-21 no-overwrite: 0013 preserves custom definitions while later migrat
       [existingReviewer.rows[0].id],
     );
     assert.equal(reviewer.rows[0].role, "custom-reviewer");
-    assert.equal(reviewer.rows[0].system_prompt, "Custom reviewer prompt");
+    assert.match(reviewer.rows[0].system_prompt, /^Custom reviewer prompt/);
     assert.equal(reviewer.rows[0].model, catalog.primaryModel);
 
     // Same-name skill preserved its custom values

@@ -1,4 +1,7 @@
 import pg from "pg";
+import { loadOpenClawModelCatalog } from "../src/lib/runtime/openclaw-model-catalog.mjs";
+
+const proofModel = (await loadOpenClawModelCatalog()).primaryModel;
 import { readFile, writeFile } from "node:fs/promises";
 import {
   createWorkflowRun,
@@ -21,12 +24,12 @@ try {
       `INSERT INTO agents (name, role, system_prompt, model)
        VALUES ('FACT-34 Compose Worker', 'implementer',
                'Ask the required question, then apply its answer.',
-               'openrouter/openai/gpt-4.1-mini') RETURNING id::text`,
+               '${proofModel}') RETURNING id::text`,
     );
     const otherAgent = await pool.query(
       `INSERT INTO agents (name, role, system_prompt, model)
        VALUES ('FACT-34 Other Worker', 'implementer', 'Do not run.',
-               'openrouter/openai/gpt-4.1-mini') RETURNING id::text`,
+               '${proofModel}') RETURNING id::text`,
     );
     const graph = {
       nodes: [{
@@ -156,7 +159,7 @@ try {
     );
     const agent = await pool.query(
       `INSERT INTO agents (name, role, system_prompt, model)
-       VALUES ($1, 'implementer', $2, 'openrouter/openai/gpt-4.1-mini')
+       VALUES ($1, 'implementer', $2, '${proofModel}')
        RETURNING id::text`,
       [`FACT-34 ${label} worker`, `Hold the ${label} production-boundary proof.`],
     );

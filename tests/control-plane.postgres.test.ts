@@ -18,6 +18,7 @@ import {
 import { handleError } from "@/lib/api";
 import { canonicalWorkflowGraphJson, type WorkflowGraph } from "@/lib/workflow/graph-contract";
 import { migratePostgres } from "../scripts/migrate-postgres.mjs";
+import { loadOpenClawModelCatalog } from "@/lib/runtime/openclaw-model-catalog.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -25,7 +26,7 @@ const agentBody = {
   name: "Orchestrator",
   role: "manager",
   systemPrompt: "Coordinate work without losing the human's intent.",
-  model: "openrouter/fast-model",
+  model: (await loadOpenClawModelCatalog()).primaryModel,
   codingToolEnabled: true,
   guardrails: { costLimit: 12.5, rateLimit: { perMinute: 8 }, blockedActions: ["deploy"] },
   interactionRules: { mayAnswerQuestions: true, autonomy: "ask-before-risk" },
@@ -212,12 +213,12 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     }), context(agent.body.id)));
     expect(valid.status).toBe(201);
     expect(await response(await createAgentSchedule(jsonRequest({
-      cronExpression: "0 9 * * MON",
+      cronExpression: "0 25 * * 1",
       taskPrompt: "This grammar is intentionally unsupported.",
       enabled: true,
     }), context(agent.body.id)))).toMatchObject({ status: 400, body: { error: { code: "invalid_cron" } } });
     expect(await response(await createAgentSchedule(jsonRequest({
-      cronExpression: "59-0 * * * *",
+      cronExpression: "0 9 * * 8",
       taskPrompt: "Reverse ranges are invalid.",
       enabled: true,
     }), context(agent.body.id)))).toMatchObject({ status: 400, body: { error: { code: "invalid_cron" } } });
@@ -449,14 +450,14 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
   });
 
   it("FACT-22 reads bounded board, trail, durable agent state, and exact costs from PostgreSQL", async () => {
-    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('FACT', 'OrbitFactory', 4) RETURNING id");
+    const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('CPL', 'Control plane proof', 4) RETURNING id");
     const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Monitoring proof', 'FACT-22', '{}') RETURNING id");
     const [waitingAgent, workingAgent, zeroSpendAgent] = await Promise.all([
       pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Question owner', 'worker', 'Ask when blocked.', 'test', '{"costLimit":0.3}', '{}', '{}') RETURNING id`),
       pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Active owner', 'worker', 'Keep working.', 'test', '{"costLimit":1}', '{}', '{}') RETURNING id`),
       pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('No spend owner', 'worker', 'Remain visible without a cost event.', 'test', '{"costLimit":0.7}', '{}', '{}') RETURNING id`),
     ]);
-    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version) VALUES ($1, 'running', 'ui', '{}', now()) RETURNING id", [workflow.rows[0].id]);
     const [questionTicket, activeTicket] = await Promise.all([
       pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (1, 'FACT-1', $1, $2, 'Needs an answer', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, waitingAgent.rows[0].id]),
       pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (2, 'FACT-2', $1, $2, 'Still executing', 'in_progress', $3) RETURNING id`, [project.rows[0].id, run.rows[0].id, workingAgent.rows[0].id]),
@@ -526,7 +527,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
     expect(filtered.body.runCosts[0].totalCost).toBe(directQuestionSum.rows[0].total_cost);
     expect((await response(await getMonitoring(new Request("http://orbitfactory.test/api/monitoring?messageType=nope")))).status).toBe(400);
 
-    const otherRun = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    const otherRun = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version) VALUES ($1, 'running', 'ui', '{}', now()) RETURNING id", [workflow.rows[0].id]);
     const otherAgent = await pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Other run owner', 'worker', 'Do not leak into selected run.', 'test', '{}', '{}', '{}') RETURNING id`);
     await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) VALUES (4, 'FACT-4', $1, $2, 'Another run', 'in_progress', $3)`, [project.rows[0].id, otherRun.rows[0].id, otherAgent.rows[0].id]);
     const selectedRun = await response(await getMonitoring(new Request(`http://orbitfactory.test/api/monitoring?runId=${run.rows[0].id}`)));
@@ -552,7 +553,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
   it("FACT-22 exposes truncation metadata for capped board, agents, and agent costs", async () => {
     const project = await pool.query("INSERT INTO projects (key, name, next_number) VALUES ('CAP', 'Cap proof', 202) RETURNING id");
     const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Cap workflow', 'FACT-22', '{}') RETURNING id");
-    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) VALUES ($1, 'running', 'ui', '{}') RETURNING id", [workflow.rows[0].id]);
+    const run = await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version) VALUES ($1, 'running', 'ui', '{}', now()) RETURNING id", [workflow.rows[0].id]);
     await pool.query(`INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) SELECT 'Cap agent ' || n, 'worker', 'Bounded result proof.', 'test', '{"costLimit":1}', '{}', '{}' FROM generate_series(1, 201) AS n`);
     await pool.query(`INSERT INTO tickets (number, identifier, project_id, run_id, title, status, assignee_agent_id) SELECT n, 'CAP-' || n, $1, $2, 'Cap ticket ' || n, 'in_progress', agent.id FROM generate_series(1, 201) AS n JOIN agents AS agent ON agent.name = 'Cap agent ' || n`, [project.rows[0].id, run.rows[0].id]);
     const capped = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: String(run.rows[0].id), agentId: null, messageType: null });
@@ -565,7 +566,7 @@ describe.skipIf(!databaseUrl)("FACT-8 PostgreSQL CRUD control plane", () => {
   it("FACT-22 marks per-run costs truncated when the retained run set exceeds 100", async () => {
     const workflow = await pool.query("INSERT INTO workflows (name, description, graph) VALUES ('Run cap workflow', 'FACT-22', '{}') RETURNING id");
     const agent = await pool.query("INSERT INTO agents (name, role, system_prompt, model, guardrails, interaction_rules, memory) VALUES ('Run cap agent', 'worker', 'Prove retained-run cost truncation.', 'test', '{}', '{}', '{}') RETURNING id");
-    await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec) SELECT $1, 'running', 'ui', '{}' FROM generate_series(1, 101)", [workflow.rows[0].id]);
+    await pool.query("INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version) SELECT $1, 'running', 'ui', '{}', now() FROM generate_series(1, 101)", [workflow.rows[0].id]);
     await pool.query("INSERT INTO cost_events (run_id, agent_id, model, tokens_in, tokens_out, computed_cost) SELECT run.id, $2, 'test', 1, 2, 0.01000000 FROM workflow_runs AS run WHERE run.workflow_id = $1", [workflow.rows[0].id, agent.rows[0].id]);
 
     const capped = await new ControlPlaneRepository(pool).getMonitoringSnapshot({ runId: null, agentId: null, messageType: null });

@@ -1,4 +1,7 @@
 import pg from "pg";
+import { loadOpenClawModelCatalog } from "../src/lib/runtime/openclaw-model-catalog.mjs";
+
+const proofModel = (await loadOpenClawModelCatalog()).primaryModel;
 import { writeFile } from "node:fs/promises";
 import {
   createWorkflowRun,
@@ -21,12 +24,12 @@ try {
     );
     const planner = await pool.query(
       `INSERT INTO agents (name, role, system_prompt, model)
-       VALUES ('FACT-49 Planner', 'planner', 'FACT49_PLANNER marker pending', 'openrouter/openai/gpt-4.1-mini')
+       VALUES ('FACT-49 Planner', 'planner', 'FACT49_PLANNER marker pending', '${proofModel}')
        RETURNING id::text`,
     );
     const implementer = await pool.query(
       `INSERT INTO agents (name, role, system_prompt, model)
-       VALUES ('FACT-49 Implementer', 'implementer', 'FACT49_BOUND marker pending', 'openrouter/openai/gpt-4.1-mini')
+       VALUES ('FACT-49 Implementer', 'implementer', 'FACT49_BOUND marker pending', '${proofModel}')
        RETURNING id::text`,
     );
     const graph = {

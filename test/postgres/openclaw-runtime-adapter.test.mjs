@@ -150,8 +150,8 @@ test("FACT-11 OpenClaw RuntimeAdapter", async (t) => {
   async function createRun(label) {
     const result = await pool.query(
       `INSERT INTO workflow_runs (
-         workflow_id, status, trigger_type, spec, started_at
-       ) VALUES ($1, 'running', 'ui', $2::jsonb, now())
+         workflow_id, status, trigger_type, spec, started_at, workflow_version
+       ) VALUES ($1, 'running', 'ui', $2::jsonb, now(), now())
        RETURNING id::text`,
       [workflowId, JSON.stringify({ label, objective: `Prove ${label}` })],
     );

@@ -43,7 +43,7 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
     assert.equal(identity.rows[0].name, process.env.ORBITFACTORY_FACT18_PROOF_DATABASE);
     const migration = await migratePostgres({ databaseUrl, log: () => {} });
     assert.deepEqual(migration.applied, await committedMigrationFiles());
-    await hub.ready();
+    for (let attempt = 0; attempt < 200 && !first.some((event) => event.type === "state.resync"); attempt += 1) await delay(10);
     assert.equal(first.filter((event) => event.type === "state.resync").length, 1);
     assert.deepEqual(second, first, "initial listeners share the snapshot boundary");
     first.length = 0;
@@ -68,8 +68,8 @@ test("FACT-18 committed PostgreSQL state stream", async () => {
     assert.equal(first.length, 0, "uncommitted state must not wake clients");
     await client.query("COMMIT");
     const run = await client.query(
-      `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec)
-       VALUES ($1, 'running', 'ui', '{}') RETURNING id`,
+      `INSERT INTO workflow_runs (workflow_id, status, trigger_type, spec, workflow_version)
+       VALUES ($1, 'running', 'ui', '{}', now()) RETURNING id`,
       [workflow.rows[0].id],
     );
     const ticket = await client.query(

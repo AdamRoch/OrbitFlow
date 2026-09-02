@@ -146,8 +146,8 @@ test("FACT-15 Telegram adapter", async () => {
 
     await test("delivers a durable channel_outbound row to the recorded Telegram chat", async () => {
       const run = await client.query(
-        `INSERT INTO workflow_runs (workflow_id, trigger_type, spec)
-         VALUES ($1, 'ui', '{"objective":"outbound proof"}'::jsonb)
+        `INSERT INTO workflow_runs (workflow_id, trigger_type, spec, workflow_version)
+         VALUES ($1, 'ui', '{"objective":"outbound proof"}'::jsonb, now())
          RETURNING id`,
         [workflow.rows[0].id],
       );
