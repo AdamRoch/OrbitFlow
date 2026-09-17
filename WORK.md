@@ -4,9 +4,13 @@ Current repository: `/Users/adam/orbitflow-v2`. Original `/Users/adam/orbitflow`
 
 ## Current slice: GitHub deployment source, September 17
 
-Adam authorized publishing the rebuild to `AdamRoch/OrbitFlow` on `orbitflow-v2`, merging into `main`, and enabling automatic deployment for the existing OrbitFlow-v2 studio service. CI is deliberately one typecheck/build job; testing stays local. Preparing the reviewed source snapshot, preserving the original main with `orbitflow-v1-before-v2`, and retaining local rebuild history on `codex/local-v2-history`. Original deployment and production data remain intact. Decision: `ADR/0004-github-deployment-source.md`.
+Published `orbitflow-v2` and merged [PR #37](https://github.com/AdamRoch/OrbitFlow/pull/37) into `main` at `97618b2cad67df56f6f25b39c7d3981e55b12764`. The original main is preserved by `orbitflow-v1-before-v2`; separate local rebuild history remains on `codex/local-v2-history`. Original deployment and production data remain intact. Decision: `ADR/0004-github-deployment-source.md`.
 
-Next action: run the minimal workflow commands locally, publish the branch and PR, merge after CI, configure Railway's source and Wait for CI, then verify the exact deployed commit and live dropdown. No new model calls are needed.
+The existing OrbitFlow-v2 studio now follows GitHub `main`, with automatic deployments and Wait for CI enabled. CI has one dependency-install/typecheck/build job and no tests or provider credentials. Local install/typecheck/build passed; PR and main CI passed. Railway deployment `a6e749fb-10bd-4bd9-baa1-48763e33396c` succeeded with that exact merge commit. Explicit service settings match the repository's `/healthz` check, 120-second timeout, one replica, and three failure restarts.
+
+Live read-only verification passed: public health200, anonymous studio/catalog401, authenticated fresh catalog with 280 models, search/keyboard selection/exact ID/prices/sorting, desktop and 390px layout. Screenshots were visually reviewed. All nine agents, existing runs, provider budget, and recorded spending were unchanged; no model calls or configuration saves. Evidence: `.local/deployment/github-verification.json` and `github-picker-*.png`. A blocked Cloudflare analytics POST was excluded from the application-write check.
+
+Next action: publish this handoff and verify its automatic deployment after CI; retain the final GitHub/Railway state in `.local/deployment/`. Product acceptance remains Adam's production walkthrough, including real cloud Telegram improvement.
 
 ## Completed slice: Live model suggestions, September 17
 
