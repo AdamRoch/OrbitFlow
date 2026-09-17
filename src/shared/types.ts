@@ -1,6 +1,8 @@
 export type ModelOption = {
   id: string;
   name: string;
+  addedAt: string | null;
+  codingIndex: number | null;
   contextLength: number;
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;

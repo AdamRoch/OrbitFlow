@@ -9,6 +9,12 @@ const catalogSchema = z.object({
   data: z.array(z.object({
     id: z.string().min(1).max(180),
     name: z.string().min(1).max(300),
+    created: z.number().int().positive().max(8_640_000_000_000).nullish().catch(null),
+    benchmarks: z.object({
+      artificial_analysis: z.object({
+        coding_index: z.number().nonnegative().nullish().catch(null),
+      }).nullish().catch(null),
+    }).nullish().catch(null),
     context_length: z.number().int().nonnegative(),
     architecture: z.object({
       input_modalities: z.array(z.string()),
@@ -47,6 +53,9 @@ export function parseCatalog(body: unknown, now: number): ModelOption[] {
     return [{
       id: `openrouter/${model.id}`,
       name: model.name,
+      // OpenRouter's creation time is its listing date, not the original release.
+      addedAt: model.created ? new Date(model.created * 1_000).toISOString() : null,
+      codingIndex: model.benchmarks?.artificial_analysis?.coding_index ?? null,
       contextLength: model.context_length,
       inputUsdPerMillion: perMillion(model.pricing.prompt),
       outputUsdPerMillion: perMillion(model.pricing.completion),
