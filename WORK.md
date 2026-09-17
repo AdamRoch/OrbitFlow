@@ -2,7 +2,13 @@
 
 Current repository: `/Users/adam/orbitflow-v2`. Original `/Users/adam/orbitflow` remains read-only. Local product and recorded Telegram demo completed September 6 at 6d00116; deployment implementation at 0237c4c.
 
-## Current slice: Workflow clarity, September 17
+## Current slice: Telegram navigation, September 17
+
+Adam requested Telegram UX only; no Systems Lab or model experiment work. Implemented command-menu discovery, paginated workflow/agent/run browsing, exact agent/model details, guided workflow requests and approved-source selection, visible/cancellable pending requests, and run buttons for status, approval, feedback, and confirmed cancellation. Public studio links select the exact run. Existing text commands and default chat routing remain available. Menu logic is separate from integration polling; no dependency or schema migration. Decision: ADR/0005-telegram-navigation.md.
+
+Final local checks passed: 17 focused scenarios plus the parent test using PostgreSQL and a stubbed Telegram transport; typecheck; production build; diff whitespace check; desktop/390px browser checks that the Telegram link selects the exact run and the normal URL still opens Overview. Screenshots were visually reviewed. Tests cover discovery without execution, restart/delivery idempotency, configuration changes, approved source retention, stale approval/feedback, cancellation, ownership, expiration, pagination, menu registration and callback acknowledgement. Database tests use their own temporary schema in the isolated verification database and remove it afterward. Evidence: .local/telegram-ux/tests.txt, browser.json, and run-*.png. These checks do not establish real Telegram delivery or model-backed execution. No provider calls, live bot messages, production configuration changes, pushes, or deployment. Prepared on codex/telegram-ux; next action is deployment authorization followed by real Telegram acceptance.
+
+## Previous slice: Workflow clarity, September 17
 
 Workflow nodes and the workflow list now show assigned agents and models. The editor opens with the first step selected and keeps its assignment, exact model ID, effective tools, approval rule, and expandable instructions beside the graph. Agents can be reassigned or edited directly; agent saves apply to shared configurations while workflow drafts survive the round trip. Adding agents uses a compact selector. Existing outcome routes and terminal settings remain editable.
 

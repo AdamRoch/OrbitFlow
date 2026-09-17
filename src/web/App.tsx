@@ -121,8 +121,12 @@ function Icon({ name }: { name: string }) {
 }
 
 export function App() {
-  const [page, setPage] = useState<Page>("home");
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [page, setPage] = useState<Page>(() =>
+    new URLSearchParams(window.location.search).has("run") ? "runs" : "home",
+  );
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() =>
+    new URLSearchParams(window.location.search).get("run"),
+  );
   const [agents, setAgents] = useState<Agent[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
