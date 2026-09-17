@@ -2,7 +2,17 @@
 
 Current repository: `/Users/adam/orbitflow-v2`. Original `/Users/adam/orbitflow` remains read-only. Local product and recorded Telegram demo completed September 6 at 6d00116; deployment implementation at 0237c4c.
 
-## Current slice: Model dates and coding scores, September 17
+## Current slice: Workflow clarity, September 17
+
+Workflow nodes and the workflow list now show assigned agents and models. The editor opens with the first step selected and keeps its assignment, exact model ID, effective tools, approval rule, and expandable instructions beside the graph. Agents can be reassigned or edited directly; agent saves apply to shared configurations while workflow drafts survive the round trip. Adding agents uses a compact selector. Existing outcome routes and terminal settings remain editable.
+
+A Telegram panel identifies the configured bot, provides the saved workflow's build/improve command template, and explains ordinary conversation versus a pending improvement request. New or unsaved workflows cannot copy a misleading command. Improve templates require an explicit approved source run. Bot configuration is labeled as configuration, not delivery proof. No backend routing or execution behavior changed.
+
+Authorized local checks passed: typecheck, production build, nine Chromium browser scenarios, and three focused existing Telegram parser/guided-selection/allowlist tests. Browser checks used representative configurations, schema-validated in-memory saves, and the real command parser; they covered agent reassignment, shared-agent edits, save failure/cancel, draft preservation, new workflows and removal, command identity and configuration states, keyboard/focus controls, touch dragging, existing distant nodes, and 390px/1024px layouts. Desktop/mobile screenshots were visually reviewed. Evidence and temporary checks: `.local/workflow-clarity/`. No new dependency or permanent test file; `tests/models.test.ts` stays absent. These checks do not establish real bot delivery or model-backed execution.
+
+Prepared on `codex/workflow-clarity`. Next: Adam reviews the local preview; deployment of this slice is pending. No remote push, production configuration write, provider call, or Telegram message was made.
+
+## Previous slice: Model dates and coding scores, September 17
 
 Added the OpenRouter listing month/full-date tooltip, Artificial Analysis Coding Index, newest/highest-score sorting, and selected-model benchmark links. Missing metadata stays explicit; zero remains a valid score. The listing date is labeled **Added**, not presented as a verified release date. Uses the existing public catalog request/cache with no new API credentials or dependencies. Decision: `ADR/0003-live-model-suggestions.md`.
 
