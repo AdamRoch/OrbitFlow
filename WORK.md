@@ -10,7 +10,7 @@ A Telegram panel identifies the configured bot, provides the saved workflow's bu
 
 Authorized local checks passed: typecheck, production build, nine Chromium browser scenarios, and three focused existing Telegram parser/guided-selection/allowlist tests. Browser checks used representative configurations, schema-validated in-memory saves, and the real command parser; they covered agent reassignment, shared-agent edits, save failure/cancel, draft preservation, new workflows and removal, command identity and configuration states, keyboard/focus controls, touch dragging, existing distant nodes, and 390px/1024px layouts. Desktop/mobile screenshots were visually reviewed. Evidence and temporary checks: `.local/workflow-clarity/`. No new dependency or permanent test file; `tests/models.test.ts` stays absent. These checks do not establish real bot delivery or model-backed execution.
 
-Prepared on `codex/workflow-clarity`. Next: Adam reviews the local preview; deployment of this slice is pending. No remote push, production configuration write, provider call, or Telegram message was made.
+Prepared on `codex/workflow-clarity` at `f201787`; Adam approved the preview and deployment September 17. Release through the existing GitHub pull request, minimal CI, and Railway auto-deploy flow. Verify the exact merge commit, health, live editor, and unchanged configurations/spending. Release evidence is retained in `.local/workflow-clarity/release.json` after verification. No provider turn or Telegram message is part of this release; real cloud Telegram delivery remains separate acceptance work.
 
 ## Previous slice: Model dates and coding scores, September 17
 
