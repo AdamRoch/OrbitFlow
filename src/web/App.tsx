@@ -1,9 +1,10 @@
 import {
   FormEvent,
-  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type {
@@ -248,6 +249,7 @@ export function App() {
           <Workflows
             agents={agents}
             workflows={workflows}
+            settings={settings}
             refresh={refresh}
             notify={notify}
           />
@@ -711,6 +713,7 @@ function AgentEditor({
   onClose,
   onSaved,
   notify,
+  workflowContext,
 }: {
   agent: Agent | null;
   workflows: Workflow[];
@@ -718,6 +721,7 @@ function AgentEditor({
   onClose: () => void;
   onSaved: () => void;
   notify: (k: "error" | "success", t: string) => void;
+  workflowContext?: string;
 }) {
   const [draft, setDraft] = useState<Omit<Agent, "id"> & { id?: string }>(
     agent ? structuredClone(agent) : structuredClone(emptyAgent),
@@ -737,7 +741,7 @@ function AgentEditor({
         method: agent ? "PUT" : "POST",
         body: JSON.stringify(draft),
       });
-      onSaved();
+      await onSaved();
     } catch (error) {
       notify(
         "error",
@@ -764,6 +768,12 @@ function AgentEditor({
       wide
     >
       <form onSubmit={submit} className="editor-form">
+        {workflowContext && (
+          <p className="workflow-agent-context">
+            Editing the agent used by {workflowContext}. Saving updates this agent
+            everywhere it is assigned, for new runs. Your workflow draft is kept separately.
+          </p>
+        )}
         <section>
           <h3>Identity</h3>
           <div className="form-grid">
@@ -1005,17 +1015,18 @@ function AgentEditor({
             <div>
               <strong>Telegram conversation</strong>
               <small>
-                Route messages to this agent when the bot is configured.
+                Handle plain messages in the configured bot. Workflow commands use
+                their assigned agents independently of this setting.
               </small>
             </div>
           </div>
         </section>
         <div className="modal-actions">
           <button type="button" className="secondary" onClick={onClose}>
-            Cancel
+            {workflowContext ? "Back to workflow" : "Cancel"}
           </button>
           <button className="primary" disabled={saving || !draft.model.trim()}>
-            {saving ? "Saving…" : "Save agent"}
+            {saving ? "Saving…" : workflowContext ? "Save agent & return" : "Save agent"}
           </button>
         </div>
       </form>
@@ -1052,11 +1063,13 @@ function Field({
 function Workflows({
   agents,
   workflows,
+  settings,
   refresh,
   notify,
 }: {
   agents: Agent[];
   workflows: Workflow[];
+  settings: Settings | null;
   refresh: () => Promise<void>;
   notify: (k: "error" | "success", t: string) => void;
 }) {
@@ -1154,7 +1167,7 @@ function Workflows({
                   </div>
                 </div>
               </div>
-              <MiniGraph workflow={w} />
+              <MiniGraph workflow={w} agents={agents} />
               <div className="card-actions">
                 <button onClick={() => setEditing(w)}>
                   <Icon name="edit" /> Edit
@@ -1209,6 +1222,9 @@ function Workflows({
         <WorkflowEditor
           workflow={editing === "new" ? null : editing}
           agents={agents}
+          workflows={workflows}
+          settings={settings}
+          refresh={refresh}
           onClose={() => setEditing(null)}
           onSaved={async () => {
             setEditing(null);
@@ -1238,28 +1254,179 @@ function pathExists(
     .filter((e) => e.from === start)
     .some((e) => pathExists(w, e.to, target, seen));
 }
-function MiniGraph({ workflow }: { workflow: Workflow }) {
+function modelLabel(model: string) {
+  return model.replace(/^openrouter\//, "");
+}
+
+function MiniGraph({
+  workflow,
+  agents,
+}: {
+  workflow: Workflow;
+  agents: Agent[];
+}) {
   return (
-    <div className="mini-graph">
-      {workflow.nodes.slice(0, 4).map((n, i) => (
-        <span key={n.id}>
-          {n.label}
-          {i < Math.min(workflow.nodes.length, 4) - 1 && <b>→</b>}
-        </span>
-      ))}
+    <div className="mini-graph" aria-label="Assigned agents">
+      {workflow.nodes.slice(0, 4).map((n) => {
+        const agent = agents.find((a) => a.id === n.agentId);
+        return (
+          <div key={n.id}>
+            <strong>
+              {n.label} <span>· {agent?.name || "Agent missing"}</span>
+            </strong>
+            <code title={agent?.model}>
+              {agent ? modelLabel(agent.model) : "Choose an agent"}
+            </code>
+          </div>
+        );
+      })}
+      {workflow.nodes.length > 4 && (
+        <small>+{workflow.nodes.length - 4} more nodes</small>
+      )}
     </div>
+  );
+}
+
+function WorkflowTelegram({
+  workflow,
+  settings,
+  agents,
+  dirty,
+  notify,
+}: {
+  workflow: Workflow | null;
+  settings: Settings | null;
+  agents: Agent[];
+  dirty: boolean;
+  notify: (k: "error" | "success", t: string) => void;
+}) {
+  const chatAgents = agents.filter((agent) => agent.telegram);
+  const command = workflow
+    ? workflow.requiresSource
+      ? `/improve ${workflow.id} <approved-run-id> <your change>`
+      : `/build ${workflow.id} <your request>`
+    : null;
+  async function copyCommand() {
+    if (!command) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      notify(
+        "success",
+        "Command template copied. Replace the placeholders before sending.",
+      );
+    } catch {
+      notify(
+        "error",
+        "Could not copy. Select and copy the command text instead.",
+      );
+    }
+  }
+  return (
+    <section className="workflow-telegram" aria-label="Start from Telegram">
+      <div className="telegram-heading">
+        <h3>Start from Telegram</h3>
+        <span
+          className={`telegram-status ${settings?.telegramConfigured ? "configured" : ""}`}
+        >
+          {!settings
+            ? "Checking configuration…"
+            : settings.telegramConfigured
+              ? "Bot configured"
+              : "Bot not configured"}
+        </span>
+      </div>
+      <div className="telegram-columns">
+        <div>
+          <p>
+            {settings?.telegramUsername ? (
+              <>
+                Send to{" "}
+                <a
+                  href={`https://t.me/${encodeURIComponent(settings.telegramUsername)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  @{settings.telegramUsername}
+                </a>{" "}
+                from your authorized Telegram chat.
+              </>
+            ) : (
+              "Use the bot and authorized chat configured in Settings."
+            )}
+          </p>
+          {command ? (
+            <>
+              <div className="telegram-command">
+                <code>{command}</code>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={dirty || !settings?.telegramConfigured}
+                  onClick={() => void copyCommand()}
+                >
+                  Copy template
+                </button>
+              </div>
+              <p className="telegram-note">
+                {dirty
+                  ? "Save workflow changes first. This command uses the saved workflow."
+                  : workflow?.requiresSource
+                    ? "Replace the placeholders. Find a completed, approved source run in Runs."
+                    : "Replace <your request> with what you want to build. This command starts this workflow."}
+              </p>
+            </>
+          ) : (
+            <p className="telegram-note">
+              Save this workflow to get its Telegram command.
+            </p>
+          )}
+          {settings && !settings.telegramConfigured && (
+            <p className="telegram-note">
+              Configure the bot token and allowed chat before using Telegram.
+              See Settings for setup.
+            </p>
+          )}
+        </div>
+        <div className="telegram-chat">
+          <strong>What happens if I just text?</strong>
+          <p>
+            {chatAgents.length === 1 ? (
+              <>
+                Plain messages normally go to <b>{chatAgents[0].name}</b>, using{" "}
+                <code>{modelLabel(chatAgents[0].model)}</code>.
+              </>
+            ) : chatAgents.length > 1 ? (
+              "Multiple agents have Telegram conversation enabled. Choose one in Agents so plain messages can be routed."
+            ) : (
+              "No conversation agent is selected. Enable Telegram conversation on one agent to handle plain messages."
+            )}
+          </p>
+          <p>
+            They do not automatically start this workflow. If the bot has just
+            asked for a change after <code>/improve</code>, your next message
+            continues that request.
+          </p>
+        </div>
+      </div>
+    </section>
   );
 }
 
 function WorkflowEditor({
   workflow,
   agents,
+  workflows,
+  settings,
+  refresh,
   onClose,
   onSaved,
   notify,
 }: {
   workflow: Workflow | null;
   agents: Agent[];
+  workflows: Workflow[];
+  settings: Settings | null;
+  refresh: () => Promise<void>;
   onClose: () => void;
   onSaved: () => void;
   notify: (k: "error" | "success", t: string) => void;
@@ -1267,8 +1434,17 @@ function WorkflowEditor({
   const [draft, setDraft] = useState<Omit<Workflow, "id"> & { id?: string }>(
     workflow ? structuredClone(workflow) : structuredClone(emptyWorkflow),
   );
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(
+    workflow?.entryNode || null,
+  );
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [saving, setSaving] = useState(false);
+  const selectedNode = draft.nodes.find((node) => node.id === selected);
+  const selectedAgent = agents.find(
+    (agent) => agent.id === selectedNode?.agentId,
+  );
+  const dirty =
+    JSON.stringify(draft) !== JSON.stringify(workflow || emptyWorkflow);
   function addNode(agentId: string) {
     const agent = agents.find((a) => a.id === agentId);
     if (!agent) return;
@@ -1282,8 +1458,8 @@ function WorkflowEditor({
           id,
           agentId,
           label: agent.name,
-          x: 80 + (d.nodes.length % 3) * 220,
-          y: 80 + Math.floor(d.nodes.length / 3) * 150,
+          x: 40 + (d.nodes.length % 2) * 350,
+          y: 80 + Math.floor(d.nodes.length / 2) * 180,
           terminalOutcomes: [],
         },
       ],
@@ -1297,8 +1473,8 @@ function WorkflowEditor({
         n.id === id
           ? {
               ...n,
-              x: Math.max(20, Math.min(750, x)),
-              y: Math.max(20, Math.min(390, y)),
+              x: Math.max(20, x),
+              y: Math.max(20, y),
             }
           : n,
       ),
@@ -1343,7 +1519,7 @@ function WorkflowEditor({
         workflow ? `/workflows/${workflow.id}` : "/workflows",
         { method: workflow ? "PUT" : "POST", body: JSON.stringify(draft) },
       );
-      onSaved();
+      await onSaved();
     } catch (error) {
       notify(
         "error",
@@ -1353,10 +1529,25 @@ function WorkflowEditor({
       setSaving(false);
     }
   }
+  if (editingAgent)
+    return (
+      <AgentEditor
+        agent={editingAgent}
+        workflows={workflows}
+        workflowContext={draft.name || "this workflow"}
+        onClose={() => setEditingAgent(null)}
+        onSaved={async () => {
+          await refresh();
+          setEditingAgent(null);
+          notify("success", "Agent updated. Workflow draft preserved.");
+        }}
+        notify={notify}
+      />
+    );
   return (
     <Modal
       title={workflow ? "Edit workflow" : "New workflow"}
-      subtitle="Drag agents into place, then route their structured outcomes."
+      subtitle="Choose who does the work, inspect their model, and route their outcomes. Changes apply to new runs."
       onClose={onClose}
       extraWide
     >
@@ -1380,114 +1571,253 @@ function WorkflowEditor({
             />
           </Field>
         </div>
-        <div className="workflow-source-rule">
-          <div className="toggle-row">
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={!!draft.requiresSource}
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, requiresSource: e.target.checked }))
-                }
+        <WorkflowTelegram
+          workflow={workflow}
+          settings={settings}
+          agents={agents}
+          dirty={dirty}
+          notify={notify}
+        />
+        <div className="builder-layout">
+          <div className="workflow-canvas-panel">
+            <div className="canvas-toolbar">
+              <div>
+                <h3>Workflow steps</h3>
+                <p>Select a step to inspect its agent.</p>
+              </div>
+              <label className="add-agent-control">
+                <span>Add agent</span>
+                <select
+                  aria-label="Add agent node"
+                  value=""
+                  onChange={(e) => addNode(e.target.value)}
+                  disabled={!agents.length}
+                >
+                  <option value="">
+                    {agents.length
+                      ? "Choose an agent…"
+                      : "Create an agent first"}
+                  </option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} · {modelLabel(a.model)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="canvas-scroll">
+              <GraphCanvas
+                workflow={draft as Workflow}
+                agents={agents}
+                selected={selected}
+                select={setSelected}
+                move={moveNode}
               />
-              <span />
-            </label>
-            <div>
-              <strong>Requires an approved source application</strong>
-              <small>Runs must start from a retained, approved revision.</small>
+            </div>
+            <div className="canvas-legend">
+              Drag to arrange · Tab and Enter to select · Arrow keys to move
+            </div>
+            <div className="workflow-start-settings">
+              <Field label="First step">
+                <select
+                  value={draft.entryNode}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, entryNode: e.target.value }))
+                  }
+                >
+                  <option value="">Choose a step</option>
+                  {draft.nodes.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <label className="source-checkbox">
+                <input
+                  type="checkbox"
+                  checked={!!draft.requiresSource}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      requiresSource: e.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Start from an approved application</strong>
+                  <small>For workflows that improve an existing app.</small>
+                </span>
+              </label>
             </div>
           </div>
-        </div>
-        <div className="builder-layout">
-          <aside>
-            <h3>Agent nodes</h3>
-            <p>Click to add an agent.</p>
-            {agents.map((a) => (
-              <button type="button" key={a.id} onClick={() => addNode(a.id)}>
-                <Avatar name={a.name} />
-                <span>
-                  <strong>{a.name}</strong>
-                  <small>{a.role}</small>
-                </span>
-                <Icon name="plus" />
-              </button>
-            ))}
-            {!agents.length && <small>Create an agent first.</small>}
+          <aside className="node-inspector" aria-label="Selected step settings">
+            {selectedNode ? (
+              <>
+                <div className="inspector-heading">
+                  <h3>{selectedNode.label || "Selected step"}</h3>
+                  <span>
+                    {draft.entryNode === selectedNode.id
+                      ? "First step"
+                      : "Workflow step"}
+                  </span>
+                </div>
+                <Field label="Step label">
+                  <input
+                    value={selectedNode.label}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        nodes: d.nodes.map((n) =>
+                          n.id === selected
+                            ? { ...n, label: e.target.value }
+                            : n,
+                        ),
+                      }))
+                    }
+                  />
+                </Field>
+                <Field label="Assigned agent">
+                  <select
+                    value={selectedNode.agentId}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        nodes: d.nodes.map((n) =>
+                          n.id === selected
+                            ? { ...n, agentId: e.target.value }
+                            : n,
+                        ),
+                      }))
+                    }
+                  >
+                    {!selectedAgent && (
+                      <option value={selectedNode.agentId}>
+                        Agent missing — choose a replacement
+                      </option>
+                    )}
+                    {agents.map((a) => (
+                      <option value={a.id} key={a.id}>
+                        {a.name} · {modelLabel(a.model)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {selectedAgent ? (
+                  <>
+                    <dl className="node-agent-facts">
+                      <div>
+                        <dt>Model</dt>
+                        <dd>
+                          <code>{selectedAgent.model}</code>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Available tools</dt>
+                        <dd>
+                          {selectedAgent.tools
+                            .filter(
+                              (tool) =>
+                                !selectedAgent.guardrails.blockedActions.includes(
+                                  tool,
+                                ),
+                            )
+                            .join(", ") || "None"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Approval</dt>
+                        <dd>
+                          {selectedAgent.approval === "always"
+                            ? "Before each turn"
+                            : selectedAgent.approval === "publish"
+                              ? "Before preview release"
+                              : "No manual approval"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <button
+                      type="button"
+                      className="secondary edit-assigned-agent"
+                      onClick={() => setEditingAgent(selectedAgent)}
+                    >
+                      <Icon name="edit" /> Edit agent settings
+                    </button>
+                    <p className="inspector-note">
+                      Agent edits apply everywhere this agent is assigned.
+                      Changing the assignment only affects this step.
+                    </p>
+                    <details className="agent-instructions">
+                      <summary>System prompt & skills</summary>
+                      <p>{selectedAgent.systemPrompt || "No system prompt."}</p>
+                      {selectedAgent.skills.map((skill, index) => (
+                        <div key={index}>
+                          <strong>{skill.name}</strong>
+                          <ol>
+                            {skill.steps.map((step, i) => (
+                              <li key={i}>{step}</li>
+                            ))}
+                          </ol>
+                        </div>
+                      ))}
+                    </details>
+                  </>
+                ) : (
+                  <p className="inspector-note">
+                    This step cannot run until it has an existing agent
+                    assigned.
+                  </p>
+                )}
+                <details className="step-options">
+                  <summary>Completion & removal</summary>
+                  <Field
+                    label="Terminal outcomes"
+                    hint="One per line; finishes without a route"
+                  >
+                    <textarea
+                      rows={2}
+                      value={selectedNode.terminalOutcomes.join("\n")}
+                      onChange={(e) =>
+                        setDraft((d) => ({
+                          ...d,
+                          nodes: d.nodes.map((n) =>
+                            n.id === selected
+                              ? {
+                                  ...n,
+                                  terminalOutcomes: lines(e.target.value),
+                                }
+                              : n,
+                          ),
+                        }))
+                      }
+                      placeholder="approved"
+                    />
+                  </Field>
+                  <button
+                    type="button"
+                    className="danger-link"
+                    onClick={() => removeNode(selectedNode.id)}
+                  >
+                    Remove step
+                  </button>
+                </details>
+              </>
+            ) : (
+              <div className="inspector-empty">
+                <h3>
+                  {draft.nodes.length
+                    ? "Select a step"
+                    : "Add your first agent"}
+                </h3>
+                <p>
+                  {draft.nodes.length
+                    ? "Choose a node in the graph to see its model, instructions, and settings."
+                    : "Choose an agent above the canvas, then connect its outcomes below."}
+                </p>
+              </div>
+            )}
           </aside>
-          <div className="canvas-wrap">
-            <GraphCanvas
-              workflow={draft as Workflow}
-              selected={selected}
-              select={setSelected}
-              move={moveNode}
-            />
-            <div className="canvas-tip">Drag nodes · click to edit</div>
-          </div>
-        </div>
-        <div className="node-settings">
-          <h3>Graph settings</h3>
-          <div className="form-grid">
-            <Field label="Entry node">
-              <select
-                value={draft.entryNode}
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, entryNode: e.target.value }))
-                }
-              >
-                <option value="">Choose entry</option>
-                {draft.nodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {selected && (
-              <Field label="Selected node label">
-                <input
-                  value={
-                    draft.nodes.find((n) => n.id === selected)?.label || ""
-                  }
-                  onChange={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      nodes: d.nodes.map((n) =>
-                        n.id === selected ? { ...n, label: e.target.value } : n,
-                      ),
-                    }))
-                  }
-                />
-              </Field>
-            )}
-            {selected && (
-              <Field label="Terminal outcomes" hint="One per line; ends without a route">
-                <textarea
-                  rows={3}
-                  value={(draft.nodes.find((n) => n.id === selected)?.terminalOutcomes || []).join("\n")}
-                  onChange={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      nodes: d.nodes.map((n) =>
-                        n.id === selected
-                          ? { ...n, terminalOutcomes: lines(e.target.value) }
-                          : n,
-                      ),
-                    }))
-                  }
-                  placeholder="approved"
-                />
-              </Field>
-            )}
-          </div>
-          {selected && (
-            <button
-              type="button"
-              className="danger-link"
-              onClick={() => removeNode(selected)}
-            >
-              Remove selected node
-            </button>
-          )}
         </div>
         <div className="routes">
           <div className="section-title">
@@ -1588,42 +1918,75 @@ function WorkflowEditor({
   );
 }
 
+const graphNodeWidth = 244;
+const graphNodeHeight = 118;
+
 function GraphCanvas({
   workflow,
+  agents,
   selected,
   select,
   move,
 }: {
   workflow: Workflow;
+  agents: Agent[];
   selected: string | null;
   select: (id: string) => void;
   move: (id: string, x: number, y: number) => void;
 }) {
-  const startDrag = (event: ReactMouseEvent<SVGGElement>, id: string) => {
-    event.preventDefault();
+  const drag = useRef<{ id: string; offsetX: number; offsetY: number } | null>(
+    null,
+  );
+  const [dragSize, setDragSize] = useState<{ width: number; height: number } | null>(null);
+  // Keep the coordinate system steady while dragging in a larger workflow.
+  const width = dragSize?.width ?? Math.max(
+    800,
+    ...workflow.nodes.map((n) =>
+      Math.ceil((n.x + graphNodeWidth + 120) / 200) * 200,
+    ),
+  );
+  const height = dragSize?.height ?? Math.max(
+    320,
+    ...workflow.nodes.map((n) =>
+      Math.ceil((n.y + graphNodeHeight + 60) / 160) * 160,
+    ),
+  );
+  const point = (event: ReactPointerEvent<SVGGElement>) => {
     const svg = event.currentTarget.ownerSVGElement!;
-    const onMove = (e: MouseEvent) => {
-      const rect = svg.getBoundingClientRect();
-      move(
-        id,
-        (e.clientX - rect.left) * (840 / rect.width) - 70,
-        (e.clientY - rect.top) * (450 / rect.height) - 30,
-      );
+    return new DOMPoint(event.clientX, event.clientY).matrixTransform(
+      svg.getScreenCTM()!.inverse(),
+    );
+  };
+  const startDrag = (
+    event: ReactPointerEvent<SVGGElement>,
+    n: Workflow["nodes"][number],
+  ) => {
+    if (event.button !== 0) return;
+    const position = point(event);
+    drag.current = {
+      id: n.id,
+      offsetX: position.x - n.x,
+      offsetY: position.y - n.y,
     };
-    const stop = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", stop);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", stop);
+    setDragSize({ width, height });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.currentTarget.focus();
+    select(n.id);
+  };
+  const stopDrag = () => {
+    drag.current = null;
+    setDragSize(null);
   };
   const node = (id: string) => workflow.nodes.find((n) => n.id === id);
+  const shorten = (value: string, limit: number) =>
+    value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
   return (
     <svg
       className="graph-canvas"
-      viewBox="0 0 840 450"
-      role="img"
+      viewBox={`0 0 ${width} ${height}`}
+      role="group"
       aria-label="Editable workflow graph"
+      style={{ aspectRatio: `${width} / ${height}` }}
     >
       <defs>
         <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
@@ -1640,46 +2003,59 @@ function GraphCanvas({
           <path d="M0,0 L0,6 L7,3 z" fill="#6c7d73" />
         </marker>
       </defs>
-      <rect width="840" height="450" fill="url(#grid)" />
+      <rect width={width} height={height} fill="url(#grid)" />
+      {!workflow.nodes.length && (
+        <text className="graph-empty" x={width / 2} y={height / 2}>
+          Your workflow starts with an agent
+        </text>
+      )}
       {workflow.edges.map((edge) => {
         const a = node(edge.from),
           b = node(edge.to);
         if (!a || !b) return null;
-        const same = edge.from === edge.to;
-        if (same) {
-          const path = `M${a.x + 105},${a.y + 4} C${a.x + 190},${a.y - 72} ${a.x + 190},${a.y + 128} ${a.x + 108},${a.y + 57}`;
+        if (edge.from === edge.to) {
           return (
             <g key={edge.id}>
-              <path className="edge" d={path} markerEnd="url(#arrow)" />
-              <text className="edge-label" x={a.x + 165} y={a.y + 31}>
+              <path
+                className="edge"
+                d={`M${a.x + graphNodeWidth},${a.y + 24} C${a.x + graphNodeWidth + 100},${a.y - 20} ${a.x + graphNodeWidth + 100},${a.y + 140} ${a.x + graphNodeWidth + 3},${a.y + 94}`}
+                markerEnd="url(#arrow)"
+              />
+              <text
+                className="edge-label"
+                x={a.x + graphNodeWidth + 75}
+                y={a.y + 59}
+              >
                 {edge.outcome}
               </text>
             </g>
           );
         }
-        const ax = a.x + 70,
-          ay = a.y + 30,
-          bx = b.x + 70,
-          by = b.y + 30,
-          dx = bx - ax,
-          dy = by - ay,
-          length = Math.max(Math.hypot(dx, dy), 1),
+        const ax = a.x + graphNodeWidth / 2,
+          ay = a.y + graphNodeHeight / 2;
+        const bx = b.x + graphNodeWidth / 2,
+          by = b.y + graphNodeHeight / 2;
+        const dx = bx - ax,
+          dy = by - ay;
+        const length = Math.max(Math.hypot(dx, dy), 1),
           ux = dx / length,
-          uy = dy / length,
-          nx = -uy,
-          ny = ux;
-        const reciprocal = workflow.edges.some(
-            (other) => other.from === edge.to && other.to === edge.from,
-          ),
-          curve = reciprocal ? 54 : 0;
-        const sx = ax + ux * 72,
-          sy = ay + uy * 32,
-          ex = bx - ux * 72,
-          ey = by - uy * 32,
-          cx = (sx + ex) / 2 + nx * curve,
-          cy = (sy + ey) / 2 + ny * curve;
-        const labelX = (sx + 2 * cx + ex) / 4 + nx * 10,
-          labelY = (sy + 2 * cy + ey) / 4 + ny * 10;
+          uy = dy / length;
+        // Intersect the direction with the card boundary, including diagonal routes.
+        const distance = Math.min(
+          (graphNodeWidth / 2 + 4) / Math.max(Math.abs(ux), 0.001),
+          (graphNodeHeight / 2 + 4) / Math.max(Math.abs(uy), 0.001),
+        );
+        const curve = workflow.edges.some(
+          (other) => other.from === edge.to && other.to === edge.from,
+        )
+          ? 66
+          : 0;
+        const sx = ax + ux * distance,
+          sy = ay + uy * distance;
+        const ex = bx - ux * distance,
+          ey = by - uy * distance;
+        const cx = (sx + ex) / 2 - uy * curve,
+          cy = (sy + ey) / 2 + ux * curve;
         return (
           <g key={edge.id}>
             <path
@@ -1687,33 +2063,114 @@ function GraphCanvas({
               d={`M${sx},${sy} Q${cx},${cy} ${ex},${ey}`}
               markerEnd="url(#arrow)"
             />
-            <text className="edge-label" x={labelX} y={labelY}>
+            <text
+              className="edge-label"
+              x={(sx + 2 * cx + ex) / 4 - uy * 13}
+              y={(sy + 2 * cy + ey) / 4 + ux * 13}
+            >
               {edge.outcome}
             </text>
           </g>
         );
       })}
-      {workflow.nodes.map((n) => (
-        <g
-          key={n.id}
-          className={`graph-node ${selected === n.id ? "selected" : ""}`}
-          transform={`translate(${n.x},${n.y})`}
-          onMouseDown={(e) => startDrag(e, n.id)}
-          onClick={() => select(n.id)}
-        >
-          <rect width="140" height="60" rx="12" />
-          <circle cx="22" cy="30" r="12" />
-          <text x="22" y="34" className="initial">
-            {n.label[0]?.toUpperCase()}
-          </text>
-          <text x="43" y="27" className="node-label">
-            {n.label.slice(0, 15)}
-          </text>
-          <text x="43" y="44" className="node-role">
-            {workflow.entryNode === n.id ? "Entry node" : "Agent"}
-          </text>
-        </g>
-      ))}
+      {workflow.nodes.map((n) => {
+        const agent = agents.find((a) => a.id === n.agentId);
+        return (
+          <g
+            key={n.id}
+            role="button"
+            tabIndex={0}
+            aria-label={`${n.label}: ${agent?.name || "Agent missing"}, ${agent?.model || "no model"}`}
+            aria-pressed={selected === n.id}
+            className={`graph-node ${selected === n.id ? "selected" : ""} ${!agent ? "missing" : ""}`}
+            transform={`translate(${n.x},${n.y})`}
+            onPointerDown={(e) => startDrag(e, n)}
+            onPointerMove={(e) => {
+              if (!drag.current || drag.current.id !== n.id) return;
+              const position = point(e);
+              move(
+                n.id,
+                Math.min(
+                  width - graphNodeWidth - 120,
+                  position.x - drag.current.offsetX,
+                ),
+                Math.min(
+                  height - graphNodeHeight - 60,
+                  position.y - drag.current.offsetY,
+                ),
+              );
+            }}
+            onPointerUp={stopDrag}
+            onPointerCancel={stopDrag}
+            onLostPointerCapture={stopDrag}
+            onClick={() => select(n.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                select(n.id);
+              }
+              if (
+                ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+                  e.key,
+                )
+              ) {
+                e.preventDefault();
+                select(n.id);
+                move(
+                  n.id,
+                  Math.min(
+                    width - graphNodeWidth - 120,
+                    n.x +
+                      (e.key === "ArrowRight"
+                        ? 10
+                        : e.key === "ArrowLeft"
+                          ? -10
+                          : 0),
+                  ),
+                  Math.min(
+                    height - graphNodeHeight - 60,
+                    n.y +
+                      (e.key === "ArrowDown"
+                        ? 10
+                        : e.key === "ArrowUp"
+                          ? -10
+                          : 0),
+                  ),
+                );
+              }
+            }}
+          >
+            <title>
+              {n.label} · {agent?.name || "Agent missing"} ·{" "}
+              {agent?.model || "Choose a replacement agent"}
+            </title>
+            <rect width={graphNodeWidth} height={graphNodeHeight} rx="12" />
+            <circle cx="25" cy="27" r="13" />
+            <text x="25" y="31" className="initial">
+              {n.label[0]?.toUpperCase()}
+            </text>
+            <text x="47" y="32" className="node-label">
+              {shorten(n.label, 23)}
+            </text>
+            <text x="16" y="56" className="node-agent">
+              {shorten(agent?.name || "Agent missing", 31)}
+            </text>
+            <text x="16" y="78" className="node-model">
+              {shorten(
+                agent ? modelLabel(agent.model) : "Choose a replacement",
+                31,
+              )}
+            </text>
+            <text x="16" y="102" className="node-role">
+              {workflow.entryNode === n.id
+                ? "Starts here"
+                : n.terminalOutcomes.length
+                  ? `Finishes on ${shorten(n.terminalOutcomes.join(", "), 22)}`
+                  : "Workflow step"}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -2564,6 +3021,15 @@ function Modal({
   wide?: boolean;
   extraWide?: boolean;
 }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    dialog.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected)
+        previous.focus();
+    };
+  }, []);
   return (
     <div
       className="modal-backdrop"
@@ -2573,10 +3039,37 @@ function Modal({
       }}
     >
       <div
+        ref={dialog}
+        tabIndex={-1}
         className={`modal ${wide ? "wide" : ""} ${extraWide ? "extra-wide" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented) {
+            event.stopPropagation();
+            onClose();
+          }
+          if (event.key !== "Tab" || event.defaultPrevented) return;
+          const items = Array.from(
+            event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]',
+            ),
+          ).filter((element) => element.getClientRects().length > 0);
+          const first = items[0],
+            last = items.at(-1);
+          if (
+            event.shiftKey &&
+            (document.activeElement === first ||
+              document.activeElement === dialog.current)
+          ) {
+            event.preventDefault();
+            last?.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+          }
+        }}
       >
         <header>
           <div>
