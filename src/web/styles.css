@@ -730,6 +730,10 @@ main {
 .model-option-title span { font-size: 10px; color: var(--green); }
 .model-menu li small { display: block; font-size: 10px; line-height: 1.5; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
 .model-id { font-family: ui-monospace, monospace; }
+.model-metadata { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.model-coding-score { font-weight: 700; color: var(--green); }
+.model-menu-note a, .model-selection-details a { color: var(--green); text-decoration: underline; }
+.model-selection-details { margin-top: 5px; font-size: 10px; line-height: 1.5; }
 .model-picker-footer { display: flex; align-items: start; gap: 8px; justify-content: space-between; margin-top: 5px; }
 .model-picker-footer small { min-width: 0; font-size: 10px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
 .model-manual { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); padding: 10px 12px; font-size: 12px; background: #f8faf8; color: var(--green); }
@@ -1922,6 +1926,7 @@ main {
   .modal-body {
     padding: 18px;
   }
+  .model-menu { position: static; margin-top: 5px; }
   .editor-form > section {
     padding: 14px;
   }
