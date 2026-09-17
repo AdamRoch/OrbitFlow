@@ -6,11 +6,13 @@ Current repository: `/Users/adam/orbitflow-v2`. Original `/Users/adam/orbitflow`
 
 Published `orbitflow-v2` and merged [PR #37](https://github.com/AdamRoch/OrbitFlow/pull/37) into `main` at `97618b2cad67df56f6f25b39c7d3981e55b12764`. The original main is preserved by `orbitflow-v1-before-v2`; separate local rebuild history remains on `codex/local-v2-history`. Original deployment and production data remain intact. Decision: `ADR/0004-github-deployment-source.md`.
 
-The existing OrbitFlow-v2 studio now follows GitHub `main`, with automatic deployments and Wait for CI enabled. CI has one dependency-install/typecheck/build job and no tests or provider credentials. Local install/typecheck/build passed; PR and main CI passed. Railway deployment `a6e749fb-10bd-4bd9-baa1-48763e33396c` succeeded with that exact merge commit. Explicit service settings match the repository's `/healthz` check, 120-second timeout, one replica, and three failure restarts.
+The existing OrbitFlow-v2 studio now follows GitHub `main`, with automatic deployments and Wait for CI enabled. CI has one dependency-install/typecheck/build job and no tests or provider credentials. Local install/typecheck/build passed; PR and main CI passed. Railway deployment `a6e749fb-10bd-4bd9-baa1-48763e33396c` succeeded with that exact merge commit. The subsequent handoff merge triggered deployment `38f47281-910f-4f4e-a7bc-72e3467f5ad3`, observed WAITING until CI passed.
+
+Enabling Railway's deployment healthcheck gate exposed a deadlock: the new executor exits while the old executor owns the database lock, and Railway retains the old process until the new one is healthy. Leave that gate unset, retain one replica and the standard ten failure restarts, and check `/healthz` after rollout. The executor lock is unchanged. This accepts a brief deployment interruption, consistent with the single-operator demo boundary; check active runs before merging. See ADR 0004 and the production runbook. No application code or tests were changed for this configuration correction.
 
 Live read-only verification passed: public health200, anonymous studio/catalog401, authenticated fresh catalog with 280 models, search/keyboard selection/exact ID/prices/sorting, desktop and 390px layout. Screenshots were visually reviewed. All nine agents, existing runs, provider budget, and recorded spending were unchanged; no model calls or configuration saves. Evidence: `.local/deployment/github-verification.json` and `github-picker-*.png`. A blocked Cloudflare analytics POST was excluded from the application-write check.
 
-Next action: publish this handoff and verify its automatic deployment after CI; retain the final GitHub/Railway state in `.local/deployment/`. Product acceptance remains Adam's production walkthrough, including real cloud Telegram improvement.
+Final release evidence is retained in `.local/deployment/github-state.json` and `github-release.json`; verify its timestamp and exact commit when checking deployment state. Product acceptance remains Adam's production walkthrough, including real cloud Telegram improvement.
 
 ## Completed slice: Live model suggestions, September 17
 
