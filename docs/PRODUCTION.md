@@ -1,6 +1,6 @@
 # Production test deployment
 
-Live studio: https://orbitflow.adamroch.com . V2 domain cutover completed September 16, 2026. Railway deployment `327fb601-b103-43c5-a2fc-3019afd380ae` succeeded, ownership is verified, and the certificate is valid. The original application remains available at its fallback URL below.
+Live studio: https://orbitflow.adamroch.com . V2 domain cutover completed September 16, 2026; the GitHub source transition completed September 17. Initial GitHub deployment `a6e749fb-10bd-4bd9-baa1-48763e33396c` succeeded with merge commit `97618b2cad67df56f6f25b39c7d3981e55b12764` from [PR #37](https://github.com/AdamRoch/OrbitFlow/pull/37). Domain ownership is verified and the certificate is valid. The original application remains available at its fallback URL below.
 
 The studio requires operator Basic authentication. Local credentials are in `.local/deployment/operator.json` (private, ignored); do not commit or share that file. Chrome is signed in at the final studio URL. The Railway-generated address `https://studio-production-5683.up.railway.app` is retained, but the application accepts only the canonical studio host. Use the custom domain for studio/API access.
 
@@ -14,7 +14,9 @@ Required studio settings: PUBLIC_ORIGIN, PREVIEW_BASE_DOMAIN, ORBITFLOW_OPERATOR
 
 Build the trusted runner with `npx esbuild src/server/runtime-runner.ts --bundle --platform=node --format=esm --packages=bundle --external:railway --outfile=.local/deployment/runtime-runner.mjs`. Stage it as `/opt/orbitflow/runtime-runner.mjs` in a clean Railway Sandbox, build `runtime/Dockerfile` there as `orbitflow-runtime:1.18.29`, and create a named checkpoint before any provider credential is added. Every execution uses a new isolated Sandbox and destroys it afterward. Never checkpoint a sandbox used for a provider turn.
 
-The deployment source is moving to [AdamRoch/OrbitFlow](https://github.com/AdamRoch/OrbitFlow), branch `main`, repository root, using the existing `Dockerfile` and `railway.json`. GitHub Actions runs only dependency installation, typecheck, and build. Testing stays local. Configure the existing studio service to deploy automatically after this workflow passes using Railway's Wait for CI setting. Verify the GitHub commit SHA in the successful Railway deployment and check health plus the affected UI. See [ADR 0004](../ADR/0004-github-deployment-source.md).
+The deployment source is [AdamRoch/OrbitFlow](https://github.com/AdamRoch/OrbitFlow), branch `main`, repository root, using the existing `Dockerfile` and `railway.json`. Automatic deployments and Railway's Wait for CI are enabled. GitHub Actions runs only dependency installation, typecheck, and build; testing stays local. Service settings explicitly configure `/healthz`, a 120-second timeout, one replica, and up to three restarts on failure. For each release, verify the GitHub commit SHA in the successful Railway deployment and check health plus the affected UI. See [ADR 0004](../ADR/0004-github-deployment-source.md).
+
+The first GitHub deployment passed live authentication, catalog, desktop/mobile dropdown, exact model ID, and price-sorting checks. Existing agents, runs, provider budget, and spending were unchanged. These checks made no model calls or saved configuration changes; they do not replace Adam's production walkthrough.
 
 For explicitly authorized recovery, the direct upload command remains `railway up --detach --project 6c6ff377-fcca-4be0-a829-214d911543af --environment 5574c71b-f1e1-459e-9419-4713925b428f --service 83738887-f965-493b-99d0-bb2d4f8585e7`. An accepted upload is not a successful deployment. The `orbitflow-v1-before-v2` Git tag preserves the original repository's main; it is not a rollback artifact for the v2 database.
 
