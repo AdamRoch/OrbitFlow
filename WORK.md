@@ -8,7 +8,7 @@ Added the OpenRouter listing month/full-date tooltip, Artificial Analysis Coding
 
 Local typecheck/build and metadata boundary checks passed. Six browser scenarios passed with the built UI, live catalog, in-memory agent editing, and labeled edge-case fixtures: family variants, sorting/selection/exact IDs, existing-model preservation, missing/zero scores and UTC month boundaries, stale metadata, and the 390px layout/manual entry. The live snapshot had 280 eligible models and 134 coding scores. Evidence and desktop/mobile screenshots: `.local/model-metadata/`. No permanent test file was added; `tests/models.test.ts` remains absent.
 
-Prepared on `codex/model-dates-benchmarks`. No production changes or provider calls for this slice. Next action: review the picker changes and publish through the existing GitHub/CI/Railway flow when authorized. Adam's production walkthrough and real cloud Telegram improvement remain separate acceptance work.
+Prepared on `codex/model-dates-benchmarks` at `d58b1c6`; Adam approved deployment September 17. Publish through the existing GitHub/CI/Railway flow, verify the exact deployed merge commit, and inspect the live picker without saving configurations or making provider calls. Release state, before/after comparisons, and live browser evidence are retained in `.local/model-metadata/`; use `release.json` for the verified commit and deployment result. Adam's production walkthrough and real cloud Telegram improvement remain separate acceptance work.
 
 ## Completed slice: GitHub deployment source, September 17
 
