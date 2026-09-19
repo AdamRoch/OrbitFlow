@@ -122,7 +122,7 @@ test("parses Telegram chat and workflow commands", () => {
     runId: "run-12",
   });
   assert.deepEqual(parseTelegramCommand("/start@orbitflow_bot"), {
-    kind: "help",
+    kind: "home",
   });
 });
 
@@ -259,6 +259,9 @@ test("transport stub: a persisted schedule wake is not duplicated after restart"
     listAgents: async () => [agent],
     enqueue,
     approve: async () => {
+      throw new Error("not used");
+    },
+    cancel: async (): Promise<Run> => {
       throw new Error("not used");
     },
     getRun: async (): Promise<RunDetail | null> => null,

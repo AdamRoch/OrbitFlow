@@ -442,6 +442,7 @@ const integrations = await startIntegrations({
   listAgents,
   enqueue,
   approve,
+  cancel,
   getRun,
   log,
 });

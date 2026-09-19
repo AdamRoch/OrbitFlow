@@ -1,10 +1,24 @@
+import { createTelegramMenu } from "./telegram-menu.js";
+import {
+  HELP,
+  REPORTABLE_STATUSES,
+  MAX_TELEGRAM_MESSAGE,
+  advanceTelegramOffset,
+  isAuthorizedChat,
+  parseTelegramCommand,
+  telegramStatusText,
+  telegramCommands,
+  type TelegramUpdate,
+  type TelegramMarkup,
+} from "./telegram-ui.js";
+export {
+  advanceTelegramOffset,
+  isAuthorizedChat,
+  parseTelegramCommand,
+  telegramStatusText,
+} from "./telegram-ui.js";
 import { CronExpressionParser } from "cron-parser";
-import type {
-  Agent,
-  Run,
-  RunDetail,
-  ScheduleStatus,
-} from "../shared/types.js";
+import type { Agent, Run, RunDetail, ScheduleStatus } from "../shared/types.js";
 
 type Query = <T>(sql: string, params?: unknown[]) => Promise<T[]>;
 type EnqueueInput = {
@@ -16,7 +30,7 @@ type EnqueueInput = {
   idempotencyKey?: string;
   requestSender?: string;
 };
-type Dependencies = {
+export type IntegrationDependencies = {
   query: Query;
   listAgents: () => Promise<Agent[]>;
   enqueue: (input: EnqueueInput) => Promise<Run>;
@@ -26,24 +40,11 @@ type Dependencies = {
     feedback: string,
     approvalToken: string,
   ) => Promise<Run>;
+  cancel: (id: string) => Promise<Run>;
   getRun: (id: string) => Promise<RunDetail | null>;
   log: (runId: string | null, kind: string, content: string) => Promise<void>;
 };
 
-type TelegramCommand =
-  | { kind: "chat"; prompt: string }
-  | { kind: "build"; workflowId: string; prompt: string }
-  | { kind: "improve"; arguments: string[] }
-  | { kind: "approve"; runId: string; approvalToken: string }
-  | { kind: "reject"; runId: string; approvalToken: string; feedback: string }
-  | { kind: "status"; runId: string }
-  | { kind: "help" }
-  | { kind: "invalid"; message: string };
-
-type TelegramUpdate = {
-  update_id: number;
-  message?: { text?: string; chat: { id: string | number } };
-};
 type Conversation = {
   agentId: string;
   runIds: string[];
@@ -60,6 +61,7 @@ type Outbound = {
   text: string;
   sent: boolean;
   createdAt: string;
+  markup?: TelegramMarkup;
 };
 type ScheduleState = {
   expression: string;
@@ -68,75 +70,6 @@ type ScheduleState = {
   error?: string;
 };
 type PendingImprove = { workflowId: string; parentRunId: string };
-
-const HELP =
-  "Commands: /build <workflow ID> <request>; /improve, then send the change; or /improve <change>. Advanced: /improve <workflow ID> <run ID> <change>. Also /approve <run ID> <approval token>, /reject <run ID> <approval token> <feedback>, /status <run ID>, /help. Plain messages go to the Telegram-connected agent. Use IDs shown in OrbitFlow or bot replies; do not invent them.";
-const REPORTABLE_STATUSES = new Set([
-  "awaiting_approval",
-  "completed",
-  "failed",
-  "cancelled",
-]);
-const MAX_TELEGRAM_MESSAGE = 3900;
-
-export function isAuthorizedChat(
-  allowedChatId: string,
-  actualChatId: string | number,
-): boolean {
-  return String(actualChatId) === allowedChatId;
-}
-
-export function advanceTelegramOffset(
-  current: number,
-  updateId: number,
-): { duplicate: boolean; next: number } {
-  return updateId < current
-    ? { duplicate: true, next: current }
-    : { duplicate: false, next: updateId + 1 };
-}
-
-export function parseTelegramCommand(raw: string): TelegramCommand {
-  const text = raw.trim();
-  if (!text)
-    return {
-      kind: "invalid",
-      message: "Send a request or /help for commands.",
-    };
-  if (!text.startsWith("/")) return { kind: "chat", prompt: text };
-  const [head, ...parts] = text.split(/\s+/);
-  const name = head.toLowerCase().replace(/@[^\s]+$/, "");
-  if (name === "/help" || name === "/start") return { kind: "help" };
-  if (name === "/build") {
-    const [workflowId, ...prompt] = parts;
-    return workflowId && prompt.length
-      ? { kind: "build", workflowId, prompt: prompt.join(" ") }
-      : { kind: "invalid", message: "Use /build <workflow ID> <request>." };
-  }
-  if (name === "/improve") {
-    return { kind: "improve", arguments: parts };
-  }
-  if (name === "/approve")
-    return parts.length === 2
-      ? { kind: "approve", runId: parts[0], approvalToken: parts[1] }
-      : { kind: "invalid", message: "Use /approve <run ID> <approval token>." };
-  if (name === "/reject") {
-    const [runId, approvalToken, ...feedback] = parts;
-    return runId && approvalToken && feedback.length
-      ? { kind: "reject", runId, approvalToken, feedback: feedback.join(" ") }
-      : {
-          kind: "invalid",
-          message: "Use /reject <run ID> <approval token> <feedback>.",
-        };
-  }
-  if (name === "/status")
-    return parts.length === 1
-      ? { kind: "status", runId: parts[0] }
-      : { kind: "invalid", message: "Use /status <run ID>." };
-  return {
-    kind: "invalid",
-    message: "Unknown command. Send /help for commands.",
-  };
-}
 
 export function everyIntervalMs(expression: string): number | null {
   const match = /^@every\s+(\d+)\s*(s|m|h|d)$/i.exec(expression.trim());
@@ -185,14 +118,16 @@ export async function listScheduleStatuses(
   });
 }
 
-export async function selectGuidedImprove(query: Query): Promise<
-  { workflowId: string; parentRunId: string } | { error: string }
-> {
+export async function selectGuidedImprove(
+  query: Query,
+): Promise<{ workflowId: string; parentRunId: string } | { error: string }> {
   const workflows = await query<{ data: { id: string } }>(
     "SELECT data FROM workflows WHERE template=false AND COALESCE(data->>'requiresSource','false')='true' ORDER BY id",
   );
   if (workflows.length === 0)
-    return { error: "Load one Improve application template in OrbitFlow first." };
+    return {
+      error: "Load one Improve application template in OrbitFlow first.",
+    };
   if (workflows.length > 1)
     return {
       error:
@@ -234,34 +169,7 @@ export function createOutboxDrain(
   };
 }
 
-export function telegramStatusText(detail: RunDetail): string {
-  const { run } = detail;
-  const usage =
-    run.costUsd === null
-      ? `${run.inputTokens + run.outputTokens} tokens; cost unavailable`
-      : `${run.inputTokens + run.outputTokens} tokens; $${run.costUsd.toFixed(4)}`;
-  if (run.status === "awaiting_approval")
-    return detail.approvalToken
-      ? `Run ${run.id} is awaiting approval. Review its source and preview in OrbitFlow, then use /approve ${run.id} ${detail.approvalToken} or /reject ${run.id} ${detail.approvalToken} <feedback>. Usage: ${usage}.`
-      : `Run ${run.id} is awaiting approval, but its approval token is unavailable. Refresh the run in OrbitFlow. Usage: ${usage}.`;
-  if (run.status === "completed") {
-    const response = [...detail.messages]
-      .reverse()
-      .find((message) => message.content.trim())
-      ?.content.trim();
-    const artifact = run.revisionId
-      ? " Its retained source and preview are ready in OrbitFlow."
-      : "";
-    return `${response ? `${response}\n\n` : ""}Run ${run.id} completed.${artifact} Usage: ${usage}.`;
-  }
-  if (run.status === "failed")
-    return `Run ${run.id} failed. Open OrbitFlow for the recorded error. Usage: ${usage}.`;
-  if (run.status === "cancelled")
-    return `Run ${run.id} was cancelled. Usage: ${usage}.`;
-  return `Run ${run.id}: ${run.status}. Current workflow node: ${run.currentNode ?? "none"}. Usage: ${usage}.`;
-}
-
-export function startIntegrations(deps: Dependencies): {
+export function startIntegrations(deps: IntegrationDependencies): {
   stop: () => Promise<void>;
 } {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -318,6 +226,7 @@ export function startIntegrations(deps: Dependencies): {
     key: string,
     chatId: string,
     text: string,
+    markup?: TelegramMarkup,
   ): Promise<void> => {
     const current = await getState<Outbound>(key);
     if (current?.sent) return;
@@ -328,6 +237,7 @@ export function startIntegrations(deps: Dependencies): {
         text: truncate(text),
         sent: false,
         createdAt: new Date().toISOString(),
+        markup,
       },
     );
   };
@@ -380,6 +290,7 @@ export function startIntegrations(deps: Dependencies): {
       await telegramRequest("sendMessage", {
         chat_id: row.value.chatId,
         text: row.value.text,
+        reply_markup: row.value.markup,
       });
       // Telegram has no send-message idempotency key. A process crash between these
       // two operations can resend one reply; the durable outbox prevents ordinary retries.
@@ -424,11 +335,14 @@ export function startIntegrations(deps: Dependencies): {
       stateKey("telegram.run", run.id),
       watch ?? ({ chatId, lastNotice: null } satisfies RunWatch),
     );
-    await queueOutbound(
-      stateKey("telegram.outbound", `${chatId}:${updateId}:started`),
-      chatId,
-      `Started run ${run.id}. I’ll reply here when it needs approval or finishes.`,
-    );
+    const detail = await deps.getRun(run.id);
+    if (detail)
+      await menu.runCard(
+        stateKey("telegram.outbound", `${chatId}:${updateId}:started`),
+        chatId,
+        detail,
+        "Request queued. I’ll reply here when it needs approval or finishes.",
+      );
   };
 
   const conversationPrompt = async (
@@ -457,42 +371,33 @@ export function startIntegrations(deps: Dependencies): {
   };
 
   const handleUpdate = async (update: TelegramUpdate): Promise<void> => {
+    const callback = update.callback_query;
+    if (callback) {
+      const chatId = callback.message?.chat.id;
+      const authorized =
+        chatId !== undefined && isAuthorizedChat(allowedChatId!, chatId);
+      await telegramRequest("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        ...(authorized ? {} : { text: "This chat is not authorized." }),
+      }).catch(() => undefined);
+      if (authorized)
+        await menu.callback(String(chatId), update.update_id, callback.data);
+      return;
+    }
     const message = update.message;
     if (!message?.text || !isAuthorizedChat(allowedChatId!, message.chat.id))
       return;
     const chatId = String(message.chat.id);
     const command = parseTelegramCommand(message.text);
+    if (await menu.command(chatId, update.update_id, command)) return;
     const replyKey = (suffix: string) =>
       stateKey("telegram.outbound", `${chatId}:${update.update_id}:${suffix}`);
-    if (command.kind === "invalid" || command.kind === "help") {
-      await queueOutbound(
-        replyKey("help"),
-        chatId,
-        command.kind === "help" ? HELP : command.message,
-      );
-      return;
-    }
-    if (
-      command.kind === "approve" ||
-      command.kind === "reject" ||
-      command.kind === "status"
-    ) {
+    if (command.kind === "approve" || command.kind === "reject") {
       if (!(await ownsRun(chatId, command.runId))) {
         await queueOutbound(
           replyKey("denied"),
           chatId,
           "That run does not belong to this Telegram conversation.",
-        );
-        return;
-      }
-      if (command.kind === "status") {
-        const detail = await deps.getRun(command.runId);
-        await queueOutbound(
-          replyKey("status"),
-          chatId,
-          detail
-            ? telegramStatusText(detail)
-            : `Run ${command.runId} was not found.`,
         );
         return;
       }
@@ -544,7 +449,7 @@ export function startIntegrations(deps: Dependencies): {
       }
     } else if (command.kind === "build")
       input = { workflowId: command.workflowId, prompt: command.prompt };
-    else {
+    else if (command.kind === "improve") {
       const [candidateWorkflowId, candidateRunId, ...advancedPrompt] =
         command.arguments;
       const explicitWorkflow = candidateWorkflowId
@@ -615,13 +520,25 @@ export function startIntegrations(deps: Dependencies): {
         parentRunId,
         prompt,
       };
-    }
+    } else return;
     input.channel = { chatId, updateId: update.update_id };
     input.idempotencyKey = `telegram:${chatId}:${update.update_id}`;
     const run = await deps.enqueue(input);
-    await rememberRun(chatId, run, update.update_id, message.text, agentId);
     if (pendingImproveKey) await deleteState(pendingImproveKey);
+    if (command.kind === "build" || command.kind === "improve")
+      await menu.clearPending(chatId);
+    await rememberRun(chatId, run, update.update_id, message.text, agentId);
   };
+
+  const menu = createTelegramMenu({
+    ...deps,
+    getState,
+    setState,
+    deleteState,
+    queueOutbound,
+    rememberRun,
+    publicOrigin: process.env.PUBLIC_ORIGIN,
+  });
 
   let offset: number | undefined;
   const pollTelegram = async (): Promise<void> => {
@@ -633,12 +550,34 @@ export function startIntegrations(deps: Dependencies): {
       const result = (await telegramRequest("getUpdates", {
         offset,
         timeout: 20,
-        allowed_updates: ["message"],
+        allowed_updates: ["message", "callback_query"],
       })) as TelegramUpdate[];
       for (const update of result.sort((a, b) => a.update_id - b.update_id)) {
         const advanced = advanceTelegramOffset(offset, update.update_id);
         if (advanced.duplicate) continue;
-        await handleUpdate(update);
+        try {
+          await handleUpdate(update);
+        } catch (error) {
+          // Expected user/configuration races must not poison the durable update queue.
+          const message = error instanceof Error ? error.message : "";
+          if (
+            !/^(Run is not awaiting approval|Approval is missing or stale|Run is missing or already terminal|Workflow not found|One or more agents no longer exist|This workflow requires an approved application|Choose a run with an approved application|Provide a request of)/.test(
+              message,
+            )
+          )
+            throw error;
+          const chatId =
+            update.message?.chat.id ?? update.callback_query?.message?.chat.id;
+          if (chatId !== undefined && isAuthorizedChat(allowedChatId!, chatId))
+            await queueOutbound(
+              stateKey(
+                "telegram.outbound",
+                `${chatId}:${update.update_id}:error`,
+              ),
+              String(chatId),
+              `${message}. Open /workflows or /runs for current options. /cancel clears a pending request.`,
+            );
+        }
         offset = advanced.next;
         await setState("telegram.offset", { next: offset });
       }
@@ -658,9 +597,14 @@ export function startIntegrations(deps: Dependencies): {
     }
   };
 
+  let nextButtonCleanup = 0;
   const monitorRuns = async (): Promise<void> => {
     if (stopped || !token || !allowedChatId) return;
     try {
+      if (Date.now() >= nextButtonCleanup) {
+        await menu.pruneButtons();
+        nextButtonCleanup = Date.now() + 60 * 60_000;
+      }
       for (const row of await listState<RunWatch>("telegram.run")) {
         const runId = decodeURIComponent(row.key.slice("telegram.run:".length));
         const detail = await deps.getRun(runId);
@@ -672,13 +616,13 @@ export function startIntegrations(deps: Dependencies): {
         )
           continue;
         const suffix = notice;
-        await queueOutbound(
+        await menu.runCard(
           stateKey(
             "telegram.outbound",
             `${row.value.chatId}:${runId}:${suffix}`,
           ),
           row.value.chatId,
-          telegramStatusText(detail),
+          detail,
         );
         await setState(row.key, { ...row.value, lastNotice: notice });
         const conversationKey = stateKey(
@@ -825,6 +769,23 @@ export function startIntegrations(deps: Dependencies): {
       ),
     );
   if (token && allowedChatId) {
+    track(
+      (async () => {
+        try {
+          await telegramRequest("setMyCommands", {
+            commands: telegramCommands,
+            scope: { type: "chat", chat_id: allowedChatId },
+          });
+        } catch {
+          if (!stopped)
+            await deps.log(
+              null,
+              "telegram_error",
+              "Telegram menu setup failed; typed commands remain available. Setup will retry on restart.",
+            );
+        }
+      })(),
+    );
     track(pollTelegram());
     track(monitorRuns());
   }
